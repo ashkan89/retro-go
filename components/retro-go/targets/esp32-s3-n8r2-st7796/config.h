@@ -17,7 +17,7 @@
 #define RG_SCREEN_BACKLIGHT         0
 #define RG_SCREEN_WIDTH             480
 #define RG_SCREEN_HEIGHT            320
-#define RG_SCREEN_ROTATE            2
+#define RG_SCREEN_ROTATE            0
 #define RG_SCREEN_VISIBLE_AREA      {0, 0, 0, 0}
 #define RG_SCREEN_SAFE_AREA         {0, 0, 0, 0}
 
@@ -29,7 +29,7 @@
 #define RG_SCREEN_INIT()                                                                                         \
     ILI9341_CMD(0xF0, 0xC3);                 /* Command Set Control */                                           \
     ILI9341_CMD(0xF0, 0x96);                                                                                     \
-    ILI9341_CMD(0x36, ST7796_MADCTL_MV | ST7796_MADCTL_BGR); /* 480x320 landscape, BGR */                       \
+    ILI9341_CMD(0x36, ST7796_MADCTL_MY | ST7796_MADCTL_MX | ST7796_MADCTL_MV | ST7796_MADCTL_BGR); /* 180 deg */ \
     ILI9341_CMD(0xB4, 0x01);                 /* Display inversion control */                                     \
     ILI9341_CMD(0xB6, 0x80, 0x02, 0x3B);     /* Display function control */                                      \
     ILI9341_CMD(0xE8, 0x40, 0x8A, 0x00, 0x00, 0x29, 0x19, 0xA5, 0x33);                                           \
