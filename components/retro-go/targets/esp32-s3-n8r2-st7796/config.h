@@ -13,8 +13,8 @@
 // Video
 #define RG_SCREEN_DRIVER            0   // 0 = ILI9341/ST7789 compatible SPI command driver
 #define RG_SCREEN_HOST              SPI2_HOST
-#define RG_SCREEN_SPEED             SPI_MASTER_FREQ_40M
-#define RG_SCREEN_BACKLIGHT         0
+#define RG_SCREEN_SPEED             SPI_MASTER_FREQ_80M
+#define RG_SCREEN_BACKLIGHT         1
 #define RG_SCREEN_WIDTH             480
 #define RG_SCREEN_HEIGHT            320
 #define RG_SCREEN_ROTATE            0
@@ -58,6 +58,9 @@
 
 #define RG_RECOVERY_BTN             RG_KEY_MENU
 
+// Status LED
+#define RG_GPIO_LED                 GPIO_NUM_48
+
 // No battery ADC was provided for this board.
 #define RG_BATTERY_DRIVER           0
 
@@ -67,6 +70,7 @@
 #define RG_GPIO_LCD_CLK             GPIO_NUM_14
 #define RG_GPIO_LCD_CS              GPIO_NUM_10
 #define RG_GPIO_LCD_DC              GPIO_NUM_11
+#define RG_GPIO_LCD_BCKL            GPIO_NUM_21
 #define RG_GPIO_LCD_RST             GPIO_NUM_12
 
 // SPI SD Card
