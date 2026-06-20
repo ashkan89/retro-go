@@ -1,6 +1,6 @@
 #include "../rg_gui.h"
 
-// File generated with font_converter.py (https://github.com/ducalex/retro-go/tree/dev/tools)
+// File generated with font_converter.py (https://github.com/ashkan89/retro-go/tree/dev/tools)
 
 // Font           : Bitstream Vera Sans Bold
 // Point Size     : 14

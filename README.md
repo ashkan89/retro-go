@@ -43,17 +43,17 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 # Installation
 
 ### ODROID-GO
-  1. Download `retro-go_1.x_odroid-go.fw` from the [release page](https://github.com/ducalex/retro-go/releases/) and copy it to `/odroid/firmware` on your sdcard.
+  1. Download `retro-go_1.x_odroid-go.fw` from the [release page](https://github.com/ashkan89/retro-go/releases/) and copy it to `/odroid/firmware` on your sdcard.
   2. Power up the device while holding down B.
   3. Select retro-go in the files list and flash it.
 
 ### MyRetroGameCase G32 (GBC)
-  1. Download `retro-go_1.x_mrgc-g32.fw` from the [release page](https://github.com/ducalex/retro-go/releases/) and copy it to `/espgbc/firmware` on your sdcard.
+  1. Download `retro-go_1.x_mrgc-g32.fw` from the [release page](https://github.com/ashkan89/retro-go/releases/) and copy it to `/espgbc/firmware` on your sdcard.
   2. Power up the device while holding down MENU (the volume knob).
   3. Select retro-go in the files list and flash it.
 
 ### Other devices
-  1. Download the .img for your device from the [release page](https://github.com/ducalex/retro-go/releases/).
+  1. Download the .img for your device from the [release page](https://github.com/ashkan89/retro-go/releases/).
   2. Connect your device to a computer with a USB cable.
   3. Flash the image with esptool:
      - [Command line](https://github.com/espressif/esptool/releases/): Run `esptool.py write_flash --flash_size detect 0x0 retro-go_*.img`
@@ -67,7 +67,7 @@ If your device is not already supported or if a prebuilt version isn't available
 # Usage
 
 ## Game covers / artwork
-Game covers should be placed in the `romart` folder at the base of your sd card. You can obtain a pre-made pack [here](https://github.com/ducalex/retro-go-covers). Retro-Go is also compatible with the older Go-Play romart pack.
+Game covers should be placed in the `romart` folder at the base of your sd card. You can obtain a pre-made pack [here](https://github.com/ashkan89/retro-go-covers). Retro-Go is also compatible with the older Go-Play romart pack.
 
 You can add missing cover art by creating a PNG image (160x168, 8bit). Two naming schemes are supported:
 - Filename-based: `/romart/nes/Super Mario.png` (notice the rom extension is *not* included)

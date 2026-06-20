@@ -25,7 +25,7 @@ There are generally two active git branches on retro-go:
 - `master` contains the code form the most recent release and is usually tested and known to be working
 - `dev` contains code in development that will be merged to master upon the next release and is often untested
 
-`git clone -b <branch> https://github.com/ducalex/retro-go/`
+`git clone -b <branch> https://github.com/ashkan89/retro-go/`
 
 
 ## rg_tool.py

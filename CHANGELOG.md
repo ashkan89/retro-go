@@ -292,7 +292,7 @@ This is a bug fix release that fixes the following issues:
 
 Note: You should backup your GBC saves before trying this build.
 
-(See [1.19](https://github.com/ducalex/retro-go/releases/tag/1.19) to download cover art.)
+(See [1.19](https://github.com/ashkan89/retro-go/releases/tag/1.19) to download cover art.)
 
 
 # Retro-Go 1.23    (2021-01-19)
