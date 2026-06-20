@@ -1,6 +1,12 @@
 // Target definition
 #define RG_TARGET_NAME             "ESP32-S3-N8R2-ST7796"
 
+// Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.
+#define RG_TASK_AFFINITY_MAIN      0
+#define RG_TASK_AFFINITY_IO        1
+#define RG_TASK_AFFINITY_AUDIO     1
+#define RG_TASK_AFFINITY_SYSTEM    -1
+
 // Storage
 #define RG_STORAGE_ROOT             "/sd"
 #define RG_STORAGE_SDSPI_HOST       SPI3_HOST

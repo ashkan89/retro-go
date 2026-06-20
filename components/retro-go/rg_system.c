@@ -528,7 +528,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     if (app.bootFlags & RG_BOOT_ONCE)
         update_boot_config(RG_APP_LAUNCHER, NULL, NULL, 0);
 
-    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, -1);
+    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, RG_TASK_AFFINITY_SYSTEM);
     app.initialized = true;
 
     update_memory_statistics();

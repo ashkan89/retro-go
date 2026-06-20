@@ -149,6 +149,22 @@
 #endif
 #endif
 
+#ifndef RG_TASK_AFFINITY_MAIN
+#define RG_TASK_AFFINITY_MAIN 0
+#endif
+
+#ifndef RG_TASK_AFFINITY_SYSTEM
+#define RG_TASK_AFFINITY_SYSTEM -1
+#endif
+
+#ifndef RG_TASK_AFFINITY_IO
+#define RG_TASK_AFFINITY_IO 1
+#endif
+
+#ifndef RG_TASK_AFFINITY_AUDIO
+#define RG_TASK_AFFINITY_AUDIO RG_TASK_AFFINITY_IO
+#endif
+
 #ifndef RG_ZIP_SUPPORT
 #define RG_ZIP_SUPPORT 1
 #endif
