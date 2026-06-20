@@ -95,7 +95,7 @@
 // #define RG_UPDATER_DOWNLOAD_LOCATION RG_STORAGE_ROOT "/odroid/firmware"
 
 #ifndef RG_UPDATER_GITHUB_RELEASES
-#define RG_UPDATER_GITHUB_RELEASES "https://api.github.com/repos/ducalex/retro-go/releases?per_page=10"
+#define RG_UPDATER_GITHUB_RELEASES "https://api.github.com/repos/ashkan89/retro-go/releases?per_page=10"
 #endif
 
 #ifndef RG_PATH_MAX
