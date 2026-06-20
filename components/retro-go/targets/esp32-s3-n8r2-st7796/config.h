@@ -66,6 +66,7 @@
 
 // Status LED
 #define RG_GPIO_LED                 GPIO_NUM_48
+#define RG_GPIO_LED_WS2812          1
 
 // No battery ADC was provided for this board.
 #define RG_BATTERY_DRIVER           0

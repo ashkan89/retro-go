@@ -18,7 +18,16 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <esp_sleep.h>
+#include <esp_rom_sys.h>
 #include <driver/gpio.h>
+#if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+    #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+        #include <driver/rmt_encoder.h>
+        #include <driver/rmt_tx.h>
+    #else
+        #include <driver/rmt.h>
+    #endif
+#endif
 #else
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mutex.h>
@@ -99,6 +108,133 @@ static const char *SETTING_BOOT_ARGS = "BootArgs";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
+
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+#ifndef RG_GPIO_LED_RMT_CHANNEL
+#define RG_GPIO_LED_RMT_CHANNEL RMT_CHANNEL_0
+#endif
+
+#define WS2812_RESOLUTION_HZ 20000000
+#define WS2812_T0H_TICKS     8
+#define WS2812_T0L_TICKS     17
+#define WS2812_T1H_TICKS     16
+#define WS2812_T1L_TICKS     9
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+static rmt_channel_handle_t led_rmt_channel;
+static rmt_encoder_handle_t led_rmt_encoder;
+#else
+static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
+#endif
+static bool led_rmt_initialized;
+
+static void led_rgb565_to_grb888(rg_color_t color, uint8_t data[3])
+{
+    uint16_t rgb565 = color > 0 ? color : 0;
+    uint8_t r5 = (rgb565 >> 11) & 0x1F;
+    uint8_t g6 = (rgb565 >> 5) & 0x3F;
+    uint8_t b5 = rgb565 & 0x1F;
+
+    data[0] = (g6 << 2) | (g6 >> 4);
+    data[1] = (r5 << 3) | (r5 >> 2);
+    data[2] = (b5 << 3) | (b5 >> 2);
+}
+
+static bool led_rmt_init(void)
+{
+    if (led_rmt_initialized || RG_GPIO_LED == GPIO_NUM_NC)
+        return led_rmt_initialized;
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+    rmt_tx_channel_config_t channel_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .gpio_num = RG_GPIO_LED,
+        .mem_block_symbols = 64,
+        .resolution_hz = WS2812_RESOLUTION_HZ,
+        .trans_queue_depth = 1,
+    };
+    rmt_bytes_encoder_config_t encoder_config = {
+        .bit0 = {
+            .level0 = 1,
+            .duration0 = WS2812_T0H_TICKS,
+            .level1 = 0,
+            .duration1 = WS2812_T0L_TICKS,
+        },
+        .bit1 = {
+            .level0 = 1,
+            .duration0 = WS2812_T1H_TICKS,
+            .level1 = 0,
+            .duration1 = WS2812_T1L_TICKS,
+        },
+        .flags.msb_first = 1,
+    };
+
+    if (rmt_new_tx_channel(&channel_config, &led_rmt_channel) != ESP_OK)
+        return false;
+    if (rmt_new_bytes_encoder(&encoder_config, &led_rmt_encoder) != ESP_OK)
+        return false;
+    if (rmt_enable(led_rmt_channel) != ESP_OK)
+        return false;
+#else
+    rmt_config_t config = RMT_DEFAULT_CONFIG_TX(RG_GPIO_LED, RG_GPIO_LED_RMT_CHANNEL);
+    config.clk_div = 4;
+    config.mem_block_num = 1;
+
+    if (rmt_config(&config) != ESP_OK)
+        return false;
+    if (rmt_driver_install(config.channel, 0, 0) != ESP_OK)
+        return false;
+#endif
+
+    led_rmt_initialized = true;
+    return true;
+}
+
+static bool led_rmt_set_color(rg_color_t color)
+{
+    uint8_t data[3];
+
+    if (!led_rmt_init())
+        return false;
+
+    led_rgb565_to_grb888(color, data);
+
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+    rmt_transmit_config_t tx_config = {
+        .loop_count = 0,
+    };
+
+    if (rmt_transmit(led_rmt_channel, led_rmt_encoder, data, sizeof(data), &tx_config) != ESP_OK)
+        return false;
+    if (rmt_tx_wait_all_done(led_rmt_channel, pdMS_TO_TICKS(100)) != ESP_OK)
+        return false;
+#else
+    rmt_item32_t items[24];
+    int item = 0;
+
+    for (int byte = 0; byte < 3; byte++)
+    {
+        for (int bit = 7; bit >= 0; bit--)
+        {
+            bool value = data[byte] & (1 << bit);
+            items[item].level0 = 1;
+            items[item].duration0 = value ? WS2812_T1H_TICKS : WS2812_T0H_TICKS;
+            items[item].level1 = 0;
+            items[item].duration1 = value ? WS2812_T1L_TICKS : WS2812_T0L_TICKS;
+            item++;
+        }
+    }
+
+    if (rmt_write_items(led_rmt_channel, items, RG_COUNT(items), true) != ESP_OK)
+        return false;
+    if (rmt_wait_tx_done(led_rmt_channel, pdMS_TO_TICKS(100)) != ESP_OK)
+        return false;
+#endif
+
+    esp_rom_delay_us(80);
+    return true;
+}
+#endif
 
 #define logbuf_putc(buf, c) (buf)->console[(buf)->cursor++] = c, (buf)->cursor %= RG_LOGBUF_SIZE;
 #define logbuf_puts(buf, str) for (const char *ptr = str; *ptr; ptr++) logbuf_putc(buf, *ptr);
@@ -369,7 +505,9 @@ static void platform_init(void)
         gpio_set_direction(RG_GPIO_SDSPI_CS, GPIO_MODE_OUTPUT);
         gpio_set_level(RG_GPIO_SDSPI_CS, 1);
     #endif
-    #ifdef RG_GPIO_LED
+    #if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+        led_rmt_set_color(0);
+    #elif defined(RG_GPIO_LED)
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
         gpio_set_level(RG_GPIO_LED, 0);
     #endif
@@ -1076,7 +1214,9 @@ bool rg_system_get_indicator_mask(rg_indicator_t indicator)
 bool rg_system_set_led_color(rg_color_t color)
 {
     ledColor = color;
-#if defined(RG_GPIO_LED)
+#if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+    return led_rmt_set_color(color);
+#elif defined(RG_GPIO_LED)
     int value = color > 0; // GPIO LED doesn't support colors, so any color = on
     #if defined(RG_GPIO_LED_INVERT)
     value = !value;
