@@ -7,6 +7,8 @@
 #include <string.h>
 #include <math.h>
 
+#include "rg_update.h"
+
 #ifdef ESP_PLATFORM
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -634,6 +636,9 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
         rg_gui_alert("System Panic!", message);
         rg_system_exit();
     }
+
+    rg_update_handle_pending(app.bootArgs);
+
     memset(&panicTrace, 0, sizeof(panicTrace));
     panicTraceCleared = true;
 

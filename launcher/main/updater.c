@@ -4,6 +4,7 @@
 #include <cJSON.h>
 
 #include "gui.h"
+#include "rg_update.h"
 
 #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
 typedef struct
@@ -148,8 +149,15 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
             snprintf(dest_path, RG_PATH_MAX, "%s/%s", RG_UPDATER_DOWNLOAD_LOCATION, release->assets[sel].name);
             if (download_file(release->assets[sel].url, dest_path))
             {
-                if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
+                if (rg_extension_match(dest_path, "img"))
+                {
+                    if (rg_gui_confirm(_("Download complete!"), _("Flash image OTA now?"), true))
+                        rg_update_start_image(dest_path);
+                }
+                else if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
+                {
                     rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, 0);
+                }
             }
         }
     #else
