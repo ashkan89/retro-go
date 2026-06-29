@@ -110,9 +110,57 @@ def clean_app(app):
     print("Done.\n")
 
 
+def read_sdkconfig(path):
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("CONFIG_") and "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key] = value
+                elif line.startswith("# CONFIG_") and line.endswith(" is not set"):
+                    values[line[2:-11]] = "n"
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def clean_stale_app_config(app, target_defaults):
+    if not target_defaults:
+        return
+
+    app_sdkconfig = os.path.join(app, "sdkconfig")
+    app_config = read_sdkconfig(app_sdkconfig)
+    if not app_config:
+        return
+
+    stale_keys = [
+        key for key, value in target_defaults.items()
+        if key in app_config and app_config[key] != value
+    ]
+    if not stale_keys:
+        return
+
+    print("Target sdkconfig changed for '%s' (%s), cleaning stale build files..." % (app, ", ".join(stale_keys[:5])))
+    try:
+        os.unlink(app_sdkconfig)
+    except FileNotFoundError:
+        pass
+    try:
+        os.unlink(os.path.join(app, "sdkconfig.old"))
+    except FileNotFoundError:
+        pass
+    try:
+        shutil.rmtree(os.path.join(app, "build"))
+    except FileNotFoundError:
+        pass
+
+
 def build_app(app, device_type, with_profiling=False, no_networking=False, is_release=False):
     # To do: clean up if any of the flags changed since last build
     print("Building app '%s'" % app)
+    clean_stale_app_config(app, TARGET_SDKCONFIG_DEFAULTS)
     args = [IDF_PY, "app"]
     args.append(f"-DRG_PROJECT_APP={app}")
     args.append(f"-DRG_PROJECT_VER={PROJECT_VER}")
@@ -193,7 +241,11 @@ if os.path.exists(f"components/retro-go/targets/{args.target}/env.py"):
             IDF_TARGET = os.getenv("IDF_TARGET")
 
 if os.path.exists(f"components/retro-go/targets/{args.target}/sdkconfig"):
-    os.putenv("SDKCONFIG_DEFAULTS", os.path.abspath(f"components/retro-go/targets/{args.target}/sdkconfig"))
+    target_sdkconfig = os.path.abspath(f"components/retro-go/targets/{args.target}/sdkconfig")
+    TARGET_SDKCONFIG_DEFAULTS = read_sdkconfig(target_sdkconfig)
+    os.putenv("SDKCONFIG_DEFAULTS", target_sdkconfig)
+else:
+    TARGET_SDKCONFIG_DEFAULTS = {}
 os.putenv("IDF_TARGET", IDF_TARGET)
 
 command = args.command

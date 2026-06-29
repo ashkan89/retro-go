@@ -236,6 +236,48 @@ static bool led_rmt_set_color(rg_color_t color)
 }
 #endif
 
+static int get_default_cpu_mhz(void)
+{
+#if defined(CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
+#elif defined(CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ;
+#elif defined(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+#else
+    return 240;
+#endif
+}
+
+static float get_audio_clock_correction(void)
+{
+    float correction = 1.f;
+
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S3
+    if (overclockMhz > 0)
+    {
+        bool use_independent_clock = false;
+
+    #if CONFIG_IDF_TARGET_ESP32
+        const rg_audio_sink_t *sink = rg_audio_get_sink();
+        // ESP32 external I2S uses APLL, which does not follow the CPU overclock.
+        use_independent_clock = sink && strcmp(sink->name, "Ext DAC") == 0;
+    #endif
+
+        if (!use_independent_clock)
+            correction = (float)get_default_cpu_mhz() / overclockMhz;
+    }
+#endif
+
+    return correction;
+}
+
+static void update_audio_sample_rate(void)
+{
+    int sampleRate = roundf(app.sampleRate * app.speed * get_audio_clock_correction());
+    rg_audio_set_sample_rate(RG_MAX(1, sampleRate));
+}
+
 #define logbuf_putc(buf, c) (buf)->console[(buf)->cursor++] = c, (buf)->cursor %= RG_LOGBUF_SIZE;
 #define logbuf_puts(buf, str) for (const char *ptr = str; *ptr; ptr++) logbuf_putc(buf, *ptr);
 
@@ -333,7 +375,7 @@ static void update_statistics(void)
 
     if (counters.ticks && previous.ticks)
     {
-        const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / 240.f : 1.f);
+        const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / (float)get_default_cpu_mhz() : 1.f);
         float totalTime = counters.updateTime - previous.updateTime;
         float totalTimeSecs = totalTime / usPerSecond;
         float busyTime = counters.busyTime - previous.busyTime;
@@ -533,7 +575,7 @@ rg_app_t *rg_system_reinit(int sampleRate, const rg_handlers_t *handlers, void *
     app.sampleRate = sampleRate;
     if (handlers)
         app.handlers = *handlers;
-    rg_audio_set_sample_rate(app.sampleRate);
+    update_audio_sample_rate();
 
     return &app;
 }
@@ -1254,9 +1296,7 @@ void rg_system_set_app_speed(float speed)
     app.frameskip = (newSpeed - 0.5f) * 3;
     app.frameTime = 1000000.f / (app.tickRate * newSpeed);
     app.speed = newSpeed;
-    // There's a bug in esp-idf v4.4.8 where many frequencies play at the wrong speed.
-    // Still trying to find how to work around that...
-    rg_audio_set_sample_rate(app.sampleRate * newSpeed);
+    update_audio_sample_rate();
     rg_system_event(RG_EVENT_SPEEDUP, NULL);
 }
 
@@ -1308,14 +1348,9 @@ void rg_system_set_overclock(int level)
     uint32_t cc = xthal_get_ccount(); // Obtain it *after* calling esp_rtc_get_time_us because it is slow
     rg_usleep(100000);
     int real_mhz = (double)(xthal_get_ccount() - cc) / (esp_rtc_get_time_us() - t);
-    // float factor = 240.f / real_mhz;
 
 #if CONFIG_IDF_TARGET_ESP32
-    // Most audio devices rely on either the APB or the CPU clocks, which we've just skewed. So we have to
-    // compensate. The external DAC uses the APLL which is an independant clock source, no need to correct.
-    if (strcmp(rg_audio_get_sink()->name, "Ext DAC") != 0)
-        rg_audio_set_sample_rate(app.sampleRate * (240.0 / real_mhz));
-    uart_set_baudrate(0, 115200.0 * (240.0 / real_mhz));
+    uart_set_baudrate(0, 115200.0 * ((float)get_default_cpu_mhz() / real_mhz));
     // esp_timer_impl_update_apb_freq(80.0 / 240.0 * real_mhz);
     // ets_update_cpu_frequency(real_mhz);
 #endif
@@ -1324,6 +1359,7 @@ void rg_system_set_overclock(int level)
 
     overclockLevel = level;
     overclockMhz = real_mhz;
+    update_audio_sample_rate();
 
     RG_LOGW("Overclock level %d applied: %dMhz", level, real_mhz);
 #else
@@ -1340,12 +1376,7 @@ int rg_system_get_cpu_speed(void)
 {
     if (overclockMhz)
         return overclockMhz;
-    #if CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ
-        return CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
-    #elif CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
-        return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    #endif
-    return 0;
+    return get_default_cpu_mhz();
 }
 
 char *rg_emu_get_path(rg_path_type_t pathType, const char *filename)

@@ -36,6 +36,7 @@ typedef enum
     NES_PALETTE_NTSC,
     NES_PALETTE_PVM,
     NES_PALETTE_SMOOTH,
+    NES_PALETTE_STANDARD,
     NES_PALETTE_COUNT,
 } nespal_t;
 
