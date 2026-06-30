@@ -102,12 +102,44 @@ static rg_color_t ledColor = -1;
 static rg_stats_t statistics;
 static rg_app_t app;
 static rg_task_t tasks[8];
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static esp_timer_handle_t hapticTimer;
+#endif
 
 static const char *SETTING_BOOT_NAME = "BootName";
 static const char *SETTING_BOOT_ARGS = "BootArgs";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
+
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static int get_haptic_level(bool on)
+{
+    int level = on ? 1 : 0;
+#if defined(RG_GPIO_VIBRATOR_INVERT)
+    level = !level;
+#endif
+    return level;
+}
+
+static void haptic_timer_cb(void *arg)
+{
+    (void)arg;
+    gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+}
+
+static bool haptic_timer_init(void)
+{
+    if (hapticTimer || RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return hapticTimer != NULL;
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = haptic_timer_cb,
+        .name = "haptic",
+    };
+    return esp_timer_create(&timer_args, &hapticTimer) == ESP_OK;
+}
+#endif
 
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
 #ifndef RG_GPIO_LED_RMT_CHANNEL
@@ -552,6 +584,13 @@ static void platform_init(void)
     #elif defined(RG_GPIO_LED)
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
         gpio_set_level(RG_GPIO_LED, 0);
+    #endif
+    #if defined(RG_GPIO_VIBRATOR)
+        if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        {
+            gpio_set_direction(RG_GPIO_VIBRATOR, GPIO_MODE_OUTPUT);
+            gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+        }
     #endif
 #elif defined(RG_TARGET_SDL2)
     freopen("stdout.txt", "w", stdout);
@@ -1038,6 +1077,7 @@ void rg_system_event(int event, void *arg)
 static void shutdown_cleanup(void)
 {
     exitCalled = true;
+    rg_system_vibrate(0);                       // Make sure haptics are off before teardown
     rg_display_clear(C_BLACK);                // Let the user know that something is happening
     rg_gui_draw_hourglass();                  // ...
     rg_system_event(RG_EVENT_SHUTDOWN, NULL); // Allow apps to save their state if they want
@@ -1272,6 +1312,38 @@ bool rg_system_set_led_color(rg_color_t color)
 rg_color_t rg_system_get_led_color(void)
 {
     return ledColor;
+}
+
+bool rg_system_set_haptic(bool on)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        return gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(on)) == ESP_OK;
+#endif
+    return true;
+}
+
+void rg_system_vibrate(int duration_ms)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return;
+    if (duration_ms <= 0)
+    {
+        if (hapticTimer)
+            esp_timer_stop(hapticTimer);
+        rg_system_set_haptic(false);
+        return;
+    }
+    if (!haptic_timer_init())
+        return;
+
+    esp_timer_stop(hapticTimer);
+    rg_system_set_haptic(true);
+    esp_timer_start_once(hapticTimer, (uint64_t)duration_ms * 1000);
+#else
+    (void)duration_ms;
+#endif
 }
 
 void rg_system_set_log_level(rg_log_level_t level)

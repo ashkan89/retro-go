@@ -53,13 +53,12 @@
     {RG_KEY_B,      .num = GPIO_NUM_47, .pullup = 1, .level = 0},\
     {RG_KEY_SELECT, .num = GPIO_NUM_16, .pullup = 1, .level = 0},\
     {RG_KEY_START,  .num = GPIO_NUM_15, .pullup = 1, .level = 0},\
+    {RG_KEY_MENU,   .num = GPIO_NUM_2,  .pullup = 1, .level = 0},\
+    {RG_KEY_OPTION, .num = GPIO_NUM_7,  .pullup = 1, .level = 0},\
     {RG_KEY_UP,     .num = GPIO_NUM_17, .pullup = 1, .level = 0},\
     {RG_KEY_DOWN,   .num = GPIO_NUM_3,  .pullup = 1, .level = 0},\
     {RG_KEY_LEFT,   .num = GPIO_NUM_8,  .pullup = 1, .level = 0},\
     {RG_KEY_RIGHT,  .num = GPIO_NUM_18, .pullup = 1, .level = 0},\
-}
-#define RG_GAMEPAD_VIRT_MAP {\
-    {RG_KEY_MENU, .src = RG_KEY_START | RG_KEY_SELECT},\
 }
 
 #define RG_RECOVERY_BTN             RG_KEY_MENU
@@ -67,6 +66,9 @@
 // Status LED
 #define RG_GPIO_LED                 GPIO_NUM_48
 #define RG_GPIO_LED_WS2812          1
+
+// Haptic feedback motor driver
+#define RG_GPIO_VIBRATOR            GPIO_NUM_37
 
 // No battery ADC was provided for this board.
 #define RG_BATTERY_DRIVER           0

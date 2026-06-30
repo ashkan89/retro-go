@@ -139,6 +139,10 @@
 #define RG_GAMEPAD_ADC_FILTER_WINDOW (150)
 #endif
 
+#ifndef RG_HAPTIC_INPUT_FEEDBACK_MS
+#define RG_HAPTIC_INPUT_FEEDBACK_MS (12)
+#endif
+
 #ifndef RG_LOG_COLORS
 #define RG_LOG_COLORS (1)
 #endif
