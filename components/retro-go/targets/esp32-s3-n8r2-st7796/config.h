@@ -68,7 +68,7 @@
 #define RG_GPIO_LED_WS2812          1
 
 // Haptic feedback motor driver
-#define RG_GPIO_VIBRATOR            GPIO_NUM_37
+#define RG_GPIO_VIBRATOR            GPIO_NUM_38
 
 // No battery ADC was provided for this board.
 #define RG_BATTERY_DRIVER           0
