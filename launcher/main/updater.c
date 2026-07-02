@@ -40,6 +40,7 @@ static void format_size(char *out, size_t out_len, int bytes, bool speed)
 
 static void draw_download_progress(int received, int total, int speed)
 {
+    static rg_surface_t *surface = NULL;
     char received_str[16], total_str[16], speed_str[16], info[80];
     const int screen_w = rg_display_get_width();
     const int screen_h = rg_display_get_height();
@@ -74,12 +75,28 @@ static void draw_download_progress(int received, int total, int speed)
     else
         snprintf(info, sizeof(info), "%s  %s", received_str, speed_str);
 
+    if (!surface || surface->width != screen_w || surface->height != screen_h)
+    {
+        rg_surface_free(surface);
+        surface = rg_surface_create(screen_w, screen_h, RG_PIXEL_565_LE, MEM_SLOW);
+    }
+
+    if (surface)
+        rg_gui_set_surface(surface);
+
     rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, C_DIM_GRAY, C_NAVY);
     rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", C_WHITE, C_NAVY, RG_TEXT_ALIGN_CENTER);
     rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, C_WHITE, C_BLACK);
     rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
     rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
     rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+
+    if (surface)
+    {
+        uint16_t *data = surface->data;
+        rg_gui_set_surface(NULL);
+        rg_gui_copy_buffer(box_x, box_y, box_w, box_h, screen_w * 2, data + box_y * screen_w + box_x, false);
+    }
 }
 
 static bool download_file(const char *url, const char *filename, int expected_size)

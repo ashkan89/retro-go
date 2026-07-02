@@ -7,3 +7,10 @@ FW_FORMAT = "none"
 
 # Include a factory flasher partition so the launcher can install downloaded .img updates.
 DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx"
+
+# This target has 16 MB flash, so keep enough app-partition headroom for OTA images.
+PROJECT_APPS["launcher"][2] = 0x180000
+PROJECT_APPS["retro-core"][2] = 0x140000
+PROJECT_APPS["prboom-go"][2] = 0x100000
+PROJECT_APPS["gwenesis"][2] = 0x140000
+PROJECT_APPS["fmsx"][2] = 0x100000
