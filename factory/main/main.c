@@ -19,7 +19,7 @@ void app_main(void)
         rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, 0);
     }
 
-    rg_gui_draw_message("Firmware update\nVerifying image...");
+    rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Firmware update\nVerifying image...");
 
     if (rg_firmware_install_image(image_path, RG_FIRMWARE_STAGE_COMPLETE_UPDATE))
     {

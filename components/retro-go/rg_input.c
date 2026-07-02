@@ -94,6 +94,8 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
     if (!out)
         return true;
 
+    (void)raw_value;
+
     *out = (rg_battery_t){
         .level = RG_MAX(0.f, RG_MIN(100.f, RG_BATTERY_CALC_PERCENT(raw_value))),
         .volts = RG_BATTERY_CALC_VOLTAGE(raw_value),

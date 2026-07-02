@@ -693,7 +693,7 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
     // It doesn't matter for most dialogs but the file picker with 500+ files wastes a LOT of time here.
     for (size_t i = 0; i < options_count; i++)
     {
-        if (options[i].flags == RG_DIALOG_FLAG_HIDDEN)
+        if ((options[i].flags & RG_DIALOG_FLAG_MODE_MASK) == RG_DIALOG_FLAG_HIDDEN)
         {
             row_height[i] = 0;
             continue;
@@ -762,14 +762,17 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
         int yy = y + row_padding_y;
         int height = 8;
 
-        if (options[i].flags == RG_DIALOG_FLAG_NORMAL)
+        int option_type = options[i].flags & RG_DIALOG_FLAG_TYPE_MASK;
+        int option_mode = options[i].flags & RG_DIALOG_FLAG_MODE_MASK;
+
+        if (option_mode == RG_DIALOG_FLAG_NORMAL)
             color = gui.style.item_standard;
-        else if (options[i].flags == RG_DIALOG_FLAG_MESSAGE)
+        else if (option_type == (RG_DIALOG_FLAG_MESSAGE & RG_DIALOG_FLAG_TYPE_MASK))
             color = gui.style.item_message;
         else
             color = gui.style.item_disabled;
 
-        bool highlight = (options[i].flags & RG_DIALOG_FLAG_MODE_MASK) != RG_DIALOG_FLAG_SKIP && i == sel;
+        bool highlight = option_mode != RG_DIALOG_FLAG_SKIP && i == sel;
         fg = highlight ? gui.style.box_background : color;
         bg = highlight ? color : gui.style.box_background;
 
@@ -778,10 +781,10 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
 
         list_end_i = i;
 
-        if (options[i].flags == RG_DIALOG_FLAG_HIDDEN)
+        if (option_mode == RG_DIALOG_FLAG_HIDDEN)
             continue;
 
-        if (false && options[i].flags == RG_DIALOG_FLAG_SEPARATOR)
+        if (false && option_type == (RG_DIALOG_FLAG_SEPARATOR & RG_DIALOG_FLAG_TYPE_MASK))
         {
             // FIXME: Draw a nice dim line...
         }
@@ -797,7 +800,10 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
         }
         else
         {
-            height = rg_gui_draw_text(xx, yy, inner_width, options[i].label, fg, bg, RG_TEXT_MULTILINE).height;
+            uint32_t flags = RG_TEXT_MULTILINE;
+            if (options[i].flags & RG_DIALOG_FLAG_ALIGN_CENTER)
+                flags |= RG_TEXT_ALIGN_CENTER;
+            height = rg_gui_draw_text(xx, yy, inner_width, options[i].label, fg, bg, flags).height;
         }
 
         rg_gui_draw_rect(x, yy, row_padding_x, height, 0, 0, bg);
@@ -842,21 +848,36 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
     return (rg_rect_t){box_x, box_y, box_width, box_height};
 }
 
-rg_rect_t rg_gui_draw_message(const char *format, ...) // const rg_rect_t *rect,
+static rg_rect_t draw_message_vargs(int flags, const char *format, va_list va)
 {
     RG_ASSERT_ARG(format);
 
     char buffer[512];
-    va_list va;
-    va_start(va, format);
     vsnprintf(buffer, sizeof(buffer), format, va);
-    va_end(va);
     const rg_gui_option_t options[] = {
-        {0, buffer, NULL, RG_DIALOG_FLAG_MESSAGE, NULL},
+        {0, buffer, NULL, RG_DIALOG_FLAG_MESSAGE | flags, NULL},
         RG_DIALOG_END,
     };
     // FIXME: Should rg_display_force_redraw() be called? Before? After? Both?
     return rg_gui_draw_dialog(NULL, options, 1, 0);
+}
+
+rg_rect_t rg_gui_draw_message_flags(int flags, const char *format, ...)
+{
+    va_list va;
+    va_start(va, format);
+    rg_rect_t rect = draw_message_vargs(flags, format, va);
+    va_end(va);
+    return rect;
+}
+
+rg_rect_t rg_gui_draw_message(const char *format, ...) // const rg_rect_t *rect,
+{
+    va_list va;
+    va_start(va, format);
+    rg_rect_t rect = draw_message_vargs(0, format, va);
+    va_end(va);
+    return rect;
 }
 
 intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, int selected_index)

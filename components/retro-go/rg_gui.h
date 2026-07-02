@@ -97,6 +97,8 @@ struct rg_gui_option_s
 #define RG_DIALOG_FLAG_MESSAGE   0x12
 #define RG_DIALOG_FLAG_SEPARATOR 0x22
 
+#define RG_DIALOG_FLAG_ALIGN_CENTER 0x100
+
 #define RG_DIALOG_SEPARATOR   {0, "----------", NULL, RG_DIALOG_FLAG_SKIP, NULL}
 #define RG_DIALOG_END         {0, NULL, NULL, 0, NULL}
 
@@ -119,6 +121,7 @@ void rg_gui_copy_buffer(int left, int top, int width, int height, int stride, co
 rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, // const rg_font_t *font,
                            rg_color_t color_fg, rg_color_t color_bg, uint32_t flags);
 rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, size_t options_count, int sel);
+rg_rect_t rg_gui_draw_message_flags(int flags, const char *format, ...);
 rg_rect_t rg_gui_draw_message(const char *format, ...);
 void rg_gui_draw_rect(int x_pos, int y_pos, int width, int height, int border_size,
                       rg_color_t border_color, rg_color_t fill_color);

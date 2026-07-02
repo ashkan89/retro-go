@@ -113,7 +113,8 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
 
         crc = rg_crc32(crc, buffer, chunk);
         remaining -= chunk;
-        rg_gui_draw_message("Verifying image...\n%d%%", (int)((image_size - remaining) * 100 / image_size));
+        rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Verifying image...\n%d%%",
+                                  (int)((image_size - remaining) * 100 / image_size));
     }
 
     success = crc == expected_crc;
@@ -224,11 +225,12 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         return true;
     }
 
-    rg_gui_draw_message("Flashing %s...\nPlease wait", label);
+    rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Flashing %s...\nPlease wait", label);
 
     for (uint32_t erased = 0; erased < size; erased += FLASH_SECTOR_SIZE)
     {
-        rg_gui_draw_message("Erasing %s...\n%d%%", label, (int)(erased * 100 / size));
+        rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Erasing %s...\n%d%%", label,
+                                  (int)(erased * 100 / size));
         err = esp_flash_erase_region(esp_flash_default_chip, flash_offset + erased, FLASH_SECTOR_SIZE);
         if (err != ESP_OK)
         {
@@ -263,11 +265,12 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         }
 
         written += chunk;
-        rg_gui_draw_message("Writing %s...\n%d%%", label, (int)(written * 100 / size));
+        rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Writing %s...\n%d%%", label,
+                                  (int)(written * 100 / size));
         rg_task_delay(1);
     }
 
-    rg_gui_draw_message("Flashed %s", label);
+    rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "Flashed %s", label);
     free(buffer);
     return true;
 }
