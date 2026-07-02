@@ -99,6 +99,8 @@ static bool exitCalled = false;
 static int overclockLevel, overclockMhz;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+static bool hapticEnabled = true;
+static int hapticStrength = 100;
 static rg_stats_t statistics;
 static rg_app_t app;
 static rg_task_t tasks[8];
@@ -111,6 +113,14 @@ static const char *SETTING_BOOT_ARGS = "BootArgs";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
+static const char *SETTING_HAPTIC_ENABLE = "HapticEnable";
+static const char *SETTING_HAPTIC_STRENGTH = "HapticStrength";
+
+static void load_haptic_settings(void)
+{
+    hapticEnabled = rg_settings_get_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, true);
+    hapticStrength = RG_MIN(100, RG_MAX(10, (int)rg_settings_get_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, 100)));
+}
 
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
 static int get_haptic_level(bool on)
@@ -692,6 +702,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    load_haptic_settings();
     rg_display_init();
     rg_gui_init();
 
@@ -1323,6 +1334,30 @@ bool rg_system_set_haptic(bool on)
     return true;
 }
 
+bool rg_system_get_haptic_enabled(void)
+{
+    return hapticEnabled;
+}
+
+void rg_system_set_haptic_enabled(bool enabled)
+{
+    hapticEnabled = enabled;
+    rg_settings_set_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, enabled);
+    if (!enabled)
+        rg_system_vibrate(0);
+}
+
+int rg_system_get_haptic_strength(void)
+{
+    return hapticStrength;
+}
+
+void rg_system_set_haptic_strength(int strength)
+{
+    hapticStrength = RG_MIN(100, RG_MAX(10, strength));
+    rg_settings_set_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, hapticStrength);
+}
+
 void rg_system_vibrate(int duration_ms)
 {
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
@@ -1335,9 +1370,12 @@ void rg_system_vibrate(int duration_ms)
         rg_system_set_haptic(false);
         return;
     }
+    if (!hapticEnabled)
+        return;
     if (!haptic_timer_init())
         return;
 
+    duration_ms = RG_MAX(1, duration_ms * hapticStrength / 100);
     esp_timer_stop(hapticTimer);
     rg_system_set_haptic(true);
     esp_timer_start_once(hapticTimer, (uint64_t)duration_ms * 1000);

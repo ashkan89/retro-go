@@ -1623,6 +1623,70 @@ static rg_gui_event_t led_indicator_cb(rg_gui_option_t *option, rg_gui_event_t e
     return RG_DIALOG_VOID;
 }
 
+#ifdef RG_GPIO_VIBRATOR
+static rg_gui_event_t haptic_enable_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    bool enabled = rg_system_get_haptic_enabled();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+    {
+        enabled = !enabled;
+        rg_system_set_haptic_enabled(enabled);
+        if (enabled)
+            rg_system_vibrate(RG_HAPTIC_INPUT_FEEDBACK_MS);
+    }
+    strcpy(option->value, enabled ? _("On") : _("Off"));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t haptic_strength_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    int strength = rg_system_get_haptic_strength();
+
+    if (event == RG_DIALOG_PREV)
+        strength -= 10;
+    else if (event == RG_DIALOG_NEXT)
+        strength += 10;
+
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        rg_system_set_haptic_strength(strength);
+        rg_system_vibrate(RG_HAPTIC_INPUT_FEEDBACK_MS);
+    }
+
+    strength = rg_system_get_haptic_strength();
+    int bars = strength / 10;
+    char slider[11];
+    for (int i = 0; i < 10; ++i)
+        slider[i] = i < bars ? '#' : '-';
+    slider[10] = 0;
+
+    snprintf(option->value, 24, "[%s] %d%%", slider, strength);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t haptic_test_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER || event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+        rg_system_vibrate(RG_HAPTIC_INPUT_FEEDBACK_MS);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t haptic_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        const rg_gui_option_t options[] = {
+            {0, _("Enable"),   "-",  RG_DIALOG_FLAG_NORMAL, &haptic_enable_cb},
+            {0, _("Strength"), "-",  RG_DIALOG_FLAG_NORMAL, &haptic_strength_cb},
+            {0, _("Test"),     NULL, RG_DIALOG_FLAG_NORMAL, &haptic_test_cb},
+            RG_DIALOG_END,
+        };
+        rg_gui_dialog(option->label, options, 0);
+    }
+    return RG_DIALOG_VOID;
+}
+#endif
+
 static rg_gui_event_t show_clock_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
@@ -2020,6 +2084,9 @@ void rg_gui_options_menu(void)
         #endif
         {0, _("Volume"),        "-", RG_DIALOG_FLAG_NORMAL, &volume_update_cb},
         {0, _("Audio out"),     "-", RG_DIALOG_FLAG_NORMAL, &audio_update_cb},
+        #ifdef RG_GPIO_VIBRATOR
+        {0, _("Haptic feedback"), NULL, RG_DIALOG_FLAG_NORMAL, &haptic_cb},
+        #endif
         RG_DIALOG_END,
     };
     const rg_gui_option_t misc_options[] = {
