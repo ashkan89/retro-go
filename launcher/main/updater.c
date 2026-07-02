@@ -146,6 +146,11 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
         {
             char dest_path[RG_PATH_MAX];
             snprintf(dest_path, RG_PATH_MAX, "%s/%s", RG_UPDATER_DOWNLOAD_LOCATION, release->assets[sel].name);
+            if (!rg_storage_mkdir(RG_UPDATER_DOWNLOAD_LOCATION))
+            {
+                rg_gui_alert("Download failed!", "Could not create firmware folder!");
+                return RG_DIALOG_REDRAW;
+            }
             if (download_file(release->assets[sel].url, dest_path))
             {
                 if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))

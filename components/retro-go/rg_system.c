@@ -99,15 +99,57 @@ static bool exitCalled = false;
 static int overclockLevel, overclockMhz;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+static bool hapticEnabled = true;
+static int hapticStrength = 100;
 static rg_stats_t statistics;
 static rg_app_t app;
 static rg_task_t tasks[8];
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static esp_timer_handle_t hapticTimer;
+#endif
 
 static const char *SETTING_BOOT_NAME = "BootName";
 static const char *SETTING_BOOT_ARGS = "BootArgs";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
+static const char *SETTING_HAPTIC_ENABLE = "HapticEnable";
+static const char *SETTING_HAPTIC_STRENGTH = "HapticStrength";
+
+static void load_haptic_settings(void)
+{
+    hapticEnabled = rg_settings_get_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, true);
+    hapticStrength = RG_MIN(100, RG_MAX(10, (int)rg_settings_get_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, 100)));
+}
+
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static int get_haptic_level(bool on)
+{
+    int level = on ? 1 : 0;
+#if defined(RG_GPIO_VIBRATOR_INVERT)
+    level = !level;
+#endif
+    return level;
+}
+
+static void haptic_timer_cb(void *arg)
+{
+    (void)arg;
+    gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+}
+
+static bool haptic_timer_init(void)
+{
+    if (hapticTimer || RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return hapticTimer != NULL;
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = haptic_timer_cb,
+        .name = "haptic",
+    };
+    return esp_timer_create(&timer_args, &hapticTimer) == ESP_OK;
+}
+#endif
 
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
 #ifndef RG_GPIO_LED_RMT_CHANNEL
@@ -402,6 +444,7 @@ static void update_statistics(void)
 static void update_indicators(bool reset_animation)
 {
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
+    bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     static int animation_step = 0;
     rg_color_t newColor = 0; // C_GREEN
 
@@ -414,6 +457,10 @@ static void update_indicators(bool reset_animation)
         newColor = C_RED; // Make it flash rapidly!
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
         newColor = (animation_step & 1) ? C_NONE : C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
+        newColor = C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
+        newColor = C_GREEN;
     else if (visibleIndicators)
         newColor = C_BLUE;
 
@@ -553,6 +600,13 @@ static void platform_init(void)
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
         gpio_set_level(RG_GPIO_LED, 0);
     #endif
+    #if defined(RG_GPIO_VIBRATOR)
+        if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        {
+            gpio_set_direction(RG_GPIO_VIBRATOR, GPIO_MODE_OUTPUT);
+            gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+        }
+    #endif
 #elif defined(RG_TARGET_SDL2)
     freopen("stdout.txt", "w", stdout);
     freopen("stderr.txt", "w", stderr);
@@ -653,6 +707,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    load_haptic_settings();
     rg_display_init();
     rg_gui_init();
 
@@ -1038,6 +1093,7 @@ void rg_system_event(int event, void *arg)
 static void shutdown_cleanup(void)
 {
     exitCalled = true;
+    rg_system_vibrate(0);                       // Make sure haptics are off before teardown
     rg_display_clear(C_BLACK);                // Let the user know that something is happening
     rg_gui_draw_hourglass();                  // ...
     rg_system_event(RG_EVENT_SHUTDOWN, NULL); // Allow apps to save their state if they want
@@ -1272,6 +1328,65 @@ bool rg_system_set_led_color(rg_color_t color)
 rg_color_t rg_system_get_led_color(void)
 {
     return ledColor;
+}
+
+bool rg_system_set_haptic(bool on)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        return gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(on)) == ESP_OK;
+#endif
+    return true;
+}
+
+bool rg_system_get_haptic_enabled(void)
+{
+    return hapticEnabled;
+}
+
+void rg_system_set_haptic_enabled(bool enabled)
+{
+    hapticEnabled = enabled;
+    rg_settings_set_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, enabled);
+    if (!enabled)
+        rg_system_vibrate(0);
+}
+
+int rg_system_get_haptic_strength(void)
+{
+    return hapticStrength;
+}
+
+void rg_system_set_haptic_strength(int strength)
+{
+    hapticStrength = RG_MIN(100, RG_MAX(10, strength));
+    rg_settings_set_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, hapticStrength);
+}
+
+void rg_system_vibrate(int duration_ms)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return;
+    if (duration_ms <= 0)
+    {
+        if (hapticTimer)
+            esp_timer_stop(hapticTimer);
+        rg_system_set_haptic(false);
+        return;
+    }
+    if (!hapticEnabled)
+        return;
+    if (!haptic_timer_init())
+        return;
+
+    duration_ms = RG_MAX(1, duration_ms * hapticStrength / 100);
+    esp_timer_stop(hapticTimer);
+    rg_system_set_haptic(true);
+    esp_timer_start_once(hapticTimer, (uint64_t)duration_ms * 1000);
+#else
+    (void)duration_ms;
+#endif
 }
 
 void rg_system_set_log_level(rg_log_level_t level)
