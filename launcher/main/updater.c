@@ -21,6 +21,54 @@ typedef struct
     size_t assets_count;
 } release_t;
 
+static void format_size(char *out, size_t out_len, int bytes, bool speed)
+{
+    if (bytes < 0)
+    {
+        snprintf(out, out_len, "-");
+    }
+    else if (bytes < 1024 * 1024)
+    {
+        snprintf(out, out_len, "%d KB%s", (bytes + 1023) / 1024, speed ? "/s" : "");
+    }
+    else
+    {
+        snprintf(out, out_len, "%.2fMB%s", bytes / (1024.f * 1024.f), speed ? "/s" : "");
+    }
+}
+
+static void draw_download_progress(int received, int total, int speed)
+{
+    char received_str[16], total_str[16], speed_str[16], info[80];
+    const int screen_w = rg_display_get_width();
+    const int screen_h = rg_display_get_height();
+    const int box_w = RG_MIN(screen_w - 24, 300);
+    const int box_h = 74;
+    const int box_x = (screen_w - box_w) / 2;
+    const int box_y = (screen_h - box_h) / 2;
+    const int bar_x = box_x + 12;
+    const int bar_y = box_y + 42;
+    const int bar_w = box_w - 24;
+    const int bar_h = 18;
+    int fill_w = total > 0 ? (int)(((int64_t)received * (bar_w - 4)) / total) : 0;
+
+    fill_w = RG_MIN(RG_MAX(fill_w, 0), bar_w - 4);
+    format_size(received_str, sizeof(received_str), received, false);
+    format_size(total_str, sizeof(total_str), total, false);
+    format_size(speed_str, sizeof(speed_str), speed, true);
+
+    if (total > 0)
+        snprintf(info, sizeof(info), "%s / %s  %s", received_str, total_str, speed_str);
+    else
+        snprintf(info, sizeof(info), "%s  %s", received_str, speed_str);
+
+    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, C_DIM_GRAY, C_NAVY);
+    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", C_WHITE, C_NAVY, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, C_WHITE, C_BLACK);
+    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, 0, 0, C_GREEN);
+    rg_gui_draw_text(bar_x + 3, bar_y + 2, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+}
+
 static bool download_file(const char *url, const char *filename)
 {
     RG_ASSERT_ARG(url && filename);
@@ -31,6 +79,8 @@ static bool download_file(const char *url, const char *filename)
     int received = 0;
     int written = 0;
     int len;
+    int64_t start_time = 0;
+    int64_t last_draw = 0;
 
     RG_LOGI("Downloading: '%s' to '%s'", url, filename);
     rg_gui_draw_message("Connecting...");
@@ -56,17 +106,27 @@ static bool download_file(const char *url, const char *filename)
         return false;
     }
 
-    rg_gui_draw_message("Receiving file...");
     int content_length = req->content_length;
+    start_time = last_draw = rg_system_timer();
+    draw_download_progress(0, content_length, 0);
 
     while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
     {
         received += len;
         written += fwrite(buffer, 1, len, fp);
-        rg_gui_draw_message("Received %d / %d", received, content_length);
+        int64_t now = rg_system_timer();
+        if (now - last_draw > 200000)
+        {
+            int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
+            draw_download_progress(received, content_length, speed);
+            last_draw = now;
+        }
         if (received != written)
             break; // No point in continuing
     }
+    int64_t end_time = rg_system_timer();
+    int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
+    draw_download_progress(received, content_length, speed);
 
     rg_network_http_close(req);
     free(buffer);
@@ -156,7 +216,18 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                 if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
                 {
                     if (rg_system_have_app(RG_UPDATER_APPLICATION))
+                    {
+                        if (rg_extension_match(dest_path, "img") &&
+                            !rg_firmware_install_image(dest_path,
+                                RG_FIRMWARE_UPDATE_FACTORY |
+                                RG_FIRMWARE_UPDATE_BOOTLOADER |
+                                RG_FIRMWARE_REQUIRE_FACTORY |
+                                RG_FIRMWARE_REQUIRE_LAUNCHER))
+                        {
+                            return RG_DIALOG_REDRAW;
+                        }
                         rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, 0);
+                    }
                     else
                         rg_gui_alert("Update failed!", "Firmware updater app not found!");
                 }
