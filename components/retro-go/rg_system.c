@@ -444,6 +444,7 @@ static void update_statistics(void)
 static void update_indicators(bool reset_animation)
 {
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
+    bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     static int animation_step = 0;
     rg_color_t newColor = 0; // C_GREEN
 
@@ -456,6 +457,10 @@ static void update_indicators(bool reset_animation)
         newColor = C_RED; // Make it flash rapidly!
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
         newColor = (animation_step & 1) ? C_NONE : C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
+        newColor = C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
+        newColor = C_GREEN;
     else if (visibleIndicators)
         newColor = C_BLUE;
 
