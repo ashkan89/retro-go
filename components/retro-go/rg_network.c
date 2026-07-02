@@ -39,6 +39,7 @@
 static rg_network_state_t network_state = RG_NETWORK_DISABLED;
 static rg_wifi_config_t wifi_config = {0};
 static esp_netif_t *netif_sta, *netif_ap, *netif;
+static bool network_stopping = false;
 
 static void network_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -53,17 +54,28 @@ static void network_event_handler(void *arg, esp_event_base_t event_base, int32_
         {
             network_state = RG_NETWORK_CONNECTING;
             RG_LOGI("Connecting to '%s'...", wifi_config.ssid);
-            esp_wifi_connect();
+            if (!network_stopping)
+                esp_wifi_connect();
         }
         else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
         {
-            network_state = RG_NETWORK_CONNECTING;
-            RG_LOGW("Got disconnected from AP. Reconnecting...");
             rg_system_event(RG_EVENT_NETWORK_DISCONNECTED, NULL);
-            esp_wifi_connect();
+            if (network_stopping)
+            {
+                network_state = RG_NETWORK_DISCONNECTED;
+                RG_LOGI("Disconnected from AP.");
+            }
+            else
+            {
+                network_state = RG_NETWORK_CONNECTING;
+                RG_LOGW("Got disconnected from AP. Reconnecting...");
+                esp_wifi_connect();
+            }
         }
         else if (event_id == WIFI_EVENT_AP_START)
         {
+            if (network_stopping)
+                return;
             network_state = RG_NETWORK_CONNECTED;
             rg_network_t info = rg_network_get_info();
             RG_LOGI("Access point started! IP: %s", info.ip_addr);
@@ -74,6 +86,8 @@ static void network_event_handler(void *arg, esp_event_base_t event_base, int32_
     {
         if (event_id == IP_EVENT_STA_GOT_IP)
         {
+            if (network_stopping)
+                return;
             network_state = RG_NETWORK_CONNECTED;
             rg_network_t info = rg_network_get_info();
             RG_LOGI("Connected! IP: %s, Chan: %d, RSSI: %d", info.ip_addr, info.channel, info.rssi);
@@ -188,6 +202,8 @@ bool rg_network_wifi_start(void)
         return false;
     }
 
+    network_stopping = false;
+
     if (wifi_config.ap_mode)
     {
         netif = netif_ap;
@@ -220,6 +236,7 @@ void rg_network_wifi_stop(void)
 {
 #ifdef RG_ENABLE_NETWORKING
     RG_ASSERT(network_state > RG_NETWORK_DISABLED, "Please call rg_network_init() first");
+    network_stopping = true;
     esp_wifi_stop();
     netif = NULL;
 #endif
@@ -252,10 +269,14 @@ rg_network_t rg_network_get_info(void)
 void rg_network_deinit(void)
 {
 #ifdef RG_ENABLE_NETWORKING
-    esp_wifi_stop();
-    esp_wifi_deinit();
+    if (network_state == RG_NETWORK_DISABLED)
+        return;
+    network_stopping = true;
+    esp_sntp_stop();
     esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, &network_event_handler);
     esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &network_event_handler);
+    esp_wifi_stop();
+    esp_wifi_deinit();
     netif = netif_ap = netif_sta = NULL;
     network_state = RG_NETWORK_DISABLED;
 #endif
@@ -267,6 +288,7 @@ bool rg_network_init(void)
     if (network_state > RG_NETWORK_DISABLED)
         return true;
     network_state = RG_NETWORK_DISCONNECTED;
+    network_stopping = false;
 
     // Init event loop first
     esp_err_t err;

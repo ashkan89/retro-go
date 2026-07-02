@@ -19,6 +19,7 @@
 #define PARTITION_TABLE_SIZE 0x1000
 #define PARTITION_TABLE_DATA_SIZE 0xC00
 #define PARTITION_ENTRY_SIZE 32
+#define MAX_IMAGE_PARTITIONS 32
 #define FLASH_SECTOR_SIZE 0x1000
 #define FLASH_CHUNK_SIZE 0x4000
 
@@ -65,14 +66,17 @@ static bool read_exact(FILE *fp, long offset, void *buffer, size_t length)
 
 static bool read_image_footer(FILE *fp, size_t file_size, image_footer_t *footer)
 {
-    uint8_t data[IMAGE_FOOTER_SIZE];
+    uint8_t *data = rg_alloc(IMAGE_FOOTER_SIZE, MEM_FAST);
+    bool success = false;
 
+    if (!data)
+        return false;
     if (file_size <= IMAGE_FOOTER_SIZE)
-        return false;
-    if (!read_exact(fp, file_size - IMAGE_FOOTER_SIZE, data, sizeof(data)))
-        return false;
+        goto cleanup;
+    if (!read_exact(fp, file_size - IMAGE_FOOTER_SIZE, data, IMAGE_FOOTER_SIZE))
+        goto cleanup;
     if (memcmp(data, IMAGE_MAGIC, IMAGE_MAGIC_SIZE) != 0)
-        return false;
+        goto cleanup;
 
     memcpy(footer->name, data + 8, 28);
     memcpy(footer->version, data + 36, 28);
@@ -82,7 +86,11 @@ static bool read_image_footer(FILE *fp, size_t file_size, image_footer_t *footer
     footer->target[28] = 0;
     footer->timestamp = read_le32(data + 92);
     footer->crc = read_le32(data + 96);
-    return true;
+    success = true;
+
+cleanup:
+    free(data);
+    return success;
 }
 
 static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
@@ -119,11 +127,16 @@ cleanup:
 
 static int read_partition_table(FILE *fp, image_partition_t *partitions, int max_partitions)
 {
-    uint8_t table[PARTITION_TABLE_SIZE];
+    uint8_t *table = rg_alloc(PARTITION_TABLE_SIZE, MEM_FAST);
     int count = 0;
 
-    if (!read_exact(fp, PARTITION_TABLE_OFFSET, table, sizeof(table)))
+    if (!table)
         return -1;
+    if (!read_exact(fp, PARTITION_TABLE_OFFSET, table, PARTITION_TABLE_SIZE))
+    {
+        free(table);
+        return -1;
+    }
 
     for (int offset = 0; offset < PARTITION_TABLE_DATA_SIZE; offset += PARTITION_ENTRY_SIZE)
     {
@@ -134,9 +147,15 @@ static int read_partition_table(FILE *fp, image_partition_t *partitions, int max
         if (entry[0] == 0xFF && entry[1] == 0xFF)
             break;
         if (read_le16(entry) != 0x50AA)
+        {
+            free(table);
             return -1;
+        }
         if (count >= max_partitions)
+        {
+            free(table);
             return -1;
+        }
 
         partitions[count].type = entry[2];
         partitions[count].subtype = entry[3];
@@ -147,6 +166,7 @@ static int read_partition_table(FILE *fp, image_partition_t *partitions, int max
         count++;
     }
 
+    free(table);
     return count;
 }
 
@@ -204,6 +224,8 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         return true;
     }
 
+    rg_gui_draw_message("Flashing %s...\nPlease wait", label);
+
     for (uint32_t erased = 0; erased < size; erased += FLASH_SECTOR_SIZE)
     {
         rg_gui_draw_message("Erasing %s...\n%d%%", label, (int)(erased * 100 / size));
@@ -245,6 +267,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         rg_task_delay(1);
     }
 
+    rg_gui_draw_message("Flashed %s", label);
     free(buffer);
     return true;
 }
@@ -264,7 +287,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     return false;
 #else
     image_footer_t footer = {0};
-    image_partition_t partitions[32];
+    image_partition_t *partitions = NULL;
     const esp_partition_t *running = esp_ota_get_running_partition();
     rg_stat_t stat = rg_storage_stat(path);
     FILE *fp;
@@ -299,7 +322,14 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
         goto cleanup;
     }
 
-    partition_count = read_partition_table(fp, partitions, RG_COUNT(partitions));
+    partitions = calloc(MAX_IMAGE_PARTITIONS, sizeof(*partitions));
+    if (!partitions)
+    {
+        rg_gui_alert("Update failed!", "Out of memory.");
+        goto cleanup;
+    }
+
+    partition_count = read_partition_table(fp, partitions, MAX_IMAGE_PARTITIONS);
     if (partition_count <= 0)
     {
         rg_gui_alert("Update failed!", "Invalid partition table.");
@@ -373,6 +403,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     success = true;
 
 cleanup:
+    free(partitions);
     fclose(fp);
     return success;
 #endif

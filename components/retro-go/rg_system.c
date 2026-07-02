@@ -545,12 +545,12 @@ static void system_monitor_task(void *arg)
         if (statistics.lastTick < rg_system_timer() - app.tickTimeout)
         {
             // App hasn't ticked in a while, listen for MENU presses to give feedback to the user
-            if (rg_input_wait_for_key(RG_KEY_MENU, true, 1000))
+            if (rg_input_wait_for_key(RG_KEY_MENU, true, 1000) && !exitCalled)
             {
                 const char *message = "App unresponsive... Hold MENU to quit!";
                 // Drawing at this point isn't safe. But the alternative is being frozen...
                 rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_CENTER, 0, message, C_RED, C_BLACK, RG_TEXT_BIGGER);
-                if (!rg_input_wait_for_key(RG_KEY_MENU, false, 2000))
+                if (!rg_input_wait_for_key(RG_KEY_MENU, false, 2000) && !exitCalled)
                     RG_PANIC("Application terminated!"); // We're not in a nice state, don't normal exit
             }
         }
@@ -890,6 +890,8 @@ bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg)
 {
     RG_ASSERT_ARG(task && msg);
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     return xQueueSend(task->queue, msg, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting > 0)
@@ -908,6 +910,8 @@ bool rg_task_peek(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     success = xQueuePeek(task->queue, out, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
@@ -926,6 +930,8 @@ bool rg_task_receive(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     success = xQueueReceive(task->queue, out, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
@@ -940,7 +946,11 @@ bool rg_task_receive(rg_task_msg_t *out)
 size_t rg_task_messages_waiting(rg_task_t *task)
 {
     if (!task) task = rg_task_current();
+    if (!task)
+        return 0;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return 0;
     return uxQueueMessagesWaiting(task->queue);
 #elif defined(RG_TARGET_SDL2)
     return task->msgWaiting;
@@ -1121,6 +1131,9 @@ static void shutdown_cleanup(void)
     rg_display_clear(C_BLACK);                // Let the user know that something is happening
     rg_gui_draw_hourglass();                  // ...
     rg_system_event(RG_EVENT_SHUTDOWN, NULL); // Allow apps to save their state if they want
+    rg_network_deinit();                      // Stop Wi-Fi before storage/display teardown
+    for (int i = 0; rg_task_find("rg_sysmon") && rg_task_find("rg_sysmon") != rg_task_current() && i < 300; i++)
+        rg_task_delay(10);                    // Let the monitor task exit before display/input teardown
     rg_audio_deinit();                        // Disable sound ASAP to avoid audio garbage
     // rg_system_save_time();                    // RTC might save to storage, do it before
     rg_storage_deinit();                      // Unmount storage
