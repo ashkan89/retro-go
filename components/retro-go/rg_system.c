@@ -361,10 +361,16 @@ static bool update_boot_config(const char *partition, const char *name, const ch
     // Check if the OTA settings are already correct, and if so do not call esp_ota_set_boot_partition
     // This is simply to avoid an unecessary flash write...
     const esp_partition_t *current = esp_ota_get_boot_partition();
-    if (partition && (!current || strncmp(current->label, partition, 16) != 0))
+    const esp_partition_t *target = partition ? esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition) : NULL;
+    if (partition && !target)
     {
-        esp_err_t err = esp_ota_set_boot_partition(esp_partition_find_first(
-                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition));
+        RG_LOGE("Could not find app partition '%s'!", partition);
+        return false;
+    }
+    if (target && (!current || current->address != target->address))
+    {
+        esp_err_t err = esp_ota_set_boot_partition(target);
         if (err != ESP_OK)
         {
             RG_LOGE("esp_ota_set_boot_partition returned 0x%02X!", err);
@@ -373,6 +379,24 @@ static bool update_boot_config(const char *partition, const char *name, const ch
     }
 #endif
     return true;
+}
+
+static const char *resolve_switch_partition(const char *partition)
+{
+#if defined(ESP_PLATFORM)
+    if (!partition)
+    {
+        const esp_partition_t *factory = esp_partition_find_first(
+                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+        if (!factory)
+        {
+            RG_LOGE("Could not find factory app partition!");
+            return NULL;
+        }
+        return factory->label;
+    }
+#endif
+    return partition;
 }
 
 static void update_memory_statistics(void)
@@ -1150,9 +1174,16 @@ void rg_system_exit(void)
 
 void rg_system_switch_app(const char *partition, const char *name, const char *args, uint32_t flags)
 {
-    RG_LOGI("Switching to app %s (%s)", partition ?: "-", name ?: "-");
+    const char *boot_partition = resolve_switch_partition(partition);
 
-    if (update_boot_config(partition, name, args, flags))
+    RG_LOGI("Switching to app %s (%s)", boot_partition ?: "-", name ?: "-");
+
+#if defined(ESP_PLATFORM)
+    if (!partition && !boot_partition)
+        RG_PANIC("Factory app partition not found!");
+#endif
+
+    if (update_boot_config(boot_partition, name, args, flags))
         rg_system_restart();
 
     RG_PANIC("Failed to switch app!");
@@ -1161,8 +1192,12 @@ void rg_system_switch_app(const char *partition, const char *name, const char *a
 bool rg_system_have_app(const char *app)
 {
 #if defined(ESP_PLATFORM)
+    if (!app)
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL) != NULL;
     return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, app) != NULL;
 #elif defined(RG_TARGET_SDL2)
+    if (!app)
+        return false;
     char exe[strlen(app) + 5];
     sprintf(exe, "%s.exe", app);
     return rg_storage_stat(app).is_file || rg_storage_stat(exe).is_file;

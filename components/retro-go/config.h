@@ -140,7 +140,7 @@
 #endif
 
 #ifndef RG_HAPTIC_INPUT_FEEDBACK_MS
-#define RG_HAPTIC_INPUT_FEEDBACK_MS (12)
+#define RG_HAPTIC_INPUT_FEEDBACK_MS (50)
 #endif
 
 #ifndef RG_LOG_COLORS
