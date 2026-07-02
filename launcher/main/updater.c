@@ -10,6 +10,7 @@ typedef struct
 {
     char name[64];
     char url[256];
+    int size;
 } asset_t;
 
 typedef struct
@@ -43,16 +44,27 @@ static void draw_download_progress(int received, int total, int speed)
     const int screen_w = rg_display_get_width();
     const int screen_h = rg_display_get_height();
     const int box_w = RG_MIN(screen_w - 24, 300);
-    const int box_h = 74;
+    const int box_h = 82;
     const int box_x = (screen_w - box_w) / 2;
     const int box_y = (screen_h - box_h) / 2;
     const int bar_x = box_x + 12;
     const int bar_y = box_y + 42;
     const int bar_w = box_w - 24;
-    const int bar_h = 18;
-    int fill_w = total > 0 ? (int)(((int64_t)received * (bar_w - 4)) / total) : 0;
+    const int bar_h = 26;
+    const int inner_w = bar_w - 4;
+    const int inner_h = bar_h - 4;
+    int fill_w;
 
-    fill_w = RG_MIN(RG_MAX(fill_w, 0), bar_w - 4);
+    if (total > 0)
+    {
+        fill_w = (int)(((int64_t)received * inner_w) / total);
+    }
+    else
+    {
+        int step = (received / (16 * 1024)) % (inner_w + 1);
+        fill_w = step;
+    }
+    fill_w = RG_MIN(RG_MAX(fill_w, 0), inner_w);
     format_size(received_str, sizeof(received_str), received, false);
     format_size(total_str, sizeof(total_str), total, false);
     format_size(speed_str, sizeof(speed_str), speed, true);
@@ -65,11 +77,12 @@ static void draw_download_progress(int received, int total, int speed)
     rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, C_DIM_GRAY, C_NAVY);
     rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", C_WHITE, C_NAVY, RG_TEXT_ALIGN_CENTER);
     rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, C_WHITE, C_BLACK);
-    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, 0, 0, C_GREEN);
-    rg_gui_draw_text(bar_x + 3, bar_y + 2, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
+    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
+    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
 }
 
-static bool download_file(const char *url, const char *filename)
+static bool download_file(const char *url, const char *filename, int expected_size)
 {
     RG_ASSERT_ARG(url && filename);
 
@@ -106,7 +119,7 @@ static bool download_file(const char *url, const char *filename)
         return false;
     }
 
-    int content_length = req->content_length;
+    int content_length = req->content_length > 0 ? req->content_length : expected_size;
     start_time = last_draw = rg_system_timer();
     draw_download_progress(0, content_length, 0);
 
@@ -211,22 +224,18 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                 rg_gui_alert("Download failed!", "Could not create firmware folder!");
                 return RG_DIALOG_REDRAW;
             }
-            if (download_file(release->assets[sel].url, dest_path))
+            if (download_file(release->assets[sel].url, dest_path, release->assets[sel].size))
             {
                 if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
                 {
                     if (rg_system_have_app(RG_UPDATER_APPLICATION))
                     {
                         if (rg_extension_match(dest_path, "img") &&
-                            !rg_firmware_install_image(dest_path,
-                                RG_FIRMWARE_UPDATE_FACTORY |
-                                RG_FIRMWARE_UPDATE_BOOTLOADER |
-                                RG_FIRMWARE_REQUIRE_FACTORY |
-                                RG_FIRMWARE_REQUIRE_LAUNCHER))
+                            !rg_firmware_install_image(dest_path, RG_FIRMWARE_STAGE_PREPARE_UPDATE))
                         {
                             return RG_DIALOG_REDRAW;
                         }
-                        rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, 0);
+                        rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
                     }
                     else
                         rg_gui_alert("Update failed!", "Firmware updater app not found!");
@@ -285,11 +294,13 @@ void updater_show_dialog(void)
             cJSON *asset_json = cJSON_GetArrayItem(assets_json, j);
             char *name = cJSON_GetStringValue(cJSON_GetObjectItem(asset_json, "name"));
             char *url = cJSON_GetStringValue(cJSON_GetObjectItem(asset_json, "browser_download_url"));
+            cJSON *size = cJSON_GetObjectItem(asset_json, "size");
             if (name && url && rg_extension_match(name, "fw img"))
             {
                 asset_t *asset = &release->assets[release->assets_count++];
                 snprintf(asset->name, sizeof(asset->name), "%s", name);
                 snprintf(asset->url, sizeof(asset->url), "%s", url);
+                asset->size = cJSON_IsNumber(size) ? size->valueint : -1;
             }
         }
         *opt++ = (rg_gui_option_t){(intptr_t)release, release->name, NULL, RG_DIALOG_FLAG_NORMAL, &view_release_cb};
