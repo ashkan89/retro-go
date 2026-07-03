@@ -12,16 +12,16 @@
 #include <esp_partition.h>
 #endif
 
-#define IMAGE_FOOTER_SIZE 256
-#define IMAGE_MAGIC "RG_IMG_0"
-#define IMAGE_MAGIC_SIZE 8
-#define PARTITION_TABLE_OFFSET 0x8000
-#define PARTITION_TABLE_SIZE 0x1000
+#define IMAGE_FOOTER_SIZE         256
+#define IMAGE_MAGIC               "RG_IMG_0"
+#define IMAGE_MAGIC_SIZE          8
+#define PARTITION_TABLE_OFFSET    0x8000
+#define PARTITION_TABLE_SIZE      0x1000
 #define PARTITION_TABLE_DATA_SIZE 0xC00
-#define PARTITION_ENTRY_SIZE 32
-#define MAX_IMAGE_PARTITIONS 32
-#define FLASH_SECTOR_SIZE 0x1000
-#define FLASH_CHUNK_SIZE 0x4000
+#define PARTITION_ENTRY_SIZE      32
+#define MAX_IMAGE_PARTITIONS      32
+#define FLASH_SECTOR_SIZE         0x1000
+#define FLASH_CHUNK_SIZE          0x4000
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #define BOOTLOADER_OFFSET 0x1000
@@ -73,7 +73,6 @@ static rg_rect_t draw_firmware_message(const char *format, ...)
     vsnprintf(buffer, sizeof(buffer), format, va);
     va_end(va);
 
-    rg_display_clear(C_BLACK);
     return rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "%s", buffer);
 }
 
@@ -117,6 +116,8 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
         return false;
     if (fseek(fp, 0, SEEK_SET) != 0)
         goto cleanup;
+
+    rg_display_clear(C_BLACK);
 
     while (remaining > 0)
     {
@@ -236,8 +237,8 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         free(buffer);
         return true;
     }
-
-    draw_firmware_message("Flashing %s...\nPlease wait", label);
+    rg_display_clear(C_BLACK);
+    // draw_firmware_message("Flashing %s...\nPlease wait", label);
 
     for (uint32_t erased = 0; erased < size; erased += FLASH_SECTOR_SIZE)
     {
@@ -257,6 +258,8 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         free(buffer);
         return false;
     }
+
+    rg_display_clear(C_BLACK);
 
     while (written < size)
     {
@@ -280,6 +283,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         rg_task_delay(1);
     }
 
+    rg_display_clear(C_BLACK);
     draw_firmware_message("Flashed %s", label);
     free(buffer);
     return true;
@@ -403,7 +407,8 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 
     if (flags & RG_FIRMWARE_UPDATE_PARTITION_TABLE)
     {
-        if (!write_flash_range(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE, "partition table"))
+        if (!write_flash_range(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE,
+                               "partition table"))
             goto cleanup;
     }
 
