@@ -11,6 +11,7 @@ typedef struct
 {
     char name[64];
     char url[256];
+    int size;
 } asset_t;
 
 typedef struct
@@ -22,7 +23,84 @@ typedef struct
     size_t assets_count;
 } release_t;
 
-static bool download_file(const char *url, const char *filename)
+static void format_size(char *out, size_t out_len, int bytes, bool speed)
+{
+    if (bytes < 0)
+    {
+        snprintf(out, out_len, "-");
+    }
+    else if (bytes < 1024 * 1024)
+    {
+        snprintf(out, out_len, "%d KB%s", (bytes + 1023) / 1024, speed ? "/s" : "");
+    }
+    else
+    {
+        snprintf(out, out_len, "%.2fMB%s", bytes / (1024.f * 1024.f), speed ? "/s" : "");
+    }
+}
+
+static void draw_download_progress(int received, int total, int speed)
+{
+    static rg_surface_t *surface = NULL;
+    char received_str[16], total_str[16], speed_str[16], info[80];
+    const int screen_w = rg_display_get_width();
+    const int screen_h = rg_display_get_height();
+    const int box_w = RG_MIN(screen_w - 24, 300);
+    const int box_h = 82;
+    const int box_x = (screen_w - box_w) / 2;
+    const int box_y = (screen_h - box_h) / 2;
+    const int bar_x = box_x + 12;
+    const int bar_y = box_y + 42;
+    const int bar_w = box_w - 24;
+    const int bar_h = 26;
+    const int inner_w = bar_w - 4;
+    const int inner_h = bar_h - 4;
+    int fill_w;
+
+    if (total > 0)
+    {
+        fill_w = (int)(((int64_t)received * inner_w) / total);
+    }
+    else
+    {
+        int step = (received / (16 * 1024)) % (inner_w + 1);
+        fill_w = step;
+    }
+    fill_w = RG_MIN(RG_MAX(fill_w, 0), inner_w);
+    format_size(received_str, sizeof(received_str), received, false);
+    format_size(total_str, sizeof(total_str), total, false);
+    format_size(speed_str, sizeof(speed_str), speed, true);
+
+    if (total > 0)
+        snprintf(info, sizeof(info), "%s / %s  %s", received_str, total_str, speed_str);
+    else
+        snprintf(info, sizeof(info), "%s  %s", received_str, speed_str);
+
+    if (!surface || surface->width != screen_w || surface->height != screen_h)
+    {
+        rg_surface_free(surface);
+        surface = rg_surface_create(screen_w, screen_h, RG_PIXEL_565_LE, MEM_SLOW);
+    }
+
+    if (surface)
+        rg_gui_set_surface(surface);
+
+    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, C_DIM_GRAY, C_NAVY);
+    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", C_WHITE, C_NAVY, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, C_WHITE, C_BLACK);
+    rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
+    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
+    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+
+    if (surface)
+    {
+        uint16_t *data = surface->data;
+        rg_gui_set_surface(NULL);
+        rg_gui_copy_buffer(box_x, box_y, box_w, box_h, screen_w * 2, data + box_y * screen_w + box_x, false);
+    }
+}
+
+static bool download_file(const char *url, const char *filename, int expected_size)
 {
     RG_ASSERT_ARG(url && filename);
 
@@ -32,6 +110,8 @@ static bool download_file(const char *url, const char *filename)
     int received = 0;
     int written = 0;
     int len;
+    int64_t start_time = 0;
+    int64_t last_draw = 0;
 
     RG_LOGI("Downloading: '%s' to '%s'", url, filename);
     rg_gui_draw_message("Connecting...");
@@ -57,17 +137,27 @@ static bool download_file(const char *url, const char *filename)
         return false;
     }
 
-    rg_gui_draw_message("Receiving file...");
-    int content_length = req->content_length;
+    int content_length = req->content_length > 0 ? req->content_length : expected_size;
+    start_time = last_draw = rg_system_timer();
+    draw_download_progress(0, content_length, 0);
 
     while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
     {
         received += len;
         written += fwrite(buffer, 1, len, fp);
-        rg_gui_draw_message("Received %d / %d", received, content_length);
+        int64_t now = rg_system_timer();
+        if (now - last_draw > 200000)
+        {
+            int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
+            draw_download_progress(received, content_length, speed);
+            last_draw = now;
+        }
         if (received != written)
             break; // No point in continuing
     }
+    int64_t end_time = rg_system_timer();
+    int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
+    draw_download_progress(received, content_length, speed);
 
     rg_network_http_close(req);
     free(buffer);
@@ -147,16 +237,26 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
         {
             char dest_path[RG_PATH_MAX];
             snprintf(dest_path, RG_PATH_MAX, "%s/%s", RG_UPDATER_DOWNLOAD_LOCATION, release->assets[sel].name);
-            if (download_file(release->assets[sel].url, dest_path))
+            if (!rg_storage_mkdir(RG_UPDATER_DOWNLOAD_LOCATION))
             {
-                if (rg_extension_match(dest_path, "img"))
+                rg_gui_alert("Download failed!", "Could not create firmware folder!");
+                return RG_DIALOG_REDRAW;
+            }
+            if (download_file(release->assets[sel].url, dest_path, release->assets[sel].size))
+            {
+                if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
                 {
-                    if (rg_gui_confirm(_("Download complete!"), _("Flash image OTA now?"), true))
-                        rg_update_start_image(dest_path);
-                }
-                else if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
-                {
-                    rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, 0);
+                    if (rg_system_have_app(RG_UPDATER_APPLICATION))
+                    {
+                        if (rg_extension_match(dest_path, "img") &&
+                            !rg_firmware_install_image(dest_path, RG_FIRMWARE_STAGE_PREPARE_UPDATE))
+                        {
+                            return RG_DIALOG_REDRAW;
+                        }
+                        rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
+                    }
+                    else
+                        rg_gui_alert("Update failed!", "Firmware updater app not found!");
                 }
             }
         }
@@ -212,11 +312,13 @@ void updater_show_dialog(void)
             cJSON *asset_json = cJSON_GetArrayItem(assets_json, j);
             char *name = cJSON_GetStringValue(cJSON_GetObjectItem(asset_json, "name"));
             char *url = cJSON_GetStringValue(cJSON_GetObjectItem(asset_json, "browser_download_url"));
+            cJSON *size = cJSON_GetObjectItem(asset_json, "size");
             if (name && url && rg_extension_match(name, "fw img"))
             {
                 asset_t *asset = &release->assets[release->assets_count++];
                 snprintf(asset->name, sizeof(asset->name), "%s", name);
                 snprintf(asset->url, sizeof(asset->url), "%s", url);
+                asset->size = cJSON_IsNumber(size) ? size->valueint : -1;
             }
         }
         *opt++ = (rg_gui_option_t){(intptr_t)release, release->name, NULL, RG_DIALOG_FLAG_NORMAL, &view_release_cb};

@@ -1,0 +1,5 @@
+set(COMPONENT_SRCDIRS ".")
+set(COMPONENT_ADD_INCLUDEDIRS ".")
+set(COMPONENT_REQUIRES "retro-go spi_flash app_update")
+register_component()
+rg_setup_compile_options(-O2)

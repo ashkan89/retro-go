@@ -101,15 +101,57 @@ static bool exitCalled = false;
 static int overclockLevel, overclockMhz;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+static bool hapticEnabled = true;
+static int hapticStrength = 100;
 static rg_stats_t statistics;
 static rg_app_t app;
 static rg_task_t tasks[8];
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static esp_timer_handle_t hapticTimer;
+#endif
 
 static const char *SETTING_BOOT_NAME = "BootName";
 static const char *SETTING_BOOT_ARGS = "BootArgs";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
+static const char *SETTING_HAPTIC_ENABLE = "HapticEnable";
+static const char *SETTING_HAPTIC_STRENGTH = "HapticStrength";
+
+static void load_haptic_settings(void)
+{
+    hapticEnabled = rg_settings_get_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, true);
+    hapticStrength = RG_MIN(100, RG_MAX(10, (int)rg_settings_get_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, 100)));
+}
+
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+static int get_haptic_level(bool on)
+{
+    int level = on ? 1 : 0;
+#if defined(RG_GPIO_VIBRATOR_INVERT)
+    level = !level;
+#endif
+    return level;
+}
+
+static void haptic_timer_cb(void *arg)
+{
+    (void)arg;
+    gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+}
+
+static bool haptic_timer_init(void)
+{
+    if (hapticTimer || RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return hapticTimer != NULL;
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = haptic_timer_cb,
+        .name = "haptic",
+    };
+    return esp_timer_create(&timer_args, &hapticTimer) == ESP_OK;
+}
+#endif
 
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
 #ifndef RG_GPIO_LED_RMT_CHANNEL
@@ -238,6 +280,48 @@ static bool led_rmt_set_color(rg_color_t color)
 }
 #endif
 
+static int get_default_cpu_mhz(void)
+{
+#if defined(CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
+#elif defined(CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP32S3_DEFAULT_CPU_FREQ_MHZ;
+#elif defined(CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ)
+    return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+#else
+    return 240;
+#endif
+}
+
+static float get_audio_clock_correction(void)
+{
+    float correction = 1.f;
+
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S3
+    if (overclockMhz > 0)
+    {
+        bool use_independent_clock = false;
+
+    #if CONFIG_IDF_TARGET_ESP32
+        const rg_audio_sink_t *sink = rg_audio_get_sink();
+        // ESP32 external I2S uses APLL, which does not follow the CPU overclock.
+        use_independent_clock = sink && strcmp(sink->name, "Ext DAC") == 0;
+    #endif
+
+        if (!use_independent_clock)
+            correction = (float)get_default_cpu_mhz() / overclockMhz;
+    }
+#endif
+
+    return correction;
+}
+
+static void update_audio_sample_rate(void)
+{
+    int sampleRate = roundf(app.sampleRate * app.speed * get_audio_clock_correction());
+    rg_audio_set_sample_rate(RG_MAX(1, sampleRate));
+}
+
 #define logbuf_putc(buf, c) (buf)->console[(buf)->cursor++] = c, (buf)->cursor %= RG_LOGBUF_SIZE;
 #define logbuf_puts(buf, str) for (const char *ptr = str; *ptr; ptr++) logbuf_putc(buf, *ptr);
 
@@ -279,10 +363,16 @@ static bool update_boot_config(const char *partition, const char *name, const ch
     // Check if the OTA settings are already correct, and if so do not call esp_ota_set_boot_partition
     // This is simply to avoid an unecessary flash write...
     const esp_partition_t *current = esp_ota_get_boot_partition();
-    if (partition && (!current || strncmp(current->label, partition, 16) != 0))
+    const esp_partition_t *target = partition ? esp_partition_find_first(
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition) : NULL;
+    if (partition && !target)
     {
-        esp_err_t err = esp_ota_set_boot_partition(esp_partition_find_first(
-                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, partition));
+        RG_LOGE("Could not find app partition '%s'!", partition);
+        return false;
+    }
+    if (target && (!current || current->address != target->address))
+    {
+        esp_err_t err = esp_ota_set_boot_partition(target);
         if (err != ESP_OK)
         {
             RG_LOGE("esp_ota_set_boot_partition returned 0x%02X!", err);
@@ -291,6 +381,24 @@ static bool update_boot_config(const char *partition, const char *name, const ch
     }
 #endif
     return true;
+}
+
+static const char *resolve_switch_partition(const char *partition)
+{
+#if defined(ESP_PLATFORM)
+    if (!partition)
+    {
+        const esp_partition_t *factory = esp_partition_find_first(
+                ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+        if (!factory)
+        {
+            RG_LOGE("Could not find factory app partition!");
+            return NULL;
+        }
+        return factory->label;
+    }
+#endif
+    return partition;
 }
 
 static void update_memory_statistics(void)
@@ -335,7 +443,7 @@ static void update_statistics(void)
 
     if (counters.ticks && previous.ticks)
     {
-        const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / 240.f : 1.f);
+        const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / (float)get_default_cpu_mhz() : 1.f);
         float totalTime = counters.updateTime - previous.updateTime;
         float totalTimeSecs = totalTime / usPerSecond;
         float busyTime = counters.busyTime - previous.busyTime;
@@ -362,6 +470,7 @@ static void update_statistics(void)
 static void update_indicators(bool reset_animation)
 {
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
+    bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     static int animation_step = 0;
     rg_color_t newColor = 0; // C_GREEN
 
@@ -374,6 +483,10 @@ static void update_indicators(bool reset_animation)
         newColor = C_RED; // Make it flash rapidly!
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
         newColor = (animation_step & 1) ? C_NONE : C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
+        newColor = C_RED;
+    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
+        newColor = C_GREEN;
     else if (visibleIndicators)
         newColor = C_BLUE;
 
@@ -434,12 +547,12 @@ static void system_monitor_task(void *arg)
         if (statistics.lastTick < rg_system_timer() - app.tickTimeout)
         {
             // App hasn't ticked in a while, listen for MENU presses to give feedback to the user
-            if (rg_input_wait_for_key(RG_KEY_MENU, true, 1000))
+            if (rg_input_wait_for_key(RG_KEY_MENU, true, 1000) && !exitCalled)
             {
                 const char *message = "App unresponsive... Hold MENU to quit!";
                 // Drawing at this point isn't safe. But the alternative is being frozen...
                 rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_CENTER, 0, message, C_RED, C_BLACK, RG_TEXT_BIGGER);
-                if (!rg_input_wait_for_key(RG_KEY_MENU, false, 2000))
+                if (!rg_input_wait_for_key(RG_KEY_MENU, false, 2000) && !exitCalled)
                     RG_PANIC("Application terminated!"); // We're not in a nice state, don't normal exit
             }
         }
@@ -513,6 +626,13 @@ static void platform_init(void)
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
         gpio_set_level(RG_GPIO_LED, 0);
     #endif
+    #if defined(RG_GPIO_VIBRATOR)
+        if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        {
+            gpio_set_direction(RG_GPIO_VIBRATOR, GPIO_MODE_OUTPUT);
+            gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(false));
+        }
+    #endif
 #elif defined(RG_TARGET_SDL2)
     freopen("stdout.txt", "w", stdout);
     freopen("stderr.txt", "w", stderr);
@@ -535,7 +655,7 @@ rg_app_t *rg_system_reinit(int sampleRate, const rg_handlers_t *handlers, void *
     app.sampleRate = sampleRate;
     if (handlers)
         app.handlers = *handlers;
-    rg_audio_set_sample_rate(app.sampleRate);
+    update_audio_sample_rate();
 
     return &app;
 }
@@ -613,6 +733,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    load_haptic_settings();
     rg_display_init();
     rg_gui_init();
 
@@ -774,6 +895,8 @@ bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg)
 {
     RG_ASSERT_ARG(task && msg);
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     return xQueueSend(task->queue, msg, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting > 0)
@@ -792,6 +915,8 @@ bool rg_task_peek(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     success = xQueuePeek(task->queue, out, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
@@ -810,6 +935,8 @@ bool rg_task_receive(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return false;
     success = xQueueReceive(task->queue, out, portMAX_DELAY) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
@@ -824,7 +951,11 @@ bool rg_task_receive(rg_task_msg_t *out)
 size_t rg_task_messages_waiting(rg_task_t *task)
 {
     if (!task) task = rg_task_current();
+    if (!task)
+        return 0;
 #if defined(ESP_PLATFORM)
+    if (!task->queue)
+        return 0;
     return uxQueueMessagesWaiting(task->queue);
 #elif defined(RG_TARGET_SDL2)
     return task->msgWaiting;
@@ -1001,9 +1132,13 @@ void rg_system_event(int event, void *arg)
 static void shutdown_cleanup(void)
 {
     exitCalled = true;
+    rg_system_vibrate(0);                       // Make sure haptics are off before teardown
     rg_display_clear(C_BLACK);                // Let the user know that something is happening
     rg_gui_draw_hourglass();                  // ...
     rg_system_event(RG_EVENT_SHUTDOWN, NULL); // Allow apps to save their state if they want
+    rg_network_deinit();                      // Stop Wi-Fi before storage/display teardown
+    for (int i = 0; rg_task_find("rg_sysmon") && rg_task_find("rg_sysmon") != rg_task_current() && i < 300; i++)
+        rg_task_delay(10);                    // Let the monitor task exit before display/input teardown
     rg_audio_deinit();                        // Disable sound ASAP to avoid audio garbage
     // rg_system_save_time();                    // RTC might save to storage, do it before
     rg_storage_deinit();                      // Unmount storage
@@ -1057,9 +1192,16 @@ void rg_system_exit(void)
 
 void rg_system_switch_app(const char *partition, const char *name, const char *args, uint32_t flags)
 {
-    RG_LOGI("Switching to app %s (%s)", partition ?: "-", name ?: "-");
+    const char *boot_partition = resolve_switch_partition(partition);
 
-    if (update_boot_config(partition, name, args, flags))
+    RG_LOGI("Switching to app %s (%s)", boot_partition ?: "-", name ?: "-");
+
+#if defined(ESP_PLATFORM)
+    if (!partition && !boot_partition)
+        RG_PANIC("Factory app partition not found!");
+#endif
+
+    if (update_boot_config(boot_partition, name, args, flags))
         rg_system_restart();
 
     RG_PANIC("Failed to switch app!");
@@ -1068,8 +1210,12 @@ void rg_system_switch_app(const char *partition, const char *name, const char *a
 bool rg_system_have_app(const char *app)
 {
 #if defined(ESP_PLATFORM)
+    if (!app)
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL) != NULL;
     return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, app) != NULL;
 #elif defined(RG_TARGET_SDL2)
+    if (!app)
+        return false;
     char exe[strlen(app) + 5];
     sprintf(exe, "%s.exe", app);
     return rg_storage_stat(app).is_file || rg_storage_stat(exe).is_file;
@@ -1237,6 +1383,65 @@ rg_color_t rg_system_get_led_color(void)
     return ledColor;
 }
 
+bool rg_system_set_haptic(bool on)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR != GPIO_NUM_NC)
+        return gpio_set_level(RG_GPIO_VIBRATOR, get_haptic_level(on)) == ESP_OK;
+#endif
+    return true;
+}
+
+bool rg_system_get_haptic_enabled(void)
+{
+    return hapticEnabled;
+}
+
+void rg_system_set_haptic_enabled(bool enabled)
+{
+    hapticEnabled = enabled;
+    rg_settings_set_boolean(NS_GLOBAL, SETTING_HAPTIC_ENABLE, enabled);
+    if (!enabled)
+        rg_system_vibrate(0);
+}
+
+int rg_system_get_haptic_strength(void)
+{
+    return hapticStrength;
+}
+
+void rg_system_set_haptic_strength(int strength)
+{
+    hapticStrength = RG_MIN(100, RG_MAX(10, strength));
+    rg_settings_set_number(NS_GLOBAL, SETTING_HAPTIC_STRENGTH, hapticStrength);
+}
+
+void rg_system_vibrate(int duration_ms)
+{
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
+    if (RG_GPIO_VIBRATOR == GPIO_NUM_NC)
+        return;
+    if (duration_ms <= 0)
+    {
+        if (hapticTimer)
+            esp_timer_stop(hapticTimer);
+        rg_system_set_haptic(false);
+        return;
+    }
+    if (!hapticEnabled)
+        return;
+    if (!haptic_timer_init())
+        return;
+
+    duration_ms = RG_MAX(1, duration_ms * hapticStrength / 100);
+    esp_timer_stop(hapticTimer);
+    rg_system_set_haptic(true);
+    esp_timer_start_once(hapticTimer, (uint64_t)duration_ms * 1000);
+#else
+    (void)duration_ms;
+#endif
+}
+
 void rg_system_set_log_level(rg_log_level_t level)
 {
     if (level >= 0 && level < RG_LOG_MAX)
@@ -1259,9 +1464,7 @@ void rg_system_set_app_speed(float speed)
     app.frameskip = (newSpeed - 0.5f) * 3;
     app.frameTime = 1000000.f / (app.tickRate * newSpeed);
     app.speed = newSpeed;
-    // There's a bug in esp-idf v4.4.8 where many frequencies play at the wrong speed.
-    // Still trying to find how to work around that...
-    rg_audio_set_sample_rate(app.sampleRate * newSpeed);
+    update_audio_sample_rate();
     rg_system_event(RG_EVENT_SPEEDUP, NULL);
 }
 
@@ -1313,14 +1516,9 @@ void rg_system_set_overclock(int level)
     uint32_t cc = xthal_get_ccount(); // Obtain it *after* calling esp_rtc_get_time_us because it is slow
     rg_usleep(100000);
     int real_mhz = (double)(xthal_get_ccount() - cc) / (esp_rtc_get_time_us() - t);
-    // float factor = 240.f / real_mhz;
 
 #if CONFIG_IDF_TARGET_ESP32
-    // Most audio devices rely on either the APB or the CPU clocks, which we've just skewed. So we have to
-    // compensate. The external DAC uses the APLL which is an independant clock source, no need to correct.
-    if (strcmp(rg_audio_get_sink()->name, "Ext DAC") != 0)
-        rg_audio_set_sample_rate(app.sampleRate * (240.0 / real_mhz));
-    uart_set_baudrate(0, 115200.0 * (240.0 / real_mhz));
+    uart_set_baudrate(0, 115200.0 * ((float)get_default_cpu_mhz() / real_mhz));
     // esp_timer_impl_update_apb_freq(80.0 / 240.0 * real_mhz);
     // ets_update_cpu_frequency(real_mhz);
 #endif
@@ -1329,6 +1527,7 @@ void rg_system_set_overclock(int level)
 
     overclockLevel = level;
     overclockMhz = real_mhz;
+    update_audio_sample_rate();
 
     RG_LOGW("Overclock level %d applied: %dMhz", level, real_mhz);
 #else
@@ -1345,12 +1544,7 @@ int rg_system_get_cpu_speed(void)
 {
     if (overclockMhz)
         return overclockMhz;
-    #if CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ
-        return CONFIG_ESP32_DEFAULT_CPU_FREQ_MHZ;
-    #elif CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
-        return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
-    #endif
-    return 0;
+    return get_default_cpu_mhz();
 }
 
 char *rg_emu_get_path(rg_path_type_t pathType, const char *filename)

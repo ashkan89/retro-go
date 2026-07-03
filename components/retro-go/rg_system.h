@@ -34,6 +34,7 @@ extern "C" {
 #include "rg_gui.h"
 #include "rg_i2c.h"
 #include "rg_utils.h"
+#include "rg_firmware.h"
 
 #ifdef RG_ENABLE_NETPLAY
 #include "rg_netplay.h"
@@ -102,6 +103,8 @@ typedef enum
     RG_INDICATOR_ACTIVITY_NETWORK,
     RG_INDICATOR_ACTIVITY_SYSTEM,
     RG_INDICATOR_ACTIVITY_USER,
+    RG_INDICATOR_ACTIVITY_DISK_READ,
+    RG_INDICATOR_ACTIVITY_DISK_WRITE,
     // 30-31: Critical indicators
     RG_INDICATOR_CRITICAL = 30,
 } rg_indicator_t;
@@ -225,6 +228,12 @@ void rg_system_set_indicator_mask(rg_indicator_t indicator, bool on);
 bool rg_system_get_indicator_mask(rg_indicator_t indicator);
 bool rg_system_set_led_color(rg_color_t color);
 rg_color_t rg_system_get_led_color(void);
+bool rg_system_set_haptic(bool on);
+bool rg_system_get_haptic_enabled(void);
+void rg_system_set_haptic_enabled(bool enabled);
+int rg_system_get_haptic_strength(void);
+void rg_system_set_haptic_strength(int strength);
+void rg_system_vibrate(int duration_ms);
 void rg_system_set_tick_rate(int tickRate);
 int rg_system_get_tick_rate(void);
 void rg_system_set_log_level(rg_log_level_t level);

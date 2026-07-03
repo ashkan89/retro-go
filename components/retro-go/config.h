@@ -18,6 +18,8 @@
 #include "targets/esp32-s3-devkit/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N8R2_ST7796)
 #include "targets/esp32-s3-n8r2-st7796/config.h"
+#elif defined(RG_TARGET_ESP32_S3_N16R8_ST7796)
+#include "targets/esp32-s3-n16r8-st7796/config.h"
 #elif defined(RG_TARGET_FRI3D_2024)
 #include "targets/fri3d-2024/config.h"
 #elif defined(RG_TARGET_BYTEBOI_REV1)
@@ -135,6 +137,10 @@
 // Wait for ADC value to be stable before registering it (values of 50 - 250 are typically good)
 #ifndef RG_GAMEPAD_ADC_FILTER_WINDOW
 #define RG_GAMEPAD_ADC_FILTER_WINDOW (150)
+#endif
+
+#ifndef RG_HAPTIC_INPUT_FEEDBACK_MS
+#define RG_HAPTIC_INPUT_FEEDBACK_MS (50)
 #endif
 
 #ifndef RG_LOG_COLORS

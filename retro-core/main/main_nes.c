@@ -143,6 +143,7 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
     if (pal == NES_PALETTE_NTSC)        strcpy(option->value, _("NTSC"));
     if (pal == NES_PALETTE_PVM)         strcpy(option->value, _("PVM"));
     if (pal == NES_PALETTE_SMOOTH)      strcpy(option->value, _("Smooth"));
+    if (pal == NES_PALETTE_STANDARD)    strcpy(option->value, _("Standard"));
 
     return RG_DIALOG_VOID;
 }

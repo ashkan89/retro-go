@@ -32,6 +32,11 @@
 #include <unistd.h>
 #endif
 
+#define SDMMC_CMD_READ_SINGLE_BLOCK     17
+#define SDMMC_CMD_READ_MULTIPLE_BLOCK   18
+#define SDMMC_CMD_WRITE_SINGLE_BLOCK    24
+#define SDMMC_CMD_WRITE_MULTIPLE_BLOCK  25
+
 static bool disk_mounted = false;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static sdmmc_card_t *card_handle = NULL;
@@ -50,7 +55,13 @@ static wl_handle_t wl_handle = WL_INVALID_HANDLE;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
 {
-    rg_system_set_indicator(RG_INDICATOR_ACTIVITY_DISK, 1);
+    rg_indicator_t indicator = RG_INDICATOR_ACTIVITY_DISK;
+    if (cmdinfo->opcode == SDMMC_CMD_READ_SINGLE_BLOCK || cmdinfo->opcode == SDMMC_CMD_READ_MULTIPLE_BLOCK)
+        indicator = RG_INDICATOR_ACTIVITY_DISK_READ;
+    else if (cmdinfo->opcode == SDMMC_CMD_WRITE_SINGLE_BLOCK || cmdinfo->opcode == SDMMC_CMD_WRITE_MULTIPLE_BLOCK)
+        indicator = RG_INDICATOR_ACTIVITY_DISK_WRITE;
+
+    rg_system_set_indicator(indicator, 1);
 
     esp_err_t ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
     if (ret == ESP_ERR_NO_MEM)
@@ -58,7 +69,7 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
         // free some memory and try again?
     }
 
-    rg_system_set_indicator(RG_INDICATOR_ACTIVITY_DISK, 0);
+    rg_system_set_indicator(indicator, 0);
     return ret;
 }
 #endif

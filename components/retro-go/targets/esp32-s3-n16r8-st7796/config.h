@@ -1,5 +1,5 @@
 // Target definition
-#define RG_TARGET_NAME             "ESP32-S3-N8R2-ST7796"
+#define RG_TARGET_NAME             "ESP32-S3-N16R8-ST7796"
 
 // Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.
 #define RG_TASK_AFFINITY_MAIN      0
@@ -59,6 +59,10 @@
     {RG_KEY_DOWN,   .num = GPIO_NUM_3,  .pullup = 1, .level = 0},\
     {RG_KEY_LEFT,   .num = GPIO_NUM_8,  .pullup = 1, .level = 0},\
     {RG_KEY_RIGHT,  .num = GPIO_NUM_18, .pullup = 1, .level = 0},\
+}
+
+#define RG_GAMEPAD_VIRT_MAP {\
+    {RG_KEY_MENU, .src = RG_KEY_START | RG_KEY_SELECT},\
 }
 
 #define RG_RECOVERY_BTN             RG_KEY_MENU

@@ -94,6 +94,8 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
     if (!out)
         return true;
 
+    (void)raw_value;
+
     *out = (rg_battery_t){
         .level = RG_MAX(0.f, RG_MIN(100.f, RG_BATTERY_CALC_PERCENT(raw_value))),
         .volts = RG_BATTERY_CALC_VOLTAGE(raw_value),
@@ -216,8 +218,10 @@ static void input_task(void *arg)
 {
     uint8_t debounce[RG_KEY_COUNT];
     uint32_t local_gamepad_state = 0;
+    uint32_t old_gamepad_state = 0;
     uint32_t state;
     int64_t next_battery_update = 0;
+    bool feedback_ready = false;
 
     // Start the task with debounce history full to allow a button held during boot to be detected
     memset(debounce, 0xFF, sizeof(debounce));
@@ -242,6 +246,14 @@ static void input_task(void *arg)
                 }
             }
             gamepad_state = local_gamepad_state;
+
+#if RG_HAPTIC_INPUT_FEEDBACK_MS > 0
+            uint32_t pressed = local_gamepad_state & ~old_gamepad_state;
+            if (feedback_ready && pressed)
+                rg_system_vibrate(RG_HAPTIC_INPUT_FEEDBACK_MS);
+            old_gamepad_state = local_gamepad_state;
+            feedback_ready = true;
+#endif
         }
 
         if (rg_system_timer() >= next_battery_update)
