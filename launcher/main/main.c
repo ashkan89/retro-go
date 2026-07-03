@@ -19,6 +19,8 @@
 static rg_app_t *app;
 
 #define SETTING_WEBUI "HTTPFileServer"
+#define SETTING_SCREEN_DIM "ScreenDimTimeout"
+#define SETTING_SCREEN_OFF "ScreenOffTimeout"
 
 static rg_gui_event_t toggle_tab_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
@@ -186,6 +188,68 @@ static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t 
         #endif
         crc_cache_prebuild();
     }
+    return RG_DIALOG_VOID;
+}
+
+static const int screen_dim_timeouts[] = {0, 10, 20, 30, 60, 120, 300, 600};
+static const int screen_off_timeouts[] = {0, 10, 20, 30, 60, 120, 300, 600};
+
+static void format_timeout(char *out, size_t out_size, int seconds)
+{
+    if (seconds <= 0)
+        snprintf(out, out_size, "%s", _("Never"));
+    else if (seconds < 60)
+        snprintf(out, out_size, "%ds", seconds);
+    else
+        snprintf(out, out_size, "%dm", seconds / 60);
+}
+
+static int cycle_timeout(int current, const int *values, size_t count, rg_gui_event_t event)
+{
+    int index = 0;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (values[i] == current)
+        {
+            index = i;
+            break;
+        }
+    }
+
+    if (event == RG_DIALOG_PREV && --index < 0)
+        index = count - 1;
+    if (event == RG_DIALOG_NEXT && ++index >= count)
+        index = 0;
+
+    return values[index];
+}
+
+static rg_gui_event_t screen_dim_timeout_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    option->flags = RG_DIALOG_FLAG_NORMAL;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        gui.screen_dim_timeout = cycle_timeout(gui.screen_dim_timeout, screen_dim_timeouts,
+                                               RG_COUNT(screen_dim_timeouts), event);
+        rg_settings_set_number(NS_APP, SETTING_SCREEN_DIM, gui.screen_dim_timeout);
+    }
+
+    format_timeout(option->value, 32, gui.screen_dim_timeout);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t screen_off_timeout_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    option->flags = RG_DIALOG_FLAG_NORMAL;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        gui.screen_off_timeout = cycle_timeout(gui.screen_off_timeout, screen_off_timeouts,
+                                               RG_COUNT(screen_off_timeouts), event);
+        rg_settings_set_number(NS_APP, SETTING_SCREEN_OFF, gui.screen_off_timeout);
+    }
+
+    format_timeout(option->value, 32, gui.screen_off_timeout);
     return RG_DIALOG_VOID;
 }
 
@@ -419,6 +483,8 @@ static void options_handler(rg_gui_option_t *dest)
         {0, _("Preview"),      "-", RG_DIALOG_FLAG_NORMAL, &show_preview_cb},
         {0, _("Scroll mode"),  "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
         {0, _("Start screen"), "-", RG_DIALOG_FLAG_NORMAL, &start_screen_cb},
+        {0, _("Screen dim"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_dim_timeout_cb},
+        {0, _("Screen off"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_off_timeout_cb},
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
         #ifdef RG_ENABLE_NETWORKING
         {0, _("File server"),  "-", RG_DIALOG_FLAG_NORMAL, &webui_switch_cb},

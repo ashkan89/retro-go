@@ -2099,7 +2099,7 @@ static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t eve
     if (event == RG_DIALOG_ENTER)
     {
         const rg_app_t *app = rg_system_get_app();
-        rg_gui_option_t options[16] = {
+        rg_gui_option_t options[24] = {
             {0, _("None"), NULL, RG_DIALOG_FLAG_MESSAGE, 0},
             RG_DIALOG_END,
         };

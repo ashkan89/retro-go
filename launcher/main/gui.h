@@ -127,6 +127,8 @@ typedef struct {
     int start_screen;
     int show_preview;
     int scroll_mode;
+    int screen_dim_timeout;
+    int screen_off_timeout;
     int width;
     int height;
     theme_t themes[4];

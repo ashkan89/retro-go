@@ -121,6 +121,7 @@ display_filter_t rg_display_get_filter(void);
 void rg_display_set_rotation(display_rotation_t rotation);
 display_rotation_t rg_display_get_rotation(void);
 void rg_display_set_backlight(display_backlight_t percent);
+void rg_display_set_backlight_raw(float percent);
 display_backlight_t rg_display_get_backlight(void);
 void rg_display_set_border(const char *filename);
 char *rg_display_get_border(void);

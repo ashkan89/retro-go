@@ -117,6 +117,22 @@ static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
 static const char *SETTING_HAPTIC_ENABLE = "HapticEnable";
 static const char *SETTING_HAPTIC_STRENGTH = "HapticStrength";
+static const char *SETTING_SCREEN_DIM = "ScreenDimTimeout";
+static const char *SETTING_SCREEN_OFF = "ScreenOffTimeout";
+
+typedef enum
+{
+    SCREEN_TIMEOUT_STATE_AWAKE,
+    SCREEN_TIMEOUT_STATE_DIMMED,
+    SCREEN_TIMEOUT_STATE_OFF,
+} screen_timeout_state_t;
+
+static screen_timeout_state_t screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
+static int screen_saved_backlight = -1;
+static int64_t screen_last_activity = 0;
+static bool screen_timeout_wait_release = false;
+
+static void screen_timeout_tick(void);
 
 static void load_haptic_settings(void)
 {
@@ -975,6 +991,7 @@ void rg_task_delay(uint32_t ms)
     SDL_PumpEvents();
     SDL_Delay(ms);
 #endif
+    screen_timeout_tick();
 }
 
 void rg_task_yield(void)
@@ -1109,7 +1126,104 @@ void rg_system_tick(int busyTime)
     statistics.lastTick = rg_system_timer();
     statistics.busyTime += busyTime;
     statistics.ticks++;
+    screen_timeout_tick();
     // WDT_RELOAD(WDT_TIMEOUT);
+}
+
+static bool screen_timeout_enabled(void)
+{
+    return app.initialized && app.isLauncher;
+}
+
+static bool screen_timeout_is_active(void)
+{
+    return screen_timeout_state != SCREEN_TIMEOUT_STATE_AWAKE;
+}
+
+static void screen_timeout_store_backlight(void)
+{
+    if (screen_saved_backlight < 0)
+        screen_saved_backlight = rg_display_get_backlight();
+}
+
+static void screen_timeout_wake(void)
+{
+    if (!screen_timeout_is_active())
+        return;
+
+    rg_display_set_backlight_raw(screen_saved_backlight < 0 ? rg_display_get_backlight() : screen_saved_backlight);
+    screen_saved_backlight = -1;
+    screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
+    rg_display_force_redraw();
+}
+
+uint32_t rg_system_filter_screen_timeout_input(uint32_t joystick)
+{
+    if (!screen_timeout_enabled())
+        return joystick;
+
+    const int64_t now = rg_system_timer();
+
+    if (screen_timeout_wait_release)
+    {
+        if (joystick & RG_KEY_ANY)
+        {
+            screen_last_activity = now;
+            return 0;
+        }
+        screen_timeout_wait_release = false;
+    }
+
+    if (joystick & RG_KEY_ANY)
+    {
+        screen_last_activity = now;
+        if (screen_timeout_is_active())
+        {
+            screen_timeout_wake();
+            screen_timeout_wait_release = true;
+            return 0;
+        }
+    }
+
+    return joystick;
+}
+
+static void screen_timeout_tick(void)
+{
+    if (!screen_timeout_enabled())
+        return;
+
+    const int64_t now = rg_system_timer();
+
+    if (!screen_last_activity)
+        screen_last_activity = now;
+
+    rg_system_filter_screen_timeout_input(rg_input_read_gamepad_unfiltered());
+
+    const int dim_timeout = rg_settings_get_number(NS_APP, SETTING_SCREEN_DIM, 30);
+    const int off_timeout = rg_settings_get_number(NS_APP, SETTING_SCREEN_OFF, 10);
+
+    if (dim_timeout <= 0)
+    {
+        screen_timeout_wake();
+        return;
+    }
+
+    const int64_t idle_ms = (now - screen_last_activity) / 1000;
+
+    if (screen_timeout_state == SCREEN_TIMEOUT_STATE_AWAKE && idle_ms >= dim_timeout * 1000)
+    {
+        screen_timeout_store_backlight();
+        rg_display_set_backlight_raw(1);
+        screen_timeout_state = SCREEN_TIMEOUT_STATE_DIMMED;
+    }
+
+    if (screen_timeout_state == SCREEN_TIMEOUT_STATE_DIMMED && off_timeout > 0 &&
+        idle_ms >= (dim_timeout + off_timeout) * 1000)
+    {
+        rg_display_set_backlight_raw(0);
+        screen_timeout_state = SCREEN_TIMEOUT_STATE_OFF;
+    }
 }
 
 IRAM_ATTR int64_t rg_system_timer(void)

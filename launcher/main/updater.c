@@ -143,6 +143,7 @@ static bool download_file(const char *url, const char *filename, int expected_si
 
     while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
     {
+        rg_system_tick(0);
         received += len;
         written += fwrite(buffer, 1, len, fp);
         int64_t now = rg_system_timer();
@@ -199,7 +200,10 @@ static cJSON *fetch_json(const char *url)
         goto cleanup;
     }
 
-    if (rg_network_http_read(req, buffer, buffer_length) < 16)
+    int read_len = rg_network_http_read(req, buffer, buffer_length);
+    rg_system_tick(0);
+
+    if (read_len < 16)
     {
         RG_LOGW("Read from releases URL '%s' returned (almost) no bytes, aborting update check.", url);
         goto cleanup;
