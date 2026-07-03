@@ -880,6 +880,14 @@ rg_rect_t rg_gui_draw_message(const char *format, ...) // const rg_rect_t *rect,
     return rect;
 }
 
+static rg_rect_t draw_dialog_with_redraw(const char *title, const rg_gui_option_t *options, size_t options_count,
+                                         int sel)
+{
+    rg_display_force_redraw();
+    rg_gui_draw_status_bars();
+    return rg_gui_draw_dialog(title, options, options_count, sel);
+}
+
 intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, int selected_index)
 {
     rg_gui_option_t *options = (rg_gui_option_t *)options_const;
@@ -927,8 +935,7 @@ intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, 
     int sel = RG_MIN(RG_MAX(0, selected_index), options_count - 1);
     int sel_old = -1;
 
-    rg_gui_draw_status_bars();
-    rg_gui_draw_dialog(title, options, options_count, sel);
+    draw_dialog_with_redraw(title, options, options_count, sel);
     rg_input_wait_for_key(RG_KEY_ALL, false, 1000);
     rg_task_delay(80);
 
@@ -1015,17 +1022,12 @@ intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, 
                 if (options[i].update_cb)
                     options[i].update_cb(&options[i], RG_DIALOG_UPDATE);
             }
-            if (event == RG_DIALOG_REDRAW)
-            {
-                rg_display_force_redraw();
-                rg_gui_draw_status_bars();
-            }
             redraw = true;
         }
 
         if (redraw)
         {
-            rg_gui_draw_dialog(title, options, options_count, sel);
+            draw_dialog_with_redraw(title, options, options_count, sel);
             redraw = false;
         }
 
