@@ -389,12 +389,17 @@ bool rg_input_key_is_present(rg_key_t mask)
     return (gamepad_mapped & mask) == mask;
 }
 
-uint32_t rg_input_read_gamepad(void)
+uint32_t rg_input_read_gamepad_unfiltered(void)
 {
 #ifdef RG_TARGET_SDL2
     SDL_PumpEvents();
 #endif
     return gamepad_state;
+}
+
+uint32_t rg_input_read_gamepad(void)
+{
+    return rg_system_filter_screen_timeout_input(rg_input_read_gamepad_unfiltered());
 }
 
 bool rg_input_key_is_pressed(rg_key_t mask)
