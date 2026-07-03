@@ -19,6 +19,8 @@ retro_gui_t gui;
 #define SETTING_COLOR_THEME     "ColorTheme"
 #define SETTING_SHOW_PREVIEW    "ShowPreview"
 #define SETTING_SCROLL_MODE     "ScrollMode"
+#define SETTING_SCREEN_DIM      "ScreenDimTimeout"
+#define SETTING_SCREEN_OFF      "ScreenOffTimeout"
 #define SETTING_HIDE_TAB(name)  strcat((char[99]){"HideTab."}, (name))
 
 static int max_visible_lines(const tab_t *tab, int *_line_height)
@@ -38,6 +40,8 @@ void gui_init(bool cold_boot)
         .start_screen = rg_settings_get_number(NS_APP, SETTING_START_SCREEN, START_SCREEN_AUTO),
         .show_preview = rg_settings_get_number(NS_APP, SETTING_SHOW_PREVIEW, PREVIEW_MODE_SAVE_COVER),
         .scroll_mode  = rg_settings_get_number(NS_APP, SETTING_SCROLL_MODE, SCROLL_MODE_CENTER),
+        .screen_dim_timeout = rg_settings_get_number(NS_APP, SETTING_SCREEN_DIM, 30),
+        .screen_off_timeout = rg_settings_get_number(NS_APP, SETTING_SCREEN_OFF, 10),
         .width        = rg_display_get_width(),
         .height       = rg_display_get_height(),
     };
@@ -242,6 +246,8 @@ void gui_save_config(void)
     rg_settings_set_number(NS_APP, SETTING_START_SCREEN, gui.start_screen);
     rg_settings_set_number(NS_APP, SETTING_SHOW_PREVIEW, gui.show_preview);
     rg_settings_set_number(NS_APP, SETTING_SCROLL_MODE, gui.scroll_mode);
+    rg_settings_set_number(NS_APP, SETTING_SCREEN_DIM, gui.screen_dim_timeout);
+    rg_settings_set_number(NS_APP, SETTING_SCREEN_OFF, gui.screen_off_timeout);
     rg_settings_set_number(NS_APP, SETTING_COLOR_THEME, gui.color_theme);
     rg_settings_set_number(NS_APP, SETTING_STARTUP_MODE, gui.startup_mode);
     for (int i = 0; i < gui.tabs_count; i++)

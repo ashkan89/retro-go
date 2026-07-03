@@ -459,6 +459,11 @@ void rg_display_set_backlight(display_backlight_t percent)
     lcd_set_backlight(config.backlight);
 }
 
+void rg_display_set_backlight_raw(float percent)
+{
+    lcd_set_backlight(RG_MIN(RG_MAX(percent, 0), RG_DISPLAY_BACKLIGHT_MAX));
+}
+
 display_backlight_t rg_display_get_backlight(void)
 {
     return config.backlight;

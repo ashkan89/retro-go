@@ -20,6 +20,15 @@ static rg_app_t *app;
 
 #define SETTING_WEBUI "HTTPFileServer"
 
+typedef enum {
+    SCREEN_TIMEOUT_STATE_AWAKE,
+    SCREEN_TIMEOUT_STATE_DIMMED,
+    SCREEN_TIMEOUT_STATE_OFF,
+} screen_timeout_state_t;
+
+static screen_timeout_state_t screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
+static int screen_saved_backlight = -1;
+
 static rg_gui_event_t toggle_tab_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     tab_t *tab = gui.tabs[option->arg];
@@ -189,6 +198,111 @@ static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t 
     return RG_DIALOG_VOID;
 }
 
+static const int screen_dim_timeouts[] = {0, 10, 20, 30, 60, 120, 300, 600};
+static const int screen_off_timeouts[] = {0, 10, 20, 30, 60, 120, 300, 600};
+
+static void format_timeout(char *out, size_t out_size, int seconds)
+{
+    if (seconds <= 0)
+        snprintf(out, out_size, "%s", _("Never"));
+    else if (seconds < 60)
+        snprintf(out, out_size, "%ds", seconds);
+    else
+        snprintf(out, out_size, "%dm", seconds / 60);
+}
+
+static int cycle_timeout(int current, const int *values, size_t count, rg_gui_event_t event)
+{
+    int index = 0;
+
+    for (size_t i = 0; i < count; ++i)
+    {
+        if (values[i] == current)
+        {
+            index = i;
+            break;
+        }
+    }
+
+    if (event == RG_DIALOG_PREV && --index < 0)
+        index = count - 1;
+    if (event == RG_DIALOG_NEXT && ++index >= count)
+        index = 0;
+
+    return values[index];
+}
+
+static rg_gui_event_t screen_dim_timeout_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    option->flags = RG_DIALOG_FLAG_NORMAL;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+        gui.screen_dim_timeout = cycle_timeout(gui.screen_dim_timeout, screen_dim_timeouts,
+                                               RG_COUNT(screen_dim_timeouts), event);
+
+    format_timeout(option->value, 32, gui.screen_dim_timeout);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t screen_off_timeout_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    option->flags = RG_DIALOG_FLAG_NORMAL;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+        gui.screen_off_timeout = cycle_timeout(gui.screen_off_timeout, screen_off_timeouts,
+                                               RG_COUNT(screen_off_timeouts), event);
+
+    format_timeout(option->value, 32, gui.screen_off_timeout);
+    return RG_DIALOG_VOID;
+}
+
+static bool screen_timeout_is_active(void)
+{
+    return screen_timeout_state != SCREEN_TIMEOUT_STATE_AWAKE;
+}
+
+static bool screen_timeout_allows_redraw(void)
+{
+    return screen_timeout_state != SCREEN_TIMEOUT_STATE_OFF;
+}
+
+static void screen_timeout_store_backlight(void)
+{
+    if (screen_saved_backlight < 0)
+        screen_saved_backlight = rg_display_get_backlight();
+}
+
+static void screen_timeout_wake(void)
+{
+    if (!screen_timeout_is_active())
+        return;
+
+    rg_display_set_backlight_raw(screen_saved_backlight < 0 ? rg_display_get_backlight() : screen_saved_backlight);
+    screen_saved_backlight = -1;
+    screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
+    gui.idle_counter = 0;
+    gui_redraw();
+}
+
+static void screen_timeout_update(void)
+{
+    const uint32_t idle_ms = gui.idle_counter * 100;
+    const uint32_t dim_ms = RG_MAX(gui.screen_dim_timeout, 1) * 1000;
+    const uint32_t off_ms = gui.screen_off_timeout * 1000;
+
+    if (screen_timeout_state == SCREEN_TIMEOUT_STATE_AWAKE && idle_ms >= dim_ms)
+    {
+        screen_timeout_store_backlight();
+        rg_display_set_backlight_raw(1);
+        // rg_display_set_backlight_raw(RG_MAX(1, screen_saved_backlight / 4));
+        screen_timeout_state = SCREEN_TIMEOUT_STATE_DIMMED;
+    }
+
+    if (screen_timeout_state == SCREEN_TIMEOUT_STATE_DIMMED && off_ms > 0 && idle_ms >= dim_ms + off_ms)
+    {
+        rg_display_set_backlight_raw(0);
+        screen_timeout_state = SCREEN_TIMEOUT_STATE_OFF;
+    }
+}
+
 static void retro_loop(void)
 {
     tab_t *tab = NULL;
@@ -199,6 +313,7 @@ static void retro_loop(void)
     int change_tab = 0;
     int browse_last = -1;
     bool redraw_pending = true;
+    bool wait_input_release = false;
 
     gui_init(app->isColdBoot);
     applications_init();
@@ -244,6 +359,33 @@ static void retro_loop(void)
                 repeats++;
                 next_repeat = rg_system_timer() + 400000 / (repeats + 1);
             }
+        }
+
+        if (wait_input_release)
+        {
+            if (gui.joystick)
+            {
+                gui.joystick = 0;
+                joystick = 0;
+                prev_joystick = 0;
+                repeats = 0;
+            }
+            else
+            {
+                wait_input_release = false;
+            }
+        }
+
+        if (((gui.joystick | joystick) & RG_KEY_ANY) && screen_timeout_is_active())
+        {
+            screen_timeout_wake();
+            gui.joystick = 0;
+            joystick = 0;
+            prev_joystick = 0;
+            repeats = 0;
+            wait_input_release = true;
+            next_idle_event = rg_system_timer() + 100000;
+            redraw_pending = false;
         }
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
@@ -343,7 +485,8 @@ static void retro_loop(void)
         if (redraw_pending)
         {
             redraw_pending = false;
-            gui_redraw();
+            if (screen_timeout_allows_redraw())
+                gui_redraw();
         }
 
         rg_system_tick(rg_system_timer() - start_time);
@@ -360,6 +503,7 @@ static void retro_loop(void)
             prev_joystick = 0;
             gui_event(TAB_IDLE, tab);
             next_idle_event = rg_system_timer() + 100000;
+            screen_timeout_update();
             if (gui.idle_counter % 10 == 1)
                 redraw_pending = true;
         }
@@ -419,6 +563,8 @@ static void options_handler(rg_gui_option_t *dest)
         {0, _("Preview"),      "-", RG_DIALOG_FLAG_NORMAL, &show_preview_cb},
         {0, _("Scroll mode"),  "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
         {0, _("Start screen"), "-", RG_DIALOG_FLAG_NORMAL, &start_screen_cb},
+        {0, _("Screen dim"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_dim_timeout_cb},
+        {0, _("Screen off"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_off_timeout_cb},
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
         #ifdef RG_ENABLE_NETWORKING
         {0, _("File server"),  "-", RG_DIALOG_FLAG_NORMAL, &webui_switch_cb},
