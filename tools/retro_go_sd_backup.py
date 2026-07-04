@@ -1,0 +1,1500 @@
+#!/usr/bin/env python3
+"""
+Retro-Go SD card backup, restore, and settings utility.
+
+Enable the Retro-Go launcher's file server first, then run:
+
+    python tools/retro_go_sd_backup.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as _dt
+import io
+import json
+import os
+import queue
+import sys
+import tarfile
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO, Iterable
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, simpledialog, ttk
+except ModuleNotFoundError:
+    tk = None
+    filedialog = None
+    messagebox = None
+    simpledialog = None
+    ttk = None
+
+
+APP_TITLE = "Retro-Go SD Manager"
+DEFAULT_SERVER = "http://192.168.4.1"
+DEFAULT_ROOT = "/sd"
+CONFIG_ROOT = "/sd/retro-go/config"
+USER_AGENT = "retro-go-sd-manager/1.1"
+CHUNK_SIZE = 64 * 1024
+
+
+class BackupError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class RemoteEntry:
+    path: str
+    name: str
+    size: int = 0
+    mtime: int = 0
+    is_dir: bool = False
+
+    @property
+    def archive_name(self) -> str:
+        return self.path.strip("/")
+
+class CancelToken:
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    def raise_if_cancelled(self) -> None:
+        if self._event.is_set():
+            raise BackupError("Operation cancelled.")
+
+
+class RetroGoClient:
+    def __init__(self, server_url: str, timeout: float = 25.0) -> None:
+        self.server_url = normalize_server_url(server_url)
+        self.timeout = timeout
+
+    def api(self, cmd: str, arg1: str = "", arg2: str = "") -> dict:
+        payload = json.dumps({"cmd": cmd, "arg1": arg1, "arg2": arg2}).encode("utf-8")
+        request = urllib.request.Request(
+            self.server_url + "/api",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            raise BackupError(f"Retro-Go API request failed ({cmd} {arg1}): {exc}") from exc
+
+    def list_dir(self, path: str) -> list[RemoteEntry]:
+        path = normalize_remote_path(path)
+        data = self.api("list", path)
+        if not data.get("success"):
+            raise BackupError(f"Retro-Go rejected directory listing for {path}.")
+
+        entries: list[RemoteEntry] = []
+        for item in data.get("files", []):
+            name = str(item.get("name", ""))
+            if not name or "/" in name:
+                continue
+            entries.append(
+                RemoteEntry(
+                    path=join_remote_path(path, name),
+                    name=name,
+                    size=int(item.get("size") or 0),
+                    mtime=int(item.get("mtime") or 0),
+                    is_dir=bool(item.get("is_dir")),
+                )
+            )
+        entries.sort(key=lambda entry: (not entry.is_dir, entry.name.lower()))
+        return entries
+
+    def stat(self, path: str) -> RemoteEntry:
+        path = normalize_remote_path(path)
+        if path == "/":
+            return RemoteEntry(path="/", name="/", is_dir=True)
+        parent = remote_dirname(path)
+        name = remote_basename(path)
+        for entry in self.list_dir(parent):
+            if entry.name == name:
+                return entry
+        raise BackupError(f"Remote path not found: {path}")
+
+    def exists(self, path: str) -> bool:
+        try:
+            self.stat(path)
+            return True
+        except BackupError:
+            return False
+
+    def mkdir(self, path: str) -> None:
+        path = normalize_remote_path(path)
+        if path in ("", "/"):
+            return
+        data = self.api("mkdir", path)
+        if not data.get("success") and not self.exists(path):
+            raise BackupError(f"Could not create remote folder: {path}")
+
+    def touch(self, path: str) -> None:
+        path = normalize_remote_path(path)
+        data = self.api("touch", path)
+        if not data.get("success"):
+            raise BackupError(f"Could not create remote file: {path}")
+
+    def ensure_dir(self, path: str) -> None:
+        path = normalize_remote_path(path)
+        current = ""
+        for part in path.strip("/").split("/"):
+            if not part:
+                continue
+            current += "/" + part
+            self.mkdir(current)
+
+    def open_file(self, path: str) -> BinaryIO:
+        path = normalize_remote_path(path)
+        quoted_path = urllib.parse.quote(path, safe="/")
+        request = urllib.request.Request(self.server_url + quoted_path, headers={"User-Agent": USER_AGENT})
+        try:
+            return urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            raise BackupError(f"Could not download {path}: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise BackupError(f"Could not download {path}: {exc}") from exc
+
+    def read_bytes(self, path: str) -> bytes:
+        with self.open_file(path) as source:
+            return source.read()
+
+    def read_text(self, path: str) -> str:
+        return self.read_bytes(path).decode("utf-8")
+
+    def put_file(self, path: str, source: BinaryIO, total_size: int, progress=None) -> None:
+        path = normalize_remote_path(path)
+        self.ensure_dir(remote_dirname(path))
+        quoted_path = urllib.parse.quote(path, safe="/")
+        body = StreamingUpload(source, total_size, progress)
+        request = urllib.request.Request(
+            self.server_url + quoted_path,
+            data=body,
+            method="PUT",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(total_size),
+                "User-Agent": USER_AGENT,
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.timeout, 120.0)) as response:
+                text = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            raise BackupError(f"Upload failed for {path}: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise BackupError(f"Upload failed for {path}: {exc}") from exc
+        if "OK" not in text:
+            raise BackupError(f"Upload failed for {path}: {text or 'empty response'}")
+
+    def put_bytes(self, path: str, data: bytes) -> None:
+        self.put_file(path, io.BytesIO(data), len(data))
+
+    def rename(self, old_path: str, new_path: str) -> None:
+        data = self.api("rename", normalize_remote_path(old_path), normalize_remote_path(new_path))
+        if not data.get("success"):
+            raise BackupError(f"Could not rename {old_path} to {new_path}.")
+
+    def delete(self, path: str) -> None:
+        data = self.api("delete", normalize_remote_path(path))
+        if not data.get("success"):
+            raise BackupError(f"Could not delete {path}.")
+
+
+class StreamingUpload(io.RawIOBase):
+    def __init__(self, source: BinaryIO, total_size: int, progress=None) -> None:
+        self.source = source
+        self.total_size = total_size
+        self.progress = progress
+        self.done = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self.source.read(CHUNK_SIZE if size is None or size < 0 else min(size, CHUNK_SIZE))
+        if chunk:
+            self.done += len(chunk)
+            if self.progress:
+                self.progress(len(chunk), self.done, self.total_size)
+        return chunk
+
+
+class BackupRunner:
+    def __init__(
+        self,
+        client: RetroGoClient,
+        root_path: str,
+        archive_path: Path,
+        archive_format: str,
+        cancel_token: CancelToken,
+        progress,
+        selected_paths: list[str] | None = None,
+    ) -> None:
+        self.client = client
+        self.root_path = normalize_remote_path(root_path)
+        self.archive_path = archive_path
+        self.archive_format = archive_format
+        self.cancel_token = cancel_token
+        self.progress = progress
+        self.selected_paths = selected_paths or []
+        self.entries: list[RemoteEntry] = []
+        self.total_bytes = 0
+        self.done_bytes = 0
+
+    def run(self) -> None:
+        self.archive_path.parent.mkdir(parents=True, exist_ok=True)
+        self.progress(("status", "Scanning selected paths..." if self.selected_paths else f"Scanning {self.root_path} ..."))
+        self.entries = list(self._collect_entries())
+        self.total_bytes = sum(entry.size for entry in self.entries if not entry.is_dir)
+        file_count = sum(1 for entry in self.entries if not entry.is_dir)
+        dir_count = sum(1 for entry in self.entries if entry.is_dir)
+        self.progress(("scan_done", file_count, dir_count, self.total_bytes))
+
+        if self.archive_format == "zip":
+            self._write_zip()
+        elif self.archive_format == "tar.gz":
+            self._write_tar_gz()
+        else:
+            raise BackupError(f"Unsupported archive format: {self.archive_format}")
+
+        self.progress(("done", str(self.archive_path), self.done_bytes))
+
+    def _collect_entries(self) -> Iterable[RemoteEntry]:
+        seen: set[str] = set()
+        paths = self._prune_nested_paths(self.selected_paths) if self.selected_paths else [self.root_path]
+        for path in paths:
+            self.cancel_token.raise_if_cancelled()
+            entry = RemoteEntry(path=self.root_path, name=remote_basename(self.root_path), is_dir=True) if path == self.root_path else self.client.stat(path)
+            yield from self._yield_entry_and_children(entry, seen)
+
+    @staticmethod
+    def _prune_nested_paths(paths: list[str]) -> list[str]:
+        normalized = sorted({normalize_remote_path(path) for path in paths}, key=lambda item: (item.count("/"), item))
+        result: list[str] = []
+        for path in normalized:
+            if not any(path == parent or path.startswith(parent.rstrip("/") + "/") for parent in result):
+                result.append(path)
+        return result
+
+    def _yield_entry_and_children(self, entry: RemoteEntry, seen: set[str]) -> Iterable[RemoteEntry]:
+        self.cancel_token.raise_if_cancelled()
+        if entry.path not in seen:
+            seen.add(entry.path)
+            yield entry
+        if entry.is_dir:
+            for child in self.client.list_dir(entry.path):
+                yield from self._yield_entry_and_children(child, seen)
+
+    def _write_zip(self) -> None:
+        with zipfile.ZipFile(self.archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for entry in self.entries:
+                self.cancel_token.raise_if_cancelled()
+                arcname = entry.archive_name + ("/" if entry.is_dir else "")
+                info = zipfile.ZipInfo(arcname, zip_datetime(entry.mtime))
+                if entry.is_dir:
+                    info.external_attr = 0o40755 << 16
+                    archive.writestr(info, b"")
+                else:
+                    info.external_attr = 0o100644 << 16
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    self.progress(("file_start", entry.path, entry.size))
+                    with self.client.open_file(entry.path) as source:
+                        with archive.open(info, "w", force_zip64=True) as target:
+                            self._copy_stream(source, target, entry)
+
+    def _write_tar_gz(self) -> None:
+        with tarfile.open(self.archive_path, "w:gz") as archive:
+            for entry in self.entries:
+                self.cancel_token.raise_if_cancelled()
+                info = tarfile.TarInfo(entry.archive_name)
+                info.mtime = entry.mtime or int(time.time())
+                if entry.is_dir:
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o755
+                    archive.addfile(info)
+                else:
+                    info.size = entry.size
+                    info.mode = 0o644
+                    self.progress(("file_start", entry.path, entry.size))
+                    with self.client.open_file(entry.path) as source:
+                        archive.addfile(info, StreamingReader(source, entry, self._copy_progress, self.cancel_token))
+
+    def _copy_stream(self, source: BinaryIO, target: BinaryIO, entry: RemoteEntry) -> int:
+        copied = 0
+        while True:
+            self.cancel_token.raise_if_cancelled()
+            chunk = source.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            target.write(chunk)
+            copied += len(chunk)
+            self._copy_progress(entry, len(chunk), copied)
+        if entry.size and copied != entry.size:
+            raise BackupError(f"Downloaded {copied} bytes for {entry.path}, expected {entry.size}.")
+        return copied
+
+    def _copy_progress(self, entry: RemoteEntry, chunk_len: int, file_done: int) -> None:
+        self.done_bytes += chunk_len
+        self.progress(("file_progress", entry.path, file_done, entry.size, self.done_bytes, self.total_bytes))
+
+
+class StreamingReader(io.RawIOBase):
+    def __init__(self, source: BinaryIO, entry: RemoteEntry, progress, cancel_token: CancelToken) -> None:
+        self.source = source
+        self.entry = entry
+        self.progress = progress
+        self.cancel_token = cancel_token
+        self.copied = 0
+
+    def readable(self) -> bool:
+        return True
+
+    def read(self, size: int = -1) -> bytes:
+        self.cancel_token.raise_if_cancelled()
+        chunk = self.source.read(CHUNK_SIZE if size is None or size < 0 else min(size, CHUNK_SIZE))
+        if chunk:
+            self.copied += len(chunk)
+            self.progress(self.entry, len(chunk), self.copied)
+        elif self.entry.size and self.copied != self.entry.size:
+            raise BackupError(f"Downloaded {self.copied} bytes for {self.entry.path}, expected {self.entry.size}.")
+        return chunk
+
+
+class RestoreRunner:
+    def __init__(
+        self,
+        client: RetroGoClient,
+        archive_path: Path,
+        destination: str,
+        conflict_policy: str,
+        strip_sd_root: bool,
+        cancel_token: CancelToken,
+        progress,
+    ) -> None:
+        self.client = client
+        self.archive_path = archive_path
+        self.destination = normalize_remote_path(destination)
+        self.conflict_policy = conflict_policy
+        self.strip_sd_root = strip_sd_root
+        self.cancel_token = cancel_token
+        self.progress = progress
+        self.total_bytes = 0
+        self.done_bytes = 0
+
+    def run(self) -> None:
+        if self.archive_path.suffix.lower() == ".zip":
+            self._restore_zip()
+        elif self.archive_path.name.lower().endswith((".tar.gz", ".tgz")):
+            self._restore_tar()
+        else:
+            raise BackupError("Restore archive must be .zip, .tar.gz, or .tgz.")
+        self.progress(("done", f"Restored {self.archive_path}", self.done_bytes))
+
+    def _remote_path_for_member(self, name: str) -> str | None:
+        clean = sanitize_archive_name(name)
+        if not clean:
+            return None
+        if self.strip_sd_root and clean == "sd":
+            return self.destination
+        if self.strip_sd_root and clean.startswith("sd/"):
+            clean = clean[3:]
+        return join_remote_path(self.destination, clean)
+
+    def _restore_zip(self) -> None:
+        with zipfile.ZipFile(self.archive_path) as archive:
+            infos = [info for info in archive.infolist() if self._remote_path_for_member(info.filename)]
+            self.total_bytes = sum(info.file_size for info in infos if not info.is_dir())
+            self.progress(("scan_done", sum(1 for info in infos if not info.is_dir()), sum(1 for info in infos if info.is_dir()), self.total_bytes))
+            for info in infos:
+                self.cancel_token.raise_if_cancelled()
+                remote_path = self._remote_path_for_member(info.filename)
+                if not remote_path:
+                    continue
+                if info.is_dir():
+                    self.client.ensure_dir(remote_path)
+                    continue
+                if self.conflict_policy == "skip" and self.client.exists(remote_path):
+                    self.progress(("status", f"Skipping existing {remote_path}"))
+                    continue
+                self.progress(("file_start", remote_path, info.file_size))
+                with archive.open(info) as source:
+                    self.client.put_file(remote_path, source, info.file_size, lambda n, d, t, p=remote_path: self._upload_progress(p, n, d, t))
+
+    def _restore_tar(self) -> None:
+        with tarfile.open(self.archive_path, "r:gz") as archive:
+            members = [member for member in archive.getmembers() if self._remote_path_for_member(member.name)]
+            self.total_bytes = sum(member.size for member in members if member.isfile())
+            self.progress(("scan_done", sum(1 for member in members if member.isfile()), sum(1 for member in members if member.isdir()), self.total_bytes))
+            for member in members:
+                self.cancel_token.raise_if_cancelled()
+                remote_path = self._remote_path_for_member(member.name)
+                if not remote_path:
+                    continue
+                if member.isdir():
+                    self.client.ensure_dir(remote_path)
+                    continue
+                if not member.isfile():
+                    continue
+                if self.conflict_policy == "skip" and self.client.exists(remote_path):
+                    self.progress(("status", f"Skipping existing {remote_path}"))
+                    continue
+                source = archive.extractfile(member)
+                if not source:
+                    continue
+                self.progress(("file_start", remote_path, member.size))
+                with source:
+                    self.client.put_file(remote_path, source, member.size, lambda n, d, t, p=remote_path: self._upload_progress(p, n, d, t))
+
+    def _upload_progress(self, path: str, chunk_len: int, file_done: int, file_total: int) -> None:
+        self.done_bytes += chunk_len
+        self.progress(("file_progress", path, file_done, file_total, self.done_bytes, self.total_bytes))
+
+
+class BackupApp(tk.Tk if tk else object):
+    def __init__(self, default_url: str, default_output: Path, default_format: str) -> None:
+        super().__init__()
+        self.title(APP_TITLE)
+        self.minsize(980, 680)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(1, weight=1)
+
+        self.messages: queue.Queue[tuple] = queue.Queue()
+        self.worker: threading.Thread | None = None
+        self.cancel_token: CancelToken | None = None
+        self.remote_entries: dict[str, RemoteEntry] = {}
+        self.tree_check_states: dict[str, str] = {}
+        self.tree_paths: dict[str, str] = {}
+        self.tree_items_by_path: dict[str, str] = {}
+        self.loaded_tree_dirs: set[str] = set()
+        self.config_documents: dict[str, dict] = {}
+        self.current_config_path: str | None = None
+
+        self.server_var = tk.StringVar(value=default_url)
+        self.root_var = tk.StringVar(value=DEFAULT_ROOT)
+        self.output_var = tk.StringVar(value=str(default_output))
+        self.format_var = tk.StringVar(value=default_format)
+        self.restore_archive_var = tk.StringVar(value="")
+        self.restore_dest_var = tk.StringVar(value=DEFAULT_ROOT)
+        self.restore_policy_var = tk.StringVar(value="overwrite")
+        self.strip_sd_var = tk.BooleanVar(value=True)
+        self.status_var = tk.StringVar(value="Ready.")
+        self.file_var = tk.StringVar(value="")
+        self.bytes_var = tk.StringVar(value="")
+        self.config_file_var = tk.StringVar(value="")
+
+        self._build_ui()
+        self.after(100, self._drain_messages)
+
+    def client(self) -> RetroGoClient:
+        return RetroGoClient(self.server_var.get())
+
+    def _build_ui(self) -> None:
+        top = ttk.Frame(self, padding=10)
+        top.grid(row=0, column=0, sticky="ew")
+        top.columnconfigure(1, weight=1)
+
+        ttk.Label(top, text="Server URL").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(top, textvariable=self.server_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(top, text="Test", command=self._test_connection).grid(row=0, column=2, sticky="ew", padx=(8, 0))
+
+        notebook = ttk.Notebook(self)
+        notebook.grid(row=1, column=0, sticky="nsew")
+        self.backup_tab = ttk.Frame(notebook, padding=10)
+        self.restore_tab = ttk.Frame(notebook, padding=10)
+        self.settings_tab = ttk.Frame(notebook, padding=10)
+        self.log_tab = ttk.Frame(notebook, padding=10)
+        notebook.add(self.backup_tab, text="Backup")
+        notebook.add(self.restore_tab, text="Restore Archive")
+        notebook.add(self.settings_tab, text="Settings")
+        notebook.add(self.log_tab, text="Log")
+
+        self._build_backup_tab()
+        self._build_restore_tab()
+        self._build_settings_tab()
+        self._build_log_tab()
+        self._build_bottom_bar()
+
+    def _build_backup_tab(self) -> None:
+        self.backup_tab.columnconfigure(0, weight=1)
+        self.backup_tab.rowconfigure(3, weight=1)
+
+        controls = ttk.Frame(self.backup_tab)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        controls.columnconfigure(1, weight=1)
+        ttk.Label(controls, text="Root path").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(controls, textvariable=self.root_var, width=18).grid(row=0, column=1, sticky="w")
+        ttk.Button(controls, text="Load Tree", command=self._load_tree).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(controls, text="Refresh", command=self._refresh_tree_item).grid(row=0, column=3, padx=(8, 0))
+        ttk.Button(controls, text="Check All", command=self._check_tree_root).grid(row=0, column=4, padx=(8, 0))
+        ttk.Button(controls, text="Clear Checks", command=self._clear_tree_checks).grid(row=0, column=5, padx=(8, 0))
+
+        actions = ttk.Frame(self.backup_tab)
+        actions.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        ttk.Button(actions, text="New Folder", command=self._new_folder_tree_item).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(actions, text="New File", command=self._new_file_tree_item).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(actions, text="Rename", command=self._rename_tree_item).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(actions, text="Delete", command=self._delete_tree_item).grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(actions, text="Download", command=self._download_tree_item).grid(row=0, column=4, padx=(0, 8))
+
+        archive = ttk.Frame(self.backup_tab)
+        archive.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        archive.columnconfigure(1, weight=1)
+        ttk.Label(archive, text="Archive").grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(archive, textvariable=self.output_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(archive, text="Browse", command=self._choose_output).grid(row=0, column=2, padx=(8, 0))
+        ttk.Label(archive, text="Format").grid(row=0, column=3, padx=(14, 8))
+        ttk.Combobox(archive, textvariable=self.format_var, values=("zip", "tar.gz"), state="readonly", width=10).grid(row=0, column=4)
+        ttk.Button(archive, text="Start Backup", command=self._start_backup).grid(row=0, column=5, padx=(10, 0))
+
+        self.tree = ttk.Treeview(self.backup_tab, columns=("size", "modified"), selectmode="browse")
+        self.tree.heading("#0", text="Backup selection and remote files")
+        self.tree.heading("size", text="Size")
+        self.tree.heading("modified", text="Modified")
+        self.tree.column("#0", width=460)
+        self.tree.column("size", width=110, anchor="e")
+        self.tree.column("modified", width=170)
+        self.tree.grid(row=3, column=0, sticky="nsew")
+        self.tree.bind("<<TreeviewOpen>>", self._on_tree_open)
+        self.tree.bind("<Button-1>", self._on_tree_click)
+        self.tree.bind("<space>", self._on_tree_keyboard_toggle)
+        yscroll = ttk.Scrollbar(self.backup_tab, orient="vertical", command=self.tree.yview)
+        yscroll.grid(row=3, column=1, sticky="ns")
+        self.tree.configure(yscrollcommand=yscroll.set)
+
+    def _build_restore_tab(self) -> None:
+        self.restore_tab.columnconfigure(1, weight=1)
+        ttk.Label(self.restore_tab, text="Archive").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(self.restore_tab, textvariable=self.restore_archive_var).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Button(self.restore_tab, text="Browse", command=self._choose_restore_archive).grid(row=0, column=2, padx=(8, 0), pady=4)
+
+        ttk.Label(self.restore_tab, text="Destination").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(self.restore_tab, textvariable=self.restore_dest_var, width=20).grid(row=1, column=1, sticky="w", pady=4)
+
+        ttk.Label(self.restore_tab, text="Existing files").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Radiobutton(self.restore_tab, text="Overwrite", variable=self.restore_policy_var, value="overwrite").grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Radiobutton(self.restore_tab, text="Skip", variable=self.restore_policy_var, value="skip").grid(row=2, column=1, sticky="w", padx=(110, 0), pady=4)
+        ttk.Checkbutton(self.restore_tab, text="Strip leading sd/ folder from backup archives", variable=self.strip_sd_var).grid(row=3, column=1, sticky="w", pady=4)
+        ttk.Button(self.restore_tab, text="Upload Archive", command=self._start_restore).grid(row=4, column=1, sticky="w", pady=(12, 0))
+
+    def _build_settings_tab(self) -> None:
+        self.settings_tab.columnconfigure(0, weight=1)
+        self.settings_tab.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(self.settings_tab)
+        controls.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        controls.columnconfigure(1, weight=1)
+        ttk.Button(controls, text="Load Configs", command=self._load_configs).grid(row=0, column=0, padx=(0, 8))
+        self.config_combo = ttk.Combobox(controls, textvariable=self.config_file_var, state="readonly")
+        self.config_combo.grid(row=0, column=1, sticky="ew")
+        self.config_combo.bind("<<ComboboxSelected>>", lambda _event: self._show_config(self.config_file_var.get()))
+        ttk.Button(controls, text="Add Key", command=self._add_config_key).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(controls, text="Edit", command=self._edit_config_value).grid(row=0, column=3, padx=(8, 0))
+        ttk.Button(controls, text="Delete", command=self._delete_config_key).grid(row=0, column=4, padx=(8, 0))
+        ttk.Button(controls, text="Save", command=self._save_current_config).grid(row=0, column=5, padx=(8, 0))
+
+        self.settings_tree = ttk.Treeview(self.settings_tab, columns=("type", "value"), selectmode="browse")
+        self.settings_tree.heading("#0", text="Key")
+        self.settings_tree.heading("type", text="Type")
+        self.settings_tree.heading("value", text="Value")
+        self.settings_tree.column("#0", width=260)
+        self.settings_tree.column("type", width=90)
+        self.settings_tree.column("value", width=520)
+        self.settings_tree.grid(row=1, column=0, sticky="nsew")
+        self.settings_tree.bind("<Double-1>", lambda _event: self._edit_config_value())
+        yscroll = ttk.Scrollbar(self.settings_tab, orient="vertical", command=self.settings_tree.yview)
+        yscroll.grid(row=1, column=1, sticky="ns")
+        self.settings_tree.configure(yscrollcommand=yscroll.set)
+
+    def _build_log_tab(self) -> None:
+        self.log_tab.columnconfigure(0, weight=1)
+        self.log_tab.rowconfigure(0, weight=1)
+        self.log = tk.Text(self.log_tab, wrap="word", height=14, state="disabled")
+        self.log.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(self.log_tab, orient="vertical", command=self.log.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=scrollbar.set)
+
+    def _build_bottom_bar(self) -> None:
+        bottom = ttk.Frame(self, padding=10)
+        bottom.grid(row=2, column=0, sticky="ew")
+        bottom.columnconfigure(0, weight=1)
+        self.progress_bar = ttk.Progressbar(bottom, mode="determinate")
+        self.progress_bar.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        ttk.Label(bottom, textvariable=self.status_var).grid(row=1, column=0, sticky="w")
+        ttk.Label(bottom, textvariable=self.bytes_var).grid(row=1, column=1, sticky="e", padx=(8, 8))
+        ttk.Label(bottom, textvariable=self.file_var).grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.cancel_button = ttk.Button(bottom, text="Cancel", command=self._cancel_operation, state="disabled")
+        self.cancel_button.grid(row=2, column=3, sticky="e", pady=(8, 0))
+
+    def _choose_output(self) -> None:
+        extension = ".tar.gz" if self.format_var.get() == "tar.gz" else ".zip"
+        path = filedialog.asksaveasfilename(
+            title="Save backup archive",
+            initialfile=default_archive_name(extension),
+            defaultextension=extension,
+            filetypes=(("Archive", f"*{extension}"), ("All files", "*.*")),
+        )
+        if path:
+            self.output_var.set(path)
+
+    def _choose_restore_archive(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Open backup archive",
+            filetypes=(("Archives", "*.zip *.tar.gz *.tgz"), ("All files", "*.*")),
+        )
+        if path:
+            self.restore_archive_var.set(path)
+
+    def _test_connection(self) -> None:
+        self._start_worker(lambda token: self._test_connection_worker(token), "Testing connection...")
+
+    def _test_connection_worker(self, token: CancelToken) -> None:
+        entries = self.client().list_dir(normalize_remote_path(self.root_var.get()))
+        token.raise_if_cancelled()
+        self.messages.put(("test_done", len(entries), None))
+
+    def _load_tree(self) -> None:
+        self._start_worker(lambda token: self._load_tree_worker(token), "Loading remote tree...")
+
+    def _load_tree_worker(self, token: CancelToken) -> None:
+        root_path = normalize_remote_path(self.root_var.get())
+        root = RemoteEntry(path=root_path, name=remote_basename(root_path) or root_path, is_dir=True)
+        entries = self.client().list_dir(root_path)
+        token.raise_if_cancelled()
+        self.messages.put(("tree_root", root, entries))
+
+    def _on_tree_open(self, _event) -> None:
+        item = self.tree.focus()
+        path = self.tree_paths.get(item)
+        if not path:
+            return
+        if path in self.loaded_tree_dirs:
+            return
+        self._start_worker(lambda token, p=path, i=item: self._load_tree_children_worker(token, p, i), f"Loading {path} ...")
+
+    def _load_tree_children_worker(self, token: CancelToken, path: str, item: str) -> None:
+        entries = self.client().list_dir(path)
+        token.raise_if_cancelled()
+        self.messages.put(("tree_children", item, path, entries))
+
+    def _check_tree_root(self) -> None:
+        roots = self.tree.get_children("")
+        if roots:
+            self._set_tree_check_state(roots[0], "checked", cascade=True)
+
+    def _clear_tree_checks(self) -> None:
+        for item in self.tree.get_children(""):
+            self._set_tree_check_state(item, "unchecked", cascade=True)
+
+    def _on_tree_click(self, event) -> None:
+        item = self.tree.identify_row(event.y)
+        region = self.tree.identify_region(event.x, event.y)
+        if item and region == "tree":
+            bbox = self.tree.bbox(item, "#0")
+            if bbox and event.x <= bbox[0] + 38:
+                self._toggle_tree_item(item)
+                return "break"
+        return None
+
+    def _on_tree_keyboard_toggle(self, _event) -> str:
+        item = self.tree.focus()
+        if item:
+            self._toggle_tree_item(item)
+        return "break"
+
+    def _toggle_tree_item(self, item: str) -> None:
+        state = self.tree_check_states.get(item, "unchecked")
+        self._set_tree_check_state(item, "unchecked" if state == "checked" else "checked", cascade=True)
+
+    def _set_tree_check_state(self, item: str, state: str, cascade: bool = False) -> None:
+        if item not in self.tree_paths:
+            return
+        self.tree_check_states[item] = state
+        self._refresh_tree_item_text(item)
+        if cascade:
+            for child in self.tree.get_children(item):
+                if child in self.tree_paths:
+                    self._set_tree_check_state(child, state, cascade=True)
+        self._refresh_ancestor_check_states(item)
+
+    def _refresh_ancestor_check_states(self, item: str) -> None:
+        parent = self.tree.parent(item)
+        while parent:
+            child_states = [
+                self.tree_check_states.get(child, "unchecked")
+                for child in self.tree.get_children(parent)
+                if child in self.tree_paths
+            ]
+            if child_states:
+                if all(state == "checked" for state in child_states):
+                    state = "checked"
+                elif all(state == "unchecked" for state in child_states):
+                    state = "unchecked"
+                else:
+                    state = "partial"
+                self.tree_check_states[parent] = state
+                self._refresh_tree_item_text(parent)
+            parent = self.tree.parent(parent)
+
+    def _refresh_tree_item_text(self, item: str) -> None:
+        path = self.tree_paths.get(item)
+        entry = self.remote_entries.get(path or "")
+        if entry:
+            self.tree.item(item, text=self._tree_label(entry, self.tree_check_states.get(item, "unchecked")))
+
+    def _tree_label(self, entry: RemoteEntry, state: str) -> str:
+        marker = {"checked": "[x]", "partial": "[-]"}.get(state, "[ ]")
+        name = entry.name + ("/" if entry.is_dir and entry.name != "/" else "")
+        return f"{marker} {name}"
+
+    def _checked_tree_paths(self) -> list[str]:
+        checked: list[str] = []
+
+        def visit(item: str, checked_ancestor: bool = False) -> None:
+            state = self.tree_check_states.get(item, "unchecked")
+            path = self.tree_paths.get(item)
+            if path and state == "checked" and not checked_ancestor:
+                checked.append(path)
+                checked_ancestor = True
+            for child in self.tree.get_children(item):
+                if child in self.tree_paths:
+                    visit(child, checked_ancestor)
+
+        for root in self.tree.get_children(""):
+            visit(root)
+        return checked
+
+    def _focused_tree_item(self) -> str | None:
+        item = self.tree.focus()
+        if item in self.tree_paths:
+            return item
+        selection = self.tree.selection()
+        if selection and selection[0] in self.tree_paths:
+            return selection[0]
+        return None
+
+    def _focused_tree_entry(self) -> tuple[str, RemoteEntry] | None:
+        item = self._focused_tree_item()
+        if not item:
+            messagebox.showinfo(APP_TITLE, "Choose a file or folder in the tree first.")
+            return None
+        path = self.tree_paths[item]
+        entry = self.remote_entries.get(path)
+        if not entry:
+            messagebox.showinfo(APP_TITLE, "Choose a loaded file or folder in the tree first.")
+            return None
+        return item, entry
+
+    def _target_tree_directory(self) -> tuple[str | None, str] | None:
+        item = self._focused_tree_item()
+        if not item:
+            roots = self.tree.get_children("")
+            if roots:
+                item = roots[0]
+            else:
+                return None
+
+        path = self.tree_paths.get(item)
+        entry = self.remote_entries.get(path or "")
+        if not path or not entry:
+            return None
+        if entry.is_dir:
+            return item, entry.path
+
+        parent = self.tree.parent(item)
+        if parent and parent in self.tree_paths:
+            return parent, self.tree_paths[parent]
+        return None
+
+    def _refresh_tree_item(self) -> None:
+        target = self._target_tree_directory()
+        if not target:
+            self._load_tree()
+            return
+        item, path = target
+        self._start_worker(lambda token, p=path, i=item: self._refresh_tree_directory_worker(token, p, i), f"Refreshing {path} ...")
+
+    def _refresh_tree_directory_worker(self, token: CancelToken, path: str, item: str) -> None:
+        entries = self.client().list_dir(path)
+        token.raise_if_cancelled()
+        self.messages.put(("tree_refreshed", item, path, entries))
+
+    def _new_folder_tree_item(self) -> None:
+        target = self._target_tree_directory()
+        if not target:
+            messagebox.showinfo(APP_TITLE, "Load the remote tree or choose a folder first.")
+            return
+        item, directory = target
+        name = simpledialog.askstring(APP_TITLE, "New folder name", initialvalue="new folder")
+        if not self._validate_new_child_name(name):
+            return
+        new_path = join_remote_path(directory, name)
+
+        def work(token: CancelToken) -> None:
+            token.raise_if_cancelled()
+            client = self.client()
+            client.mkdir(new_path)
+            entries = client.list_dir(directory)
+            self.messages.put(("tree_refreshed", item, directory, entries))
+            self.messages.put(("status", f"Created folder {new_path}."))
+
+        self._start_worker(work, f"Creating folder {new_path} ...")
+
+    def _new_file_tree_item(self) -> None:
+        target = self._target_tree_directory()
+        if not target:
+            messagebox.showinfo(APP_TITLE, "Load the remote tree or choose a folder first.")
+            return
+        item, directory = target
+        name = simpledialog.askstring(APP_TITLE, "New file name", initialvalue="new file.txt")
+        if not self._validate_new_child_name(name):
+            return
+        new_path = join_remote_path(directory, name)
+
+        def work(token: CancelToken) -> None:
+            token.raise_if_cancelled()
+            client = self.client()
+            client.touch(new_path)
+            entries = client.list_dir(directory)
+            self.messages.put(("tree_refreshed", item, directory, entries))
+            self.messages.put(("status", f"Created file {new_path}."))
+
+        self._start_worker(work, f"Creating file {new_path} ...")
+
+    def _validate_new_child_name(self, name: str | None) -> bool:
+        if not name:
+            return False
+        if "/" in name or "\\" in name:
+            messagebox.showerror(APP_TITLE, "Enter only a file or folder name, not a path.")
+            return False
+        if name in (".", ".."):
+            messagebox.showerror(APP_TITLE, "That name is not allowed.")
+            return False
+        return True
+
+    def _rename_tree_item(self) -> None:
+        focused = self._focused_tree_entry()
+        if not focused:
+            return
+        item, entry = focused
+        new_name = simpledialog.askstring(APP_TITLE, "New name", initialvalue=entry.name)
+        if not new_name:
+            return
+        if "/" in new_name or "\\" in new_name:
+            messagebox.showerror(APP_TITLE, "Enter only a file or folder name, not a path.")
+            return
+        new_path = join_remote_path(remote_dirname(entry.path), new_name)
+
+        def work(token: CancelToken) -> None:
+            token.raise_if_cancelled()
+            self.client().rename(entry.path, new_path)
+            renamed = RemoteEntry(path=new_path, name=new_name, size=entry.size, mtime=entry.mtime, is_dir=entry.is_dir)
+            self.messages.put(("tree_renamed", item, entry.path, renamed))
+
+        self._start_worker(work, f"Renaming {entry.path} ...")
+
+    def _delete_tree_item(self) -> None:
+        focused = self._focused_tree_entry()
+        if not focused:
+            return
+        item, entry = focused
+        if not messagebox.askyesno(APP_TITLE, f"Delete {entry.path}?\n\nThis cannot be undone from the backup tool."):
+            return
+
+        def work(token: CancelToken) -> None:
+            token.raise_if_cancelled()
+            self.client().delete(entry.path)
+            self.messages.put(("tree_deleted", item, entry.path))
+
+        self._start_worker(work, f"Deleting {entry.path} ...")
+
+    def _download_tree_item(self) -> None:
+        focused = self._focused_tree_entry()
+        if not focused:
+            return
+        _item, entry = focused
+        if entry.is_dir:
+            messagebox.showinfo(APP_TITLE, "Download works on individual files. Use Backup for folders.")
+            return
+        target = filedialog.asksaveasfilename(title="Download file", initialfile=entry.name)
+        if not target:
+            return
+        target_path = Path(target)
+
+        def work(token: CancelToken) -> None:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            done = 0
+            self.messages.put(("file_start", entry.path, entry.size))
+            with self.client().open_file(entry.path) as source, target_path.open("wb") as output:
+                while True:
+                    token.raise_if_cancelled()
+                    chunk = source.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    output.write(chunk)
+                    done += len(chunk)
+                    self.messages.put(("file_progress", entry.path, done, entry.size, done, entry.size))
+            if entry.size and done != entry.size:
+                raise BackupError(f"Downloaded {done} bytes for {entry.path}, expected {entry.size}.")
+            self.messages.put(("done", str(target_path), done))
+
+        self._start_worker(work, f"Downloading {entry.path} ...")
+
+    def _start_backup(self) -> None:
+        selected_paths = self._checked_tree_paths()
+        if self.tree.get_children("") and not selected_paths:
+            messagebox.showinfo(APP_TITLE, "Check one or more files or folders to back up.")
+            return
+        try:
+            archive_path = Path(self.output_var.get()).expanduser()
+            if not archive_path.name:
+                raise BackupError("Choose an output archive path.")
+            if archive_path.exists() and not messagebox.askyesno(APP_TITLE, f"Overwrite existing archive?\n\n{archive_path}"):
+                return
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        def work(token: CancelToken) -> None:
+            runner = BackupRunner(
+                client=self.client(),
+                root_path=self.root_var.get(),
+                archive_path=archive_path,
+                archive_format=self.format_var.get(),
+                cancel_token=token,
+                progress=self.messages.put,
+                selected_paths=selected_paths,
+            )
+            runner.run()
+
+        self._start_worker(work, "Starting backup...")
+
+    def _start_restore(self) -> None:
+        archive_path = Path(self.restore_archive_var.get()).expanduser()
+        if not archive_path.exists():
+            messagebox.showerror(APP_TITLE, "Choose an existing .zip or .tar.gz archive.")
+            return
+        if not messagebox.askyesno(APP_TITLE, "Upload this archive to the Retro-Go SD card?"):
+            return
+
+        def work(token: CancelToken) -> None:
+            RestoreRunner(
+                client=self.client(),
+                archive_path=archive_path,
+                destination=self.restore_dest_var.get(),
+                conflict_policy=self.restore_policy_var.get(),
+                strip_sd_root=self.strip_sd_var.get(),
+                cancel_token=token,
+                progress=self.messages.put,
+            ).run()
+
+        self._start_worker(work, "Starting archive upload...")
+
+    def _load_configs(self) -> None:
+        self._start_worker(lambda token: self._load_configs_worker(token), "Loading Retro-Go configuration files...")
+
+    def _load_configs_worker(self, token: CancelToken) -> None:
+        client = self.client()
+        configs: dict[str, dict] = {}
+        try:
+            entries = client.list_dir(CONFIG_ROOT)
+        except BackupError:
+            entries = []
+        for entry in entries:
+            token.raise_if_cancelled()
+            if entry.is_dir or not entry.name.lower().endswith(".json"):
+                continue
+            text = client.read_text(entry.path)
+            try:
+                configs[entry.path] = json.loads(text) if text.strip() else {}
+            except json.JSONDecodeError as exc:
+                configs[entry.path] = {"__parse_error__": f"{exc}"}
+        self.messages.put(("configs_loaded", configs))
+
+    def _show_config(self, path: str) -> None:
+        self.current_config_path = path
+        self.settings_tree.delete(*self.settings_tree.get_children(""))
+        data = self.config_documents.get(path, {})
+        for key in sorted(data):
+            value = data[key]
+            self.settings_tree.insert("", "end", iid=key, text=key, values=(json_type_name(value), json_value_preview(value)))
+
+    def _add_config_key(self) -> None:
+        if not self.current_config_path:
+            return
+        key = simpledialog.askstring(APP_TITLE, "Setting key")
+        if not key:
+            return
+        value_text = simpledialog.askstring(APP_TITLE, "Value as JSON", initialvalue="0")
+        if value_text is None:
+            return
+        try:
+            value = json.loads(value_text)
+        except json.JSONDecodeError:
+            value = value_text
+        self.config_documents[self.current_config_path][key] = value
+        self._show_config(self.current_config_path)
+
+    def _edit_config_value(self) -> None:
+        if not self.current_config_path:
+            return
+        selection = self.settings_tree.selection()
+        if not selection:
+            return
+        key = selection[0]
+        current = self.config_documents[self.current_config_path][key]
+        value_text = simpledialog.askstring(APP_TITLE, f"Value for {key} as JSON", initialvalue=json.dumps(current))
+        if value_text is None:
+            return
+        try:
+            value = json.loads(value_text)
+        except json.JSONDecodeError:
+            value = value_text
+        self.config_documents[self.current_config_path][key] = value
+        self._show_config(self.current_config_path)
+
+    def _delete_config_key(self) -> None:
+        if not self.current_config_path:
+            return
+        selection = self.settings_tree.selection()
+        if not selection:
+            return
+        key = selection[0]
+        if messagebox.askyesno(APP_TITLE, f"Delete setting {key}?"):
+            self.config_documents[self.current_config_path].pop(key, None)
+            self._show_config(self.current_config_path)
+
+    def _save_current_config(self) -> None:
+        if not self.current_config_path:
+            return
+        path = self.current_config_path
+        data = self.config_documents[path]
+        if "__parse_error__" in data:
+            messagebox.showerror(APP_TITLE, "This file has a JSON parse error. Fix it manually before saving.")
+            return
+        payload = (json.dumps(data, indent=4, sort_keys=True) + "\n").encode("utf-8")
+        self._start_worker(lambda token: self._save_config_worker(token, path, payload), f"Saving {path} ...")
+
+    def _save_config_worker(self, token: CancelToken, path: str, payload: bytes) -> None:
+        token.raise_if_cancelled()
+        self.client().put_bytes(path, payload)
+        self.messages.put(("status", f"Saved {path}. Restart Retro-Go or relaunch the app if the setting is not applied immediately."))
+
+    def _start_worker(self, work, status: str) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showwarning(APP_TITLE, "Another operation is still running.")
+            return
+        self.cancel_token = CancelToken()
+        self.progress_bar.configure(value=0, maximum=100)
+        self.bytes_var.set("")
+        self.file_var.set("")
+        self.status_var.set(status)
+        self._log(status)
+        self.cancel_button.configure(state="normal")
+
+        def wrapper() -> None:
+            try:
+                work(self.cancel_token)
+            except Exception as exc:
+                self.messages.put(("error", str(exc)))
+
+        self.worker = threading.Thread(target=wrapper, daemon=True)
+        self.worker.start()
+
+    def _cancel_operation(self) -> None:
+        if self.cancel_token:
+            self.cancel_token.cancel()
+            self.status_var.set("Cancelling...")
+            self._log("Cancellation requested.")
+
+    def _drain_messages(self) -> None:
+        try:
+            while True:
+                self._handle_message(self.messages.get_nowait())
+        except queue.Empty:
+            pass
+        self.after(100, self._drain_messages)
+
+    def _handle_message(self, message: tuple) -> None:
+        kind = message[0]
+        if kind == "status":
+            self.status_var.set(message[1])
+            self._log(message[1])
+        elif kind == "scan_done":
+            _, file_count, dir_count, total_bytes = message
+            self.progress_bar.configure(value=0, maximum=max(1, total_bytes))
+            self.status_var.set(f"Processing {file_count} files in {dir_count} folders.")
+            self.bytes_var.set(format_bytes(total_bytes))
+            self._log(f"Found {file_count} files, {dir_count} folders, {format_bytes(total_bytes)}.")
+        elif kind == "file_start":
+            _, path, size = message
+            self.file_var.set(path)
+            self._log(f"Transferring {path} ({format_bytes(size)})")
+        elif kind == "file_progress":
+            _, path, file_done, file_total, done_bytes, total_bytes = message
+            self.progress_bar.configure(value=done_bytes, maximum=max(1, total_bytes))
+            self.file_var.set(path)
+            self.bytes_var.set(f"{format_bytes(done_bytes)} / {format_bytes(total_bytes)}")
+        elif kind == "done":
+            _, path, done_bytes = message
+            self.progress_bar.configure(value=self.progress_bar["maximum"])
+            self.status_var.set("Operation complete.")
+            self.file_var.set(path)
+            self.bytes_var.set(format_bytes(done_bytes))
+            self.cancel_button.configure(state="disabled")
+            self._log(f"Operation complete: {path}")
+            messagebox.showinfo(APP_TITLE, f"Operation complete.\n\n{path}")
+        elif kind == "error":
+            self.status_var.set("Operation failed.")
+            self.cancel_button.configure(state="disabled")
+            self._log(f"ERROR: {message[1]}")
+            messagebox.showerror(APP_TITLE, message[1])
+        elif kind == "test_done":
+            _, count, error = message
+            self.cancel_button.configure(state="disabled")
+            if error:
+                self.status_var.set("Connection test failed.")
+                self._log(f"Connection test failed: {error}")
+            else:
+                self.status_var.set("Connection test passed.")
+                self._log(f"Connection test passed. Root contains {count} entries.")
+        elif kind == "tree_root":
+            _, root, entries = message
+            self._populate_tree_root(root, entries)
+        elif kind == "tree_children":
+            _, item, path, entries = message
+            self._populate_tree_children(item, path, entries)
+        elif kind == "tree_refreshed":
+            _, item, path, entries = message
+            self._replace_tree_children(item, path, entries)
+            self.cancel_button.configure(state="disabled")
+            self.status_var.set(f"Refreshed {path}.")
+        elif kind == "tree_renamed":
+            _, item, old_path, renamed = message
+            self._rename_tree_bookkeeping(item, old_path, renamed)
+            self.cancel_button.configure(state="disabled")
+            self.status_var.set(f"Renamed to {renamed.path}.")
+            self._log(f"Renamed {old_path} to {renamed.path}.")
+        elif kind == "tree_deleted":
+            _, item, path = message
+            self._delete_tree_bookkeeping(item)
+            self.cancel_button.configure(state="disabled")
+            self.status_var.set(f"Deleted {path}.")
+            self._log(f"Deleted {path}.")
+        elif kind == "configs_loaded":
+            _, configs = message
+            self.config_documents = configs
+            paths = sorted(configs)
+            self.config_combo.configure(values=paths)
+            if paths:
+                self.config_file_var.set(paths[0])
+                self._show_config(paths[0])
+            self.cancel_button.configure(state="disabled")
+            self.status_var.set(f"Loaded {len(paths)} configuration files.")
+            self._log(f"Loaded {len(paths)} configuration files from {CONFIG_ROOT}.")
+
+    def _populate_tree_root(self, root: RemoteEntry, entries: list[RemoteEntry]) -> None:
+        self.tree.delete(*self.tree.get_children(""))
+        self.remote_entries = {root.path: root}
+        self.tree_check_states = {}
+        self.tree_paths = {}
+        self.tree_items_by_path = {}
+        self.loaded_tree_dirs = {root.path}
+        root_id = self._insert_tree_entry("", root)
+        self._populate_tree_children(root_id, root.path, entries)
+        self.tree.item(root_id, open=True)
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("Remote tree loaded.")
+
+    def _populate_tree_children(self, item: str, path: str, entries: list[RemoteEntry]) -> None:
+        for child in self.tree.get_children(item):
+            if self.tree.item(child, "text") == "Loading...":
+                self.tree.delete(child)
+        inherited_state = "checked" if self.tree_check_states.get(item) == "checked" else "unchecked"
+        for entry in entries:
+            self.remote_entries[entry.path] = entry
+            child_item = self._insert_tree_entry(item, entry)
+            if inherited_state == "checked":
+                self._set_tree_check_state(child_item, "checked", cascade=True)
+        self.loaded_tree_dirs.add(path)
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set(f"Loaded {path}.")
+
+    def _replace_tree_children(self, item: str, path: str, entries: list[RemoteEntry]) -> None:
+        current_state = self.tree_check_states.get(item, "unchecked")
+        for child in list(self.tree.get_children(item)):
+            if child in self.tree_paths:
+                self._delete_tree_bookkeeping(child)
+            else:
+                self.tree.delete(child)
+        self.loaded_tree_dirs.discard(path)
+        self.tree_check_states[item] = current_state
+        self._refresh_tree_item_text(item)
+        self._populate_tree_children(item, path, entries)
+        self.tree.item(item, open=True)
+
+    def _insert_tree_entry(self, parent: str, entry: RemoteEntry) -> str:
+        item = self.tree.insert(
+            parent,
+            "end",
+            text=self._tree_label(entry, "unchecked"),
+            values=(format_bytes(entry.size) if not entry.is_dir else "", format_mtime(entry.mtime)),
+        )
+        self.tree_check_states[item] = "unchecked"
+        self.tree_paths[item] = entry.path
+        self.tree_items_by_path[entry.path] = item
+        if entry.is_dir:
+            self.tree.insert(item, "end", text="Loading...", values=("", "", ""))
+        return item
+
+    def _delete_tree_bookkeeping(self, item: str) -> None:
+        for child in list(self.tree.get_children(item)):
+            if child in self.tree_paths:
+                self._delete_tree_bookkeeping(child)
+            else:
+                self.tree.delete(child)
+        path = self.tree_paths.pop(item, None)
+        self.tree_check_states.pop(item, None)
+        if path:
+            self.tree_items_by_path.pop(path, None)
+            self.remote_entries.pop(path, None)
+            self.loaded_tree_dirs = {loaded for loaded in self.loaded_tree_dirs if loaded != path and not loaded.startswith(path.rstrip("/") + "/")}
+        parent = self.tree.parent(item)
+        self.tree.delete(item)
+        if parent:
+            child_states = [
+                self.tree_check_states.get(child, "unchecked")
+                for child in self.tree.get_children(parent)
+                if child in self.tree_paths
+            ]
+            if child_states:
+                if all(state == "checked" for state in child_states):
+                    self.tree_check_states[parent] = "checked"
+                elif all(state == "unchecked" for state in child_states):
+                    self.tree_check_states[parent] = "unchecked"
+                else:
+                    self.tree_check_states[parent] = "partial"
+                self._refresh_tree_item_text(parent)
+            self._refresh_ancestor_check_states(parent)
+
+    def _rename_tree_bookkeeping(self, item: str, old_path: str, renamed: RemoteEntry) -> None:
+        old_path = normalize_remote_path(old_path)
+        old_prefix = old_path.rstrip("/") + "/"
+        new_prefix = renamed.path.rstrip("/") + "/"
+        self.remote_entries.pop(old_path, None)
+        self.remote_entries[renamed.path] = renamed
+        self.tree_items_by_path.pop(old_path, None)
+        self.tree_items_by_path[renamed.path] = item
+        self.tree_paths[item] = renamed.path
+        self.tree.set(item, "size", format_bytes(renamed.size) if not renamed.is_dir else "")
+        self.tree.set(item, "modified", format_mtime(renamed.mtime))
+        self._refresh_tree_item_text(item)
+
+        if old_path in self.loaded_tree_dirs:
+            self.loaded_tree_dirs.remove(old_path)
+            self.loaded_tree_dirs.add(renamed.path)
+        updated_loaded = set()
+        for loaded in self.loaded_tree_dirs:
+            updated_loaded.add(new_prefix + loaded[len(old_prefix):] if loaded.startswith(old_prefix) else loaded)
+        self.loaded_tree_dirs = updated_loaded
+
+        for child in self.tree.get_children(item):
+            self._rename_child_path_prefix(child, old_prefix, new_prefix)
+
+    def _rename_child_path_prefix(self, item: str, old_prefix: str, new_prefix: str) -> None:
+        path = self.tree_paths.get(item)
+        if path and path.startswith(old_prefix):
+            new_path = new_prefix + path[len(old_prefix):]
+            entry = self.remote_entries.pop(path, None)
+            if entry:
+                entry = RemoteEntry(path=new_path, name=entry.name, size=entry.size, mtime=entry.mtime, is_dir=entry.is_dir)
+                self.remote_entries[new_path] = entry
+                self._refresh_tree_item_text(item)
+            self.tree_items_by_path.pop(path, None)
+            self.tree_items_by_path[new_path] = item
+            self.tree_paths[item] = new_path
+        for child in self.tree.get_children(item):
+            self._rename_child_path_prefix(child, old_prefix, new_prefix)
+
+    def _log(self, text: str) -> None:
+        print(text, flush=True)
+        self.log.configure(state="normal")
+        timestamp = _dt.datetime.now().strftime("%H:%M:%S")
+        self.log.insert("end", f"[{timestamp}] {text}\n")
+        self.log.see("end")
+        self.log.configure(state="disabled")
+
+
+def normalize_server_url(value: str) -> str:
+    value = value.strip()
+    if not value:
+        raise BackupError("Server URL is required.")
+    if "://" not in value:
+        value = "http://" + value
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise BackupError(f"Invalid server URL: {value}")
+    return value.rstrip("/")
+
+
+def normalize_remote_path(value: str) -> str:
+    value = value.strip().replace("\\", "/") or DEFAULT_ROOT
+    if not value.startswith("/"):
+        value = "/" + value
+    return value.rstrip("/") or "/"
+
+
+def join_remote_path(parent: str, name: str) -> str:
+    parent = normalize_remote_path(parent)
+    name = name.strip("/")
+    return "/" + name if parent == "/" else parent + "/" + name
+
+
+def remote_dirname(path: str) -> str:
+    path = normalize_remote_path(path)
+    parent = path.rsplit("/", 1)[0]
+    return parent or "/"
+
+
+def remote_basename(path: str) -> str:
+    return normalize_remote_path(path).rstrip("/").rsplit("/", 1)[-1]
+
+
+def sanitize_archive_name(name: str) -> str | None:
+    clean = name.replace("\\", "/").lstrip("/")
+    parts = [part for part in clean.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        return None
+    return "/".join(parts)
+
+
+def default_archive_name(extension: str) -> str:
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"retro-go-sd-backup-{stamp}{extension}"
+
+
+def default_archive_path(fmt: str) -> Path:
+    extension = ".tar.gz" if fmt == "tar.gz" else ".zip"
+    return Path.cwd() / default_archive_name(extension)
+
+
+def zip_datetime(mtime: int) -> tuple[int, int, int, int, int, int]:
+    dt = _dt.datetime.fromtimestamp(mtime) if mtime > 0 else _dt.datetime.now()
+    if dt.year < 1980:
+        dt = dt.replace(year=1980, month=1, day=1, hour=0, minute=0, second=0)
+    return dt.timetuple()[:6]
+
+
+def format_mtime(mtime: int) -> str:
+    if not mtime:
+        return ""
+    return _dt.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+
+def format_bytes(value: int) -> str:
+    size = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if size < 1024 or unit == "GiB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{value} B"
+
+
+def json_type_name(value) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) or isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        return "array"
+    return "object"
+
+
+def json_value_preview(value) -> str:
+    text = json.dumps(value, ensure_ascii=False)
+    return text if len(text) <= 180 else text[:177] + "..."
+
+
+def run_cli(args: argparse.Namespace) -> int:
+    cancel_token = CancelToken()
+    client = RetroGoClient(args.server)
+    archive_path = Path(args.output).expanduser() if args.output else default_archive_path(args.format)
+
+    def progress(message: tuple) -> None:
+        kind = message[0]
+        if kind == "status":
+            print(message[1], flush=True)
+        elif kind == "scan_done":
+            _, files, dirs, total = message
+            print(f"Found {files} files, {dirs} folders, {format_bytes(total)}.", flush=True)
+        elif kind == "file_start":
+            print(f"Transferring {message[1]} ({format_bytes(message[2])})", flush=True)
+        elif kind == "done":
+            print(f"Complete: {message[1]}", flush=True)
+
+    try:
+        if args.restore:
+            RestoreRunner(client, Path(args.restore), args.root, args.conflict, args.strip_sd_root, cancel_token, progress).run()
+        else:
+            selected = args.select or None
+            BackupRunner(client, args.root, archive_path, args.format, cancel_token, progress, selected).run()
+    except BackupError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Manage a Retro-Go SD card over the launcher HTTP file server.")
+    parser.add_argument("--server", default=DEFAULT_SERVER, help=f"Retro-Go server URL, default: {DEFAULT_SERVER}")
+    parser.add_argument("--root", default=DEFAULT_ROOT, help=f"Remote root path, default: {DEFAULT_ROOT}")
+    parser.add_argument("--format", choices=("zip", "tar.gz"), default="zip", help="Backup archive format.")
+    parser.add_argument("--output", help="Backup output archive path.")
+    parser.add_argument("--select", action="append", help="Remote file/folder to include in backup. Repeatable.")
+    parser.add_argument("--restore", help="Upload a .zip or .tar.gz archive instead of backing up.")
+    parser.add_argument("--conflict", choices=("overwrite", "skip"), default="overwrite", help="Restore conflict policy.")
+    parser.add_argument("--strip-sd-root", action=argparse.BooleanOptionalAction, default=True, help="Strip leading sd/ from restore archives.")
+    parser.add_argument("--cli", action="store_true", help="Run without the graphical interface.")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    if args.cli:
+        return run_cli(args)
+
+    if tk is None:
+        print(
+            "ERROR: Tkinter is not available in this Python installation. "
+            "Install Python from python.org with Tcl/Tk support, or run with --cli.",
+            file=sys.stderr,
+        )
+        return 1
+
+    default_output = Path(args.output).expanduser() if args.output else default_archive_path(args.format)
+    app = BackupApp(args.server, default_output, args.format)
+    app.mainloop()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

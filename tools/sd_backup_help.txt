@@ -1,0 +1,4 @@
+python tools\retro_go_sd_backup.py --cli --server http://192.168.4.1 --format zip
+python tools\retro_go_sd_backup.py
+python -m py_compile tools\retro_go_sd_backup.py
+tools\run_sd_manager_gui.bat

@@ -187,6 +187,17 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
+static uint8_t brightness = 125;
+
+static inline uint8_t scale(uint8_t v, uint8_t brightness)
+{
+    return (v * brightness) >> 8;
+}
+
+static inline uint8_t gamma8(uint8_t x)
+{
+    return powf(x / 255.0f, 2.2f) * 255.0f;
+}
 
 static void led_rgb565_to_grb888(rg_color_t color, uint8_t data[3])
 {
@@ -195,9 +206,18 @@ static void led_rgb565_to_grb888(rg_color_t color, uint8_t data[3])
     uint8_t g6 = (rgb565 >> 5) & 0x3F;
     uint8_t b5 = rgb565 & 0x1F;
 
-    data[0] = (g6 << 2) | (g6 >> 4);
-    data[1] = (r5 << 3) | (r5 >> 2);
-    data[2] = (b5 << 3) | (b5 >> 2);
+    data[0] = scale(g6, brightness);
+    data[1] = scale(r5, brightness);
+    data[2] = scale(b5, brightness);
+
+    for (int i = 0; i < 3; i++)
+    {
+        data[i] = gamma8(data[i]);
+    }
+
+    // data[0] = (g6 << 2) | (g6 >> 4);
+    // data[1] = (r5 << 3) | (r5 >> 2);
+    // data[2] = (b5 << 3) | (b5 >> 2);
 }
 
 static bool led_rmt_init(void)
@@ -209,7 +229,7 @@ static bool led_rmt_init(void)
     rmt_tx_channel_config_t channel_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .gpio_num = RG_GPIO_LED,
-        .mem_block_symbols = 64,
+        .mem_block_symbols = 128,
         .resolution_hz = WS2812_RESOLUTION_HZ,
         .trans_queue_depth = 1,
     };
