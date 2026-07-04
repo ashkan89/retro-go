@@ -61,6 +61,10 @@
     {RG_KEY_RIGHT,  .num = GPIO_NUM_18, .pullup = 1, .level = 0},\
 }
 
+#define RG_GAMEPAD_VIRT_MAP {\
+    {RG_KEY_MENU, .src = RG_KEY_START | RG_KEY_SELECT},\
+}
+
 #define RG_RECOVERY_BTN             RG_KEY_MENU
 
 // Status LED
