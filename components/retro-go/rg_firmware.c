@@ -7,6 +7,7 @@
 #include <string.h>
 
 #ifdef ESP_PLATFORM
+#include <strings.h>
 #include <esp_flash.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -105,7 +106,7 @@ cleanup:
     return success;
 }
 
-static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
+static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc, bool show_progress)
 {
     uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
     uint32_t crc = 0;
@@ -117,7 +118,8 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
     if (fseek(fp, 0, SEEK_SET) != 0)
         goto cleanup;
 
-    rg_display_clear(C_BLACK);
+    if (show_progress)
+        rg_display_clear(C_BLACK);
 
     while (remaining > 0)
     {
@@ -127,7 +129,8 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc)
 
         crc = rg_crc32(crc, buffer, chunk);
         remaining -= chunk;
-        draw_firmware_message("Verifying image...\n%d%%", (int)((image_size - remaining) * 100 / image_size));
+        if (show_progress)
+            draw_firmware_message("Verifying image...\n%d%%", (int)((image_size - remaining) * 100 / image_size));
     }
 
     success = crc == expected_crc;
@@ -293,6 +296,95 @@ static bool range_overlaps(const esp_partition_t *partition, uint32_t offset, ui
 {
     return partition && offset < partition->address + partition->size && offset + size > partition->address;
 }
+
+bool rg_firmware_image_pending(const char *path, uint32_t flags)
+{
+    image_footer_t footer = {0};
+    image_partition_t *partitions = NULL;
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    rg_stat_t stat = rg_storage_stat(path);
+    FILE *fp = NULL;
+    bool has_factory = false;
+    bool has_launcher = false;
+    bool pending = false;
+    int partition_count;
+    size_t image_size;
+
+    if (!stat.is_file || !running)
+        return false;
+
+    fp = fopen(path, "rb");
+    if (!fp)
+        return false;
+    if (!read_image_footer(fp, stat.size, &footer))
+        goto cleanup;
+    if (strcasecmp(footer.target, RG_TARGET_NAME) != 0)
+        goto cleanup;
+
+    image_size = stat.size - IMAGE_FOOTER_SIZE;
+    if (!verify_image_crc(fp, image_size, footer.crc, false))
+        goto cleanup;
+
+    partitions = calloc(MAX_IMAGE_PARTITIONS, sizeof(*partitions));
+    if (!partitions)
+        goto cleanup;
+
+    partition_count = read_partition_table(fp, partitions, MAX_IMAGE_PARTITIONS);
+    if (partition_count <= 0)
+        goto cleanup;
+
+    for (int i = 0; i < partition_count; i++)
+    {
+        image_partition_t *part = &partitions[i];
+        if (part->type != ESP_PARTITION_TYPE_APP)
+            continue;
+        has_factory |= part->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY;
+        has_launcher |= strcmp(part->label, RG_APP_LAUNCHER) == 0;
+    }
+    if ((flags & RG_FIRMWARE_REQUIRE_FACTORY) && !has_factory)
+        goto cleanup;
+    if ((flags & RG_FIRMWARE_REQUIRE_LAUNCHER) && !has_launcher)
+        goto cleanup;
+
+    for (int i = 0; i < partition_count && !pending; i++)
+    {
+        image_partition_t *part = &partitions[i];
+        bool inspect = false;
+
+        if (part->type != ESP_PARTITION_TYPE_APP)
+            continue;
+        if (part->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY)
+            inspect = flags & RG_FIRMWARE_UPDATE_FACTORY;
+        else
+            inspect = flags & RG_FIRMWARE_UPDATE_APPS;
+        if (!inspect)
+            continue;
+        if (range_overlaps(running, part->offset, part->size))
+            goto cleanup;
+        if (part->offset + part->size > image_size)
+            goto cleanup;
+        pending = !flash_range_matches(fp, part->offset, part->offset, part->size);
+    }
+
+    if (!pending && (flags & RG_FIRMWARE_UPDATE_PARTITION_TABLE))
+    {
+        if (PARTITION_TABLE_OFFSET + PARTITION_TABLE_SIZE > image_size)
+            goto cleanup;
+        pending = !flash_range_matches(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE);
+    }
+    if (!pending && (flags & RG_FIRMWARE_UPDATE_BOOTLOADER))
+    {
+        if (BOOTLOADER_OFFSET + BOOTLOADER_SIZE > image_size)
+            goto cleanup;
+        pending = !flash_range_matches(fp, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE);
+    }
+
+cleanup:
+    free(partitions);
+    if (fp)
+        fclose(fp);
+    return pending;
+}
 #endif
 
 bool rg_firmware_install_image(const char *path, uint32_t flags)
@@ -330,10 +422,15 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
         rg_gui_alert("Update failed!", "Not a Retro-Go image.");
         goto cleanup;
     }
+    if (strcasecmp(footer.target, RG_TARGET_NAME) != 0)
+    {
+        rg_gui_alert("Update failed!", "Image target does not match this device.");
+        goto cleanup;
+    }
 
     size_t image_size = stat.size - IMAGE_FOOTER_SIZE;
 
-    if (!verify_image_crc(fp, image_size, footer.crc))
+    if (!verify_image_crc(fp, image_size, footer.crc, true))
     {
         rg_gui_alert("Update failed!", "Image checksum failed.");
         goto cleanup;
@@ -426,3 +523,12 @@ cleanup:
     return success;
 #endif
 }
+
+#ifndef ESP_PLATFORM
+bool rg_firmware_image_pending(const char *path, uint32_t flags)
+{
+    (void)path;
+    (void)flags;
+    return false;
+}
+#endif

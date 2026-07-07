@@ -21,3 +21,4 @@ enum
      RG_FIRMWARE_REQUIRE_FACTORY | RG_FIRMWARE_REQUIRE_LAUNCHER)
 
 bool rg_firmware_install_image(const char *path, uint32_t flags);
+bool rg_firmware_image_pending(const char *path, uint32_t flags);

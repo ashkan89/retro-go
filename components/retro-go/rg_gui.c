@@ -2244,7 +2244,7 @@ void rg_gui_debug_menu(void)
         {0x000, "Blit time ",         frame_time,   RG_DIALOG_FLAG_NORMAL, NULL},
         {0x000, "Overclock",          overclock,    RG_DIALOG_FLAG_NORMAL, NULL},
         RG_DIALOG_SEPARATOR,
-        {0x001, "Reboot to firmware", NULL,         RG_DIALOG_FLAG_NORMAL, NULL},
+        {0x001, "Reboot to recovery", NULL,         RG_DIALOG_FLAG_NORMAL, NULL},
         {0x002, "Clear cache    ",    NULL,         RG_DIALOG_FLAG_NORMAL, NULL},
         {0x003, "Save screenshot",    NULL,         RG_DIALOG_FLAG_NORMAL, NULL},
         {0x004, "Save trace",         NULL,         RG_DIALOG_FLAG_NORMAL, NULL},
@@ -2300,7 +2300,7 @@ void rg_gui_debug_menu(void)
     switch (rg_gui_dialog("Debugging", options, 0))
     {
     case 0x001:
-        rg_system_switch_app(RG_APP_FACTORY, NULL, NULL, 0);
+        rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, RG_BOOT_RECOVERY);
         break;
     case 0x002:
         rg_storage_delete(RG_BASE_PATH_CACHE);

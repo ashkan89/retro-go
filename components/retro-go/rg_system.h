@@ -64,7 +64,8 @@ typedef enum
     RG_BOOT_SLOT2     = 0x20,
     RG_BOOT_SLOT3     = 0x30,
     RG_BOOT_SLOT_MASK = 0xF0,
-    // bits 8-31: unused...
+    // bits 8-31: system flags
+    RG_BOOT_RECOVERY  = 0x100,
 } rg_boot_flags_t;
 
 // RG_TASK_PRIORITY_1 is the same as the main task's. Anything

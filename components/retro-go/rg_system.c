@@ -187,7 +187,7 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
-static uint8_t brightness = 175;
+static uint8_t brightness = 200;
 
 static inline uint8_t scale(uint8_t v, uint8_t brightness)
 {
@@ -624,7 +624,7 @@ static void enter_recovery_mode(void)
         switch (rg_gui_dialog(_("Recovery mode"), options, -1))
         {
         case 0:
-            rg_storage_delete(RG_BASE_PATH_CONFIG);
+            rg_settings_reset();
             rg_storage_delete(RG_BASE_PATH_CACHE);
             break;
         case 1:
@@ -769,6 +769,12 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    if (app.bootFlags & RG_BOOT_RECOVERY)
+    {
+        enterRecoveryMode = true;
+        app.bootFlags &= ~RG_BOOT_RECOVERY;
+        update_boot_config(RG_APP_LAUNCHER, NULL, NULL, 0);
+    }
     load_haptic_settings();
     rg_display_init();
     rg_gui_init();
@@ -790,7 +796,14 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
                 strcat(message, "\nLog saved to SD Card.");
         }
         rg_display_clear(C_BLUE);
-        rg_gui_alert("System Panic!", message);
+        const rg_gui_option_t options[] = {
+            {0, message, NULL, RG_DIALOG_FLAG_MESSAGE, NULL},
+            {1, _("Reboot to launcher"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+            {2, _("Recovery mode"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+            RG_DIALOG_END,
+        };
+        if (rg_gui_dialog(_("System Panic!"), options, 1) == 2)
+            enter_recovery_mode();
         rg_system_exit();
     }
 
