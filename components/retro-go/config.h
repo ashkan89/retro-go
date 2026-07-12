@@ -20,6 +20,10 @@
 #include "targets/esp32-s3-n8r2-st7796/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N16R8_ST7796)
 #include "targets/esp32-s3-n16r8-st7796/config.h"
+#elif defined(RG_TARGET_ESP32_S3_N8R2_ST7789V2)
+#include "targets/esp32-s3-n8r2-st7789v2/config.h"
+#elif defined(RG_TARGET_ESP32_S3_N16R8_ST7789V2)
+#include "targets/esp32-s3-n16r8-st7789v2/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N8R2_ILI9341)
 #include "targets/esp32-s3-n8r2-ili9341/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N16R8_ILI9341)
