@@ -30,10 +30,10 @@
 #define RG_SCREEN_SAFE_AREA         {20, 0, 0, 0}
 
 #define ST7789_MADCTL_MV            0x20
-#define ST7789_MADCTL_MX            0x40
+#define ST7789_MADCTL_MY            0x80
 
 #define RG_SCREEN_INIT()                                                                                         \
-    ILI9341_CMD(0x36, ST7789_MADCTL_MX | ST7789_MADCTL_MV); /* Landscape, RGB, correct scan direction */        \
+    ILI9341_CMD(0x36, ST7789_MADCTL_MY | ST7789_MADCTL_MV); /* Landscape RGB, rotated 180 degrees */            \
     ILI9341_CMD(0xB2, 0x0C, 0x0C, 0x00, 0x33, 0x33);       /* Porch control */                                  \
     ILI9341_CMD(0xB7, 0x35);                               /* Gate control */                                    \
     ILI9341_CMD(0xBB, 0x19);                               /* VCOM setting */                                    \
