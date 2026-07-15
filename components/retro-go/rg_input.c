@@ -1,5 +1,6 @@
 #include "rg_system.h"
 #include "rg_input.h"
+#include "rg_usb_hid.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -201,6 +202,10 @@ bool rg_input_read_gamepad_raw(uint32_t *out)
     }
 #endif
 
+#if defined(RG_ENABLE_USB_HID_HOST)
+    state |= rg_usb_hid_get_gamepad_state();
+#endif
+
 #if defined(RG_GAMEPAD_VIRT_MAP)
     for (size_t i = 0; i < RG_COUNT(keymap_virt); ++i)
     {
@@ -346,6 +351,12 @@ void rg_input_init(void)
     UPDATE_GLOBAL_MAP(keymap_serial);
 #endif
 
+#if defined(RG_ENABLE_USB_HID_HOST)
+    RG_LOGI("Initializing USB HID gamepad, keyboard and mouse host...");
+    rg_usb_hid_init();
+    gamepad_mapped |= RG_KEY_ALL;
+#endif
+
 
 #if RG_BATTERY_DRIVER == 1 /* ADC */
     RG_LOGI("Initializing ADC battery driver...");
@@ -379,6 +390,9 @@ void rg_input_init(void)
 void rg_input_deinit(void)
 {
     input_task_running = false;
+#if defined(RG_ENABLE_USB_HID_HOST)
+    rg_usb_hid_deinit();
+#endif
     // while (gamepad_state != -1)
     //     rg_task_yield();
     RG_LOGI("Input terminated.\n");

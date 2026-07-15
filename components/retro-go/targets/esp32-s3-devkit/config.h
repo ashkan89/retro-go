@@ -1,5 +1,6 @@
 // Target definition
 #define RG_TARGET_NAME             "ESP32-S3-DEVKIT"
+#define RG_ENABLE_USB_HID_HOST     1
 
 // Storage
 #define RG_STORAGE_ROOT             "/sd"

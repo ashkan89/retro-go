@@ -1,5 +1,6 @@
 #include "rg_system.h"
 #include "rg_gui.h"
+#include "rg_usb_hid.h"
 
 #include <cJSON.h>
 #include <math.h>
@@ -2094,6 +2095,113 @@ static rg_gui_event_t wifi_cb(rg_gui_option_t *option, rg_gui_event_t event)
 }
 #endif
 
+#ifdef RG_ENABLE_USB_HID_HOST
+static rg_gui_event_t usb_hid_enable_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    bool enabled = rg_usb_hid_get_enabled();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+    {
+        enabled = !enabled;
+        rg_usb_hid_set_enabled(enabled);
+    }
+    strcpy(option->value, enabled ? _("On") : _("Off"));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t usb_hid_status_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    (void)event;
+    uint32_t connected = rg_usb_hid_get_connected();
+    if (!connected)
+        strcpy(option->value, _("None"));
+    else
+    {
+        option->value[0] = 0;
+        if (connected & (1U << RG_USB_HID_GAMEPAD)) strcat(option->value, "Pad ");
+        if (connected & (1U << RG_USB_HID_KEYBOARD)) strcat(option->value, "Keyboard ");
+        if (connected & (1U << RG_USB_HID_MOUSE)) strcat(option->value, "Mouse");
+    }
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t usb_hid_mapping_item_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    rg_usb_hid_device_t device = (option->arg >> 8) & 0xFF;
+    int key_index = option->arg & 0xFF;
+    if (event == RG_DIALOG_ENTER)
+    {
+        const char *device_name = device == RG_USB_HID_GAMEPAD ? _("gamepad control") :
+                                  device == RG_USB_HID_KEYBOARD ? _("keyboard key") : _("mouse action");
+        rg_gui_draw_message(_("Press a USB %s for %s\n\nTimeout: 10 seconds"),
+                            device_name, rg_input_get_key_name(1U << key_index));
+        uint32_t source = 0;
+        if (rg_usb_hid_capture_source(device, &source, 10000))
+        {
+            rg_usb_hid_set_mapping(device, key_index, source);
+            rg_input_wait_for_key(RG_KEY_ALL, false, 1000);
+        }
+        else
+            rg_gui_alert(_("USB mapping"), _("No USB input was detected."));
+        rg_display_force_redraw();
+        return RG_DIALOG_REDRAW;
+    }
+    rg_usb_hid_source_name(device, rg_usb_hid_get_mapping(device, key_index), option->value, 32);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t usb_hid_reset_mapping_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER && rg_gui_confirm(_("Reset USB mappings?"), NULL, false))
+    {
+        rg_usb_hid_reset_mappings((rg_usb_hid_device_t)option->arg);
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t usb_hid_mapping_menu_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event != RG_DIALOG_ENTER)
+        return RG_DIALOG_VOID;
+
+    rg_usb_hid_device_t device = (rg_usb_hid_device_t)option->arg;
+    rg_gui_option_t mappings_menu[RG_KEY_COUNT + 2];
+    for (int i = 0; i < RG_KEY_COUNT; ++i)
+    {
+        mappings_menu[i] = (rg_gui_option_t){
+            .arg = ((intptr_t)device << 8) | i,
+            .label = rg_input_get_key_name(1U << i),
+            .value = "-",
+            .flags = RG_DIALOG_FLAG_NORMAL,
+            .update_cb = usb_hid_mapping_item_cb,
+        };
+    }
+    mappings_menu[RG_KEY_COUNT] = (rg_gui_option_t){device, _("Reset mappings"), NULL,
+                                                     RG_DIALOG_FLAG_NORMAL, usb_hid_reset_mapping_cb};
+    mappings_menu[RG_KEY_COUNT + 1] = (rg_gui_option_t)RG_DIALOG_END;
+    rg_gui_dialog(option->label, mappings_menu, 0);
+    return RG_DIALOG_REDRAW;
+}
+
+static rg_gui_event_t usb_hid_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        const rg_gui_option_t usb_options[] = {
+            {0, _("USB HID input"), "-", RG_DIALOG_FLAG_NORMAL, usb_hid_enable_cb},
+            {0, _("Connected"), "-", RG_DIALOG_FLAG_MESSAGE, usb_hid_status_cb},
+            {RG_USB_HID_GAMEPAD, _("Gamepad mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
+            {RG_USB_HID_KEYBOARD, _("Keyboard mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
+            {RG_USB_HID_MOUSE, _("Mouse mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
+            RG_DIALOG_END,
+        };
+        rg_gui_dialog(option->label, usb_options, 0);
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+#endif
+
 static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     if (event == RG_DIALOG_ENTER)
@@ -2122,6 +2230,9 @@ void rg_gui_options_menu(void)
         {0, _("Audio out"),       "-",  RG_DIALOG_FLAG_NORMAL, &audio_update_cb     },
 #ifdef RG_GPIO_VIBRATOR
         {0, _("Haptic feedback"), NULL, RG_DIALOG_FLAG_NORMAL, &haptic_cb           },
+#endif
+#ifdef RG_ENABLE_USB_HID_HOST
+        {0, _("USB controllers"), NULL, RG_DIALOG_FLAG_NORMAL, &usb_hid_cb          },
 #endif
         RG_DIALOG_END,
     };
