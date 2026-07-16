@@ -141,7 +141,9 @@ void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
     if (!frames || !count)
         return;
 
-    if (ACQUIRE_DEVICE(0))
+    // A momentary settings operation must not silently discard a whole audio
+    // block. A short bounded wait preserves continuity without stalling a frame.
+    if (ACQUIRE_DEVICE(10))
     {
         audio.driver->submit(frames, count);
         RELEASE_DEVICE();

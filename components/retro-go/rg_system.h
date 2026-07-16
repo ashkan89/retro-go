@@ -80,6 +80,7 @@ typedef enum
     RG_TASK_PRIORITY_6,
     RG_TASK_PRIORITY_7,
     RG_TASK_PRIORITY_8,
+    RG_TASK_PRIORITY_9,
 } rg_task_priority_t;
 
 typedef enum

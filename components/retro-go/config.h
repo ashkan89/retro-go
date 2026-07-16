@@ -163,6 +163,13 @@
 #endif
 #endif
 
+// The ESP32-S3 display path is CPU-rendered and transferred with SPI DMA.  Do
+// not let an emulator advertise a refresh rate above the useful LCD ceiling;
+// excess frames only steal time from audio synthesis and input processing.
+#ifndef RG_MAX_FPS
+#define RG_MAX_FPS 60
+#endif
+
 #ifndef RG_TASK_AFFINITY_MAIN
 #define RG_TASK_AFFINITY_MAIN 0
 #endif

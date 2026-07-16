@@ -864,7 +864,9 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     if (app.bootFlags & RG_BOOT_ONCE)
         update_boot_config(RG_APP_LAUNCHER, NULL, NULL, 0);
 
-    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, RG_TASK_AFFINITY_SYSTEM);
+    // Keep housekeeping away from the emulation/APU core. The I/O core runs it
+    // only when the higher-priority audio, USB and display work is idle.
+    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, RG_TASK_AFFINITY_IO);
     app.initialized = true;
 
     update_memory_statistics();
@@ -1165,8 +1167,8 @@ rg_stats_t rg_system_get_stats(void)
 
 void rg_system_set_tick_rate(int tickRate)
 {
-    app.tickRate = tickRate;
-    if (tickRate > 0)
+    app.tickRate = RG_MIN(tickRate, RG_MAX_FPS);
+    if (app.tickRate > 0)
         app.frameTime = 1000000 / (app.tickRate * app.speed);
     else
         app.frameTime = 1000000;
