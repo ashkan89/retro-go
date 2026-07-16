@@ -184,6 +184,8 @@ void gw_main(void)
         LoadState_done = rg_emu_load_state(app->saveSlot);
     }
 
+    rg_system_apply_saved_overclock();
+
     /* emulate watch mode */
     if (!LoadState_done)
     {

@@ -121,9 +121,15 @@ void rg_storage_init(void)
     err = esp_vfs_fat_sdspi_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
     if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC)
     {
-        RG_LOGW("SD Card mounting failed (0x%x), retrying at lower speed...\n", err);
+        RG_LOGW("SD Card mounting failed (0x%x), retrying at probing speed...\n", err);
         host_config.max_freq_khz = SDMMC_FREQ_PROBING;
-        err = esp_vfs_fat_sdspi_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
+        for (int attempt = 1; attempt <= 3 && err != ESP_OK; ++attempt)
+        {
+            rg_task_delay(100);
+            err = esp_vfs_fat_sdspi_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
+            if (err != ESP_OK)
+                RG_LOGW("SD Card probing attempt %d failed (0x%x)", attempt, err);
+        }
     }
     error_code = (int)err;
 
@@ -156,9 +162,15 @@ void rg_storage_init(void)
     esp_err_t err = esp_vfs_fat_sdmmc_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
     if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC)
     {
-        RG_LOGW("SD Card mounting failed (0x%x), retrying at lower speed...\n", err);
+        RG_LOGW("SD Card mounting failed (0x%x), retrying at probing speed...\n", err);
         host_config.max_freq_khz = SDMMC_FREQ_PROBING;
-        err = esp_vfs_fat_sdmmc_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
+        for (int attempt = 1; attempt <= 3 && err != ESP_OK; ++attempt)
+        {
+            rg_task_delay(100);
+            err = esp_vfs_fat_sdmmc_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
+            if (err != ESP_OK)
+                RG_LOGW("SD Card probing attempt %d failed (0x%x)", attempt, err);
+        }
     }
     error_code = (int)err;
 

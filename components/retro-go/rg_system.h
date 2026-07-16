@@ -256,6 +256,7 @@ float rg_system_get_app_speed(void);
 void rg_system_set_overclock(int level);
 int rg_system_get_overclock(void);
 int rg_system_get_cpu_speed(void);
+void rg_system_apply_saved_overclock(void);
 
 // RTC and time-related functions
 void rg_system_set_timezone(const char *TZ);

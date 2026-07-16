@@ -100,6 +100,7 @@ static RTC_NOINIT_ATTR time_t rtcValue;
 static bool panicTraceCleared = false;
 static bool exitCalled = false;
 static int overclockLevel, overclockMhz;
+static int requestedOverclockLevel;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
 static bool hapticEnabled = true;
@@ -481,7 +482,13 @@ static void update_statistics(void)
 
     if (counters.ticks && previous.ticks)
     {
+        /* ESP32-S3 esp_timer uses the XTAL-backed systimer and remains real
+         * microseconds when the experimental BBPLL value changes. */
+#if CONFIG_IDF_TARGET_ESP32S3
+        const float usPerSecond = 1000000.f;
+#else
         const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / (float)get_default_cpu_mhz() : 1.f);
+#endif
         float totalTime = counters.updateTime - previous.updateTime;
         float totalTimeSecs = totalTime / usPerSecond;
         float busyTime = counters.busyTime - previous.busyTime;
@@ -772,10 +779,14 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     rg_usb_hid_load_settings();
 #endif
     int savedOverclock = (int)rg_settings_get_number(NS_GLOBAL, SETTING_OVERCLOCK, 0);
-    rg_system_set_overclock(savedOverclock);
-    if (savedOverclock != rg_system_get_overclock())
+#if CONFIG_IDF_TARGET_ESP32S3
+    requestedOverclockLevel = RG_MIN(6, RG_MAX(0, savedOverclock));
+#else
+    requestedOverclockLevel = savedOverclock;
+#endif
+    if (savedOverclock != requestedOverclockLevel)
     {
-        rg_settings_set_number(NS_GLOBAL, SETTING_OVERCLOCK, rg_system_get_overclock());
+        rg_settings_set_number(NS_GLOBAL, SETTING_OVERCLOCK, requestedOverclockLevel);
         rg_settings_commit();
     }
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
@@ -1641,6 +1652,7 @@ void rg_system_set_overclock(int level)
     extern int uart_set_baudrate(int uart_num, uint32_t baud_rate);
     extern uint64_t esp_rtc_get_time_us(void);
     extern unsigned xthal_get_ccount(void);
+    extern void ets_update_cpu_frequency(uint32_t ticks_per_us);
     // #include "driver/uart.h"
 #if CONFIG_IDF_TARGET_ESP32
     #define I2C_BBPLL                   0x66
@@ -1654,10 +1666,10 @@ void rg_system_set_overclock(int level)
     #define I2C_BBPLL_HOSTID               1
     #define I2C_BBPLL_OC_DIV_7_0           3
     #define OC
-    /* 240 + (4 * 10) = 280 MHz. Higher values have proven unstable for
-     * USB, display and audio timing on the supported ESP32-S3 boards. */
-    #define OC_MAX_LEVEL                   4
-    #define OC_MIN_LEVEL                  -8
+    /* Experimental only: 240 + (level * 10), up to approximately 300 MHz.
+     * The launcher and boot/storage initialization always remain at level 0. */
+    #define OC_MAX_LEVEL                   6
+    #define OC_MIN_LEVEL                   0
     #define OC_DIV7_MULTIPLIER             1
 #endif
     if (level < OC_MIN_LEVEL || level > OC_MAX_LEVEL)
@@ -1666,6 +1678,23 @@ void rg_system_set_overclock(int level)
         level = RG_MIN(OC_MAX_LEVEL, RG_MAX(OC_MIN_LEVEL, level));
         RG_LOGW("Overclock level %d clamped to %d (min:%d max:%d)",
                 requested, level, OC_MIN_LEVEL, OC_MAX_LEVEL);
+    }
+    requestedOverclockLevel = level;
+
+    /* Never change the BBPLL in the launcher. Keep browsing, settings, SD
+     * discovery and app handoff on the supported 240 MHz clock. */
+    if (strcmp(app.name, "launcher") == 0 || app.isLauncher)
+    {
+        overclockLevel = 0;
+        overclockMhz = 0;
+        if (app.initialized)
+        {
+            rg_settings_set_number(NS_GLOBAL, SETTING_OVERCLOCK, requestedOverclockLevel);
+            rg_settings_commit();
+        }
+        RG_LOGI("Experimental overclock level %d saved for emulators; launcher remains at %dMhz",
+                requestedOverclockLevel, get_default_cpu_mhz());
+        return;
     }
     static int original_div7_0 = -1;
     if (original_div7_0 == -1)
@@ -1679,6 +1708,10 @@ void rg_system_set_overclock(int level)
     uint32_t cc = xthal_get_ccount(); // Obtain it *after* calling esp_rtc_get_time_us because it is slow
     rg_usleep(100000);
     int real_mhz = (double)(xthal_get_ccount() - cc) / (esp_rtc_get_time_us() - t);
+
+    /* Keep ROM delay loops and driver timing bookkeeping synchronized with
+     * the measured experimental CPU frequency. */
+    ets_update_cpu_frequency(real_mhz);
 
 #if CONFIG_IDF_TARGET_ESP32
     uart_set_baudrate(0, 115200.0 * ((float)get_default_cpu_mhz() / real_mhz));
@@ -1705,7 +1738,41 @@ void rg_system_set_overclock(int level)
 
 int rg_system_get_overclock(void)
 {
-    return overclockLevel;
+    return requestedOverclockLevel;
+}
+
+void rg_system_apply_saved_overclock(void)
+{
+    if (!app.isLauncher && strcmp(app.name, "launcher") != 0)
+        rg_system_set_overclock(requestedOverclockLevel);
+}
+
+static int suspend_experimental_overclock(void)
+{
+    int restoreLevel = overclockLevel;
+    if (restoreLevel != 0)
+    {
+        int requested = requestedOverclockLevel;
+        bool initialized = app.initialized;
+        app.initialized = false;
+        rg_system_set_overclock(0);
+        app.initialized = initialized;
+        requestedOverclockLevel = requested;
+    }
+    return restoreLevel;
+}
+
+static void restore_experimental_overclock(int level)
+{
+    if (level != 0)
+    {
+        int requested = requestedOverclockLevel;
+        bool initialized = app.initialized;
+        app.initialized = false;
+        rg_system_set_overclock(level);
+        app.initialized = initialized;
+        requestedOverclockLevel = requested;
+    }
 }
 
 int rg_system_get_cpu_speed(void)
@@ -1793,6 +1860,7 @@ bool rg_emu_load_state(uint8_t slot)
         return false;
     }
 
+    int restoreOverclock = suspend_experimental_overclock();
     char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE + slot, app.romPath);
     bool success = false;
 
@@ -1810,6 +1878,7 @@ bool rg_emu_load_state(uint8_t slot)
     }
 
     free(filename);
+    restore_experimental_overclock(restoreOverclock);
 
     return success;
 }
@@ -1822,6 +1891,7 @@ bool rg_emu_save_state(uint8_t slot)
         return false;
     }
 
+    int restoreOverclock = suspend_experimental_overclock();
     char *filename = rg_emu_get_path(RG_PATH_SAVE_STATE + slot, app.romPath);
     char tempname[RG_PATH_MAX + 8];
     bool success = false;
@@ -1870,6 +1940,7 @@ bool rg_emu_save_state(uint8_t slot)
 
     rg_storage_commit();
     rg_system_set_indicator(RG_INDICATOR_ACTIVITY_SYSTEM, 0);
+    restore_experimental_overclock(restoreOverclock);
 
     return success;
 }

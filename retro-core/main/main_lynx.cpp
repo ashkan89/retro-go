@@ -223,6 +223,7 @@ extern "C" void lynx_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
+    rg_system_apply_saved_overclock();
     set_display_mode();
 
     long skipFrames = 0;

@@ -1615,7 +1615,17 @@ static rg_gui_event_t overclock_cb(rg_gui_option_t *option, rg_gui_event_t event
     else if (event == RG_DIALOG_NEXT)
         rg_system_set_overclock(rg_system_get_overclock() + 1);
     if (event == RG_DIALOG_INIT || event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+#if CONFIG_IDF_TARGET_ESP32S3
+    {
+        if (rg_system_get_app()->isLauncher)
+            sprintf(option->value, "%d (games ~%dMhz; here 240)",
+                    rg_system_get_overclock(), 240 + rg_system_get_overclock() * 10);
+        else
+            sprintf(option->value, "%d (%dMhz)", rg_system_get_overclock(), rg_system_get_cpu_speed());
+    }
+#else
         sprintf(option->value, "%d (%dMhz)", rg_system_get_overclock(), rg_system_get_cpu_speed());
+#endif
     return RG_DIALOG_VOID;
 }
 
