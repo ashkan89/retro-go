@@ -32,8 +32,14 @@
 typedef struct
 {
     hid_host_device_handle_t handle;
-    hid_host_driver_event_t event;
+    uint8_t event;
 } hid_event_t;
+
+enum
+{
+    USB_HID_EVENT_CONNECTED = HID_HOST_DRIVER_EVENT_CONNECTED,
+    USB_HID_EVENT_RECOVER = 0x80,
+};
 
 static QueueHandle_t hid_event_queue;
 static volatile bool usb_ready;
@@ -295,7 +301,19 @@ static void interface_callback(hid_host_device_handle_t handle, hid_host_interfa
         hid_host_device_close(handle);
     }
     else if (event == HID_HOST_INTERFACE_EVENT_TRANSFER_ERROR)
-        RG_LOGW("USB HID transfer error");
+    {
+        /* A failed IN transfer is not automatically resubmitted by the HID
+         * component. Clear latched input immediately and recover from the
+         * device task, outside the driver's callback context. */
+        portENTER_CRITICAL(&hid_lock);
+        memset(keyboard_keys, 0, sizeof(keyboard_keys));
+        mouse_buttons = 0;
+        generic_report_len = 0;
+        portEXIT_CRITICAL(&hid_lock);
+        hid_event_t queued = {.handle = handle, .event = USB_HID_EVENT_RECOVER};
+        if (!hid_event_queue || xQueueSend(hid_event_queue, &queued, 0) != pdTRUE)
+            RG_LOGE("USB HID recovery queue is full");
+    }
 }
 
 static void driver_callback(hid_host_device_handle_t handle, hid_host_driver_event_t event, void *arg)
@@ -314,7 +332,21 @@ static void hid_device_task(void *arg)
     {
         if (xQueueReceive(hid_event_queue, &event, pdMS_TO_TICKS(100)) != pdTRUE)
             continue;
-        if (event.event != HID_HOST_DRIVER_EVENT_CONNECTED)
+        if (event.event == USB_HID_EVENT_RECOVER)
+        {
+            hid_host_dev_params_t params;
+            if (hid_host_device_get_params(event.handle, &params) == ESP_OK)
+            {
+                hid_host_device_stop(event.handle);
+                esp_err_t err = hid_host_device_start(event.handle);
+                if (err == ESP_OK)
+                    RG_LOGI("USB HID interface recovered");
+                else
+                    RG_LOGE("USB HID recovery failed: %s", esp_err_to_name(err));
+            }
+            continue;
+        }
+        if (event.event != USB_HID_EVENT_CONNECTED)
             continue;
 
         hid_host_dev_params_t params;
@@ -385,15 +417,16 @@ void rg_usb_hid_init(void)
 
     usb_running = true;
     usb_ready = false;
-    xTaskCreatePinnedToCore(usb_event_task, "usb_events", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(usb_event_task, "usb_events", 4096, NULL,
+                            RG_TASK_PRIORITY_7, NULL, RG_TASK_AFFINITY_IO);
     while (!usb_ready)
         rg_task_delay(10);
 
     const hid_host_driver_config_t config = {
         .create_background_task = true,
-        .task_priority = 5,
+        .task_priority = RG_TASK_PRIORITY_8,
         .stack_size = 4096,
-        .core_id = 0,
+        .core_id = RG_TASK_AFFINITY_IO,
         .callback = driver_callback,
         .callback_arg = NULL,
     };
@@ -404,7 +437,8 @@ void rg_usb_hid_init(void)
         usb_running = false;
         return;
     }
-    xTaskCreatePinnedToCore(hid_device_task, "usb_hid", 4096, NULL, 4, NULL, 0);
+    xTaskCreatePinnedToCore(hid_device_task, "usb_hid", 4096, NULL,
+                            RG_TASK_PRIORITY_7, NULL, RG_TASK_AFFINITY_IO);
     RG_LOGI("USB HID host ready (input %s)", hid_enabled ? "enabled" : "disabled");
 }
 

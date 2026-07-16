@@ -120,6 +120,7 @@ static const char *SETTING_HAPTIC_ENABLE = "HapticEnable";
 static const char *SETTING_HAPTIC_STRENGTH = "HapticStrength";
 static const char *SETTING_SCREEN_DIM = "ScreenDimTimeout";
 static const char *SETTING_SCREEN_OFF = "ScreenOffTimeout";
+static const char *SETTING_OVERCLOCK = "OverclockLevel";
 
 typedef enum
 {
@@ -770,6 +771,13 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
 #if defined(RG_ENABLE_USB_HID_HOST)
     rg_usb_hid_load_settings();
 #endif
+    int savedOverclock = (int)rg_settings_get_number(NS_GLOBAL, SETTING_OVERCLOCK, 0);
+    rg_system_set_overclock(savedOverclock);
+    if (savedOverclock != rg_system_get_overclock())
+    {
+        rg_settings_set_number(NS_GLOBAL, SETTING_OVERCLOCK, rg_system_get_overclock());
+        rg_settings_commit();
+    }
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
@@ -824,7 +832,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.romPath = app.bootArgs ?: ""; // For whatever reason some of our code isn't NULL-aware, sigh..
 
     rg_gui_draw_hourglass();
-    rg_audio_init(sampleRate);
+    rg_audio_init(roundf(sampleRate * get_audio_clock_correction()));
 
     rg_system_set_timezone(rg_settings_get_string(NS_GLOBAL, SETTING_TIMEZONE, "EST+5"));
     rg_system_load_time();
@@ -1646,14 +1654,18 @@ void rg_system_set_overclock(int level)
     #define I2C_BBPLL_HOSTID               1
     #define I2C_BBPLL_OC_DIV_7_0           3
     #define OC
-    #define OC_MAX_LEVEL                   8
+    /* 240 + (4 * 10) = 280 MHz. Higher values have proven unstable for
+     * USB, display and audio timing on the supported ESP32-S3 boards. */
+    #define OC_MAX_LEVEL                   4
     #define OC_MIN_LEVEL                  -8
     #define OC_DIV7_MULTIPLIER             1
 #endif
     if (level < OC_MIN_LEVEL || level > OC_MAX_LEVEL)
     {
-        RG_LOGW("Invalid level %d, min:%d max:%d", level, OC_MIN_LEVEL, OC_MAX_LEVEL);
-        return;
+        int requested = level;
+        level = RG_MIN(OC_MAX_LEVEL, RG_MAX(OC_MIN_LEVEL, level));
+        RG_LOGW("Overclock level %d clamped to %d (min:%d max:%d)",
+                requested, level, OC_MIN_LEVEL, OC_MAX_LEVEL);
     }
     static int original_div7_0 = -1;
     if (original_div7_0 == -1)
@@ -1678,7 +1690,12 @@ void rg_system_set_overclock(int level)
 
     overclockLevel = level;
     overclockMhz = real_mhz;
-    update_audio_sample_rate();
+    if (app.initialized)
+    {
+        update_audio_sample_rate();
+        rg_settings_set_number(NS_GLOBAL, SETTING_OVERCLOCK, level);
+        rg_settings_commit();
+    }
 
     RG_LOGW("Overclock level %d applied: %dMhz", level, real_mhz);
 #else
