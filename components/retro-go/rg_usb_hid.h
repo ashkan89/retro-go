@@ -14,6 +14,7 @@ typedef enum
 
 void rg_usb_hid_init(void);
 void rg_usb_hid_deinit(void);
+void rg_usb_hid_load_settings(void);
 uint32_t rg_usb_hid_get_gamepad_state(void);
 
 bool rg_usb_hid_get_enabled(void);
@@ -25,4 +26,3 @@ void rg_usb_hid_set_mapping(rg_usb_hid_device_t device, int key_index, uint32_t 
 void rg_usb_hid_reset_mappings(rg_usb_hid_device_t device);
 bool rg_usb_hid_capture_source(rg_usb_hid_device_t device, uint32_t *source, int timeout_ms);
 void rg_usb_hid_source_name(rg_usb_hid_device_t device, uint32_t source, char *out, size_t out_size);
-

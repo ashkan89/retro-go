@@ -376,8 +376,6 @@ void rg_usb_hid_init(void)
 {
     if (usb_running)
         return;
-    load_mappings();
-    hid_enabled = rg_settings_get_boolean(NS_GLOBAL, USB_HID_SETTING_ENABLE, false);
     hid_event_queue = xQueueCreate(8, sizeof(hid_event_t));
     if (!hid_event_queue)
     {
@@ -413,6 +411,13 @@ void rg_usb_hid_init(void)
 void rg_usb_hid_deinit(void)
 {
     hid_enabled = false;
+}
+
+void rg_usb_hid_load_settings(void)
+{
+    load_mappings();
+    hid_enabled = rg_settings_get_boolean(NS_GLOBAL, USB_HID_SETTING_ENABLE, false);
+    RG_LOGI("USB HID settings loaded (input %s)", hid_enabled ? "enabled" : "disabled");
 }
 
 static bool source_active(uint32_t source, int64_t now)
@@ -470,6 +475,7 @@ void rg_usb_hid_set_enabled(bool enabled)
 {
     hid_enabled = enabled;
     rg_settings_set_boolean(NS_GLOBAL, USB_HID_SETTING_ENABLE, enabled);
+    rg_settings_commit();
 }
 
 uint32_t rg_usb_hid_get_connected(void)
@@ -492,6 +498,7 @@ void rg_usb_hid_set_mapping(rg_usb_hid_device_t device, int key_index, uint32_t 
     char key[16];
     mapping_key(key, sizeof(key), device, key_index);
     rg_settings_set_number(NS_GLOBAL, key, source);
+    rg_settings_commit();
 }
 
 void rg_usb_hid_reset_mappings(rg_usb_hid_device_t device)
@@ -585,6 +592,7 @@ void rg_usb_hid_source_name(rg_usb_hid_device_t device, uint32_t source, char *o
 
 void rg_usb_hid_init(void) {}
 void rg_usb_hid_deinit(void) {}
+void rg_usb_hid_load_settings(void) {}
 uint32_t rg_usb_hid_get_gamepad_state(void) { return 0; }
 bool rg_usb_hid_get_enabled(void) { return false; }
 void rg_usb_hid_set_enabled(bool enabled) { (void)enabled; }

@@ -8,6 +8,7 @@
 #include <math.h>
 
 #include "rg_update.h"
+#include "rg_usb_hid.h"
 
 #ifdef ESP_PLATFORM
 #include <freertos/FreeRTOS.h>
@@ -766,6 +767,9 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     }
 
     rg_settings_init(enterRecoveryMode || showCrashDialog);
+#if defined(RG_ENABLE_USB_HID_HOST)
+    rg_usb_hid_load_settings();
+#endif
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
