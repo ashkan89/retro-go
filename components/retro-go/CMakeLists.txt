@@ -9,7 +9,7 @@ else() # esp-idf 4.1 - 4.4
 endif()
 
 if(IDF_TARGET STREQUAL "esp32s3")
-    list(APPEND COMPONENT_REQUIRES usb usb_host_hid)
+    list(APPEND COMPONENT_REQUIRES usb usb_host_hid esp_tinyusb)
 endif()
 
 register_component()

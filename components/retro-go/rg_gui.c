@@ -1,6 +1,7 @@
 #include "rg_system.h"
 #include "rg_gui.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_msc.h"
 
 #include <cJSON.h>
 #include <math.h>
@@ -2106,6 +2107,28 @@ static rg_gui_event_t wifi_cb(rg_gui_option_t *option, rg_gui_event_t event)
 #endif
 
 #ifdef RG_ENABLE_USB_HID_HOST
+static rg_gui_event_t usb_msc_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    (void)option;
+    if (event == RG_DIALOG_ENTER)
+    {
+        if (strcmp(rg_system_get_app()->name, "launcher") != 0)
+        {
+            rg_gui_alert(_("USB SD card"), _("Return to the launcher before sharing the SD card."));
+            return RG_DIALOG_REDRAW;
+        }
+        if (rg_gui_confirm(_("Share SD card with computer?"),
+                           _("The device will restart in USB drive mode. Safely eject the drive before leaving that mode."),
+                           false))
+        {
+            rg_settings_commit();
+            rg_gui_draw_message(_("Restarting in USB drive mode..."));
+            rg_usb_msc_request();
+        }
+    }
+    return RG_DIALOG_VOID;
+}
+
 static rg_gui_event_t usb_hid_enable_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     bool enabled = rg_usb_hid_get_enabled();
@@ -2203,6 +2226,9 @@ static rg_gui_event_t usb_hid_cb(rg_gui_option_t *option, rg_gui_event_t event)
             {RG_USB_HID_GAMEPAD, _("Gamepad mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
             {RG_USB_HID_KEYBOARD, _("Keyboard mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
             {RG_USB_HID_MOUSE, _("Mouse mapping"), NULL, RG_DIALOG_FLAG_NORMAL, usb_hid_mapping_menu_cb},
+#ifdef RG_ENABLE_USB_MSC
+            {0, _("USB SD card"), NULL, RG_DIALOG_FLAG_NORMAL, usb_msc_cb},
+#endif
             RG_DIALOG_END,
         };
         rg_gui_dialog(option->label, usb_options, 0);

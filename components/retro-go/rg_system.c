@@ -9,6 +9,7 @@
 
 #include "rg_update.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_msc.h"
 
 #ifdef ESP_PLATFORM
 #include <freertos/FreeRTOS.h>
@@ -757,6 +758,11 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     printf("%s %s (%s)\n", app.name, app.version, app.buildDate);
     printf(" built for: %s. type: %s\n", RG_TARGET_NAME, app.isRelease ? "release" : "dev");
     printf("========================================================\n\n");
+
+#if defined(RG_ENABLE_USB_MSC)
+    if (rg_usb_msc_boot_requested())
+        rg_usb_msc_run();
+#endif
 
 #ifdef RG_I2C_GPIO_DRIVER
     rg_i2c_init();

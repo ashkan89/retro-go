@@ -11,6 +11,7 @@
 
 #include <driver/gpio.h>
 #include <driver/i2s.h>
+#include <esp_intr_alloc.h>
 
 #ifdef RG_GPIO_SND_AMP_ENABLE_INVERT
 #define MUTE_ENABLE 1
@@ -23,8 +24,20 @@
 // We can safely assume that no application will submit more than 640 audio frames per call to
 // driver_submit (32000/50). Using a single large buffer risks blocking the call needlessly because
 // some apps submit more than once per cycle or there could be occasional jitter (early submission).
-#define DMA_BUFFER_COUNT 4
-#define DMA_BUFFER_LEN 180
+#ifndef RG_AUDIO_DMA_BUFFER_COUNT
+#define RG_AUDIO_DMA_BUFFER_COUNT 4
+#endif
+
+#ifndef RG_AUDIO_DMA_BUFFER_LENGTH
+#define RG_AUDIO_DMA_BUFFER_LENGTH 180
+#endif
+
+#ifndef RG_AUDIO_I2S_INTR_FLAGS
+#define RG_AUDIO_I2S_INTR_FLAGS 0
+#endif
+
+#define DMA_BUFFER_COUNT RG_AUDIO_DMA_BUFFER_COUNT
+#define DMA_BUFFER_LEN RG_AUDIO_DMA_BUFFER_LENGTH
 
 static struct {
     const char *last_error;
@@ -47,7 +60,7 @@ static bool driver_init(int device, int sample_rate)
             .bits_per_sample = 16,
             .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
             .communication_format = I2S_COMM_FORMAT_STAND_MSB,
-            .intr_alloc_flags = 0, // ESP_INTR_FLAG_LEVEL1
+            .intr_alloc_flags = RG_AUDIO_I2S_INTR_FLAGS,
             .dma_buf_count = DMA_BUFFER_COUNT,
             .dma_buf_len = DMA_BUFFER_LEN,
         }, 0, NULL);
@@ -68,7 +81,7 @@ static bool driver_init(int device, int sample_rate)
             .bits_per_sample = 16,
             .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
             .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-            .intr_alloc_flags = 0, // ESP_INTR_FLAG_LEVEL1
+            .intr_alloc_flags = RG_AUDIO_I2S_INTR_FLAGS,
             .dma_buf_count = DMA_BUFFER_COUNT,
             .dma_buf_len = DMA_BUFFER_LEN,
         #if CONFIG_IDF_TARGET_ESP32

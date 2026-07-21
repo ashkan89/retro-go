@@ -1,6 +1,7 @@
 #include "rg_system.h"
 #include "rg_input.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_msc.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -352,9 +353,12 @@ void rg_input_init(void)
 #endif
 
 #if defined(RG_ENABLE_USB_HID_HOST)
-    RG_LOGI("Initializing USB HID gamepad, keyboard and mouse host...");
-    rg_usb_hid_init();
-    gamepad_mapped |= RG_KEY_ALL;
+    if (!rg_usb_msc_boot_requested())
+    {
+        RG_LOGI("Initializing USB HID gamepad, keyboard and mouse host...");
+        rg_usb_hid_init();
+        gamepad_mapped |= RG_KEY_ALL;
+    }
 #endif
 
 
