@@ -4,20 +4,48 @@
 #if defined(ESP_PLATFORM) && defined(RG_ENABLE_USB_MSC) && defined(RG_STORAGE_SDSPI_HOST)
 
 #include <stdlib.h>
+#include <string.h>
 
 #include <driver/sdspi_host.h>
 #include <esp_attr.h>
 #include <esp_system.h>
 #include <sdmmc_cmd.h>
+#include <class/msc/msc.h>
 #include <tinyusb.h>
 #include <tinyusb_default_config.h>
 #include <tinyusb_msc.h>
 
-#define USB_MSC_BOOT_MAGIC 0x4D534355U
+#define USB_MSC_BOOT_MAGIC        0x4D534355U
+#define SDMMC_CMD_READ_SINGLE     17
+#define SDMMC_CMD_READ_MULTIPLE   18
+#define SDMMC_CMD_WRITE_SINGLE    24
+#define SDMMC_CMD_WRITE_MULTIPLE  25
+#define USB_ACTIVITY_HOLD_US      100000
 
-RTC_NOINIT_ATTR static uint32_t usb_msc_boot_magic;
+RTC_NOINIT_ATTR static struct
+{
+    uint32_t magic;
+    int screen_dim_timeout;
+    int screen_off_timeout;
+} usb_msc_boot;
 static volatile bool usb_attached;
 static bool usb_msc_mode;
+static volatile rg_color_t usb_activity_color;
+static volatile uint32_t usb_activity_sequence;
+
+// esp_tinyusb's CONFIG_TINYUSB_DESC_MSC_STRING is only the interface label.
+// Supply the SCSI inquiry identity that Windows uses for the disk device name.
+uint32_t tud_msc_inquiry2_cb(uint8_t lun, scsi_inquiry_resp_t *inquiry, uint32_t size)
+{
+    (void)lun;
+    if (!inquiry || size < sizeof(*inquiry))
+        return 0;
+
+    memcpy(inquiry->vendor_id, "Retro-Go", 8);
+    memcpy(inquiry->product_id, "Retro-Go SD Card", 16);
+    memcpy(inquiry->product_rev, "1.0 ", 4);
+    return sizeof(*inquiry);
+}
 
 static void usb_device_event(tinyusb_event_t *event, void *arg)
 {
@@ -32,17 +60,34 @@ bool rg_usb_msc_boot_requested(void)
 {
     if (usb_msc_mode)
         return true;
-    if (usb_msc_boot_magic != USB_MSC_BOOT_MAGIC)
+    if (usb_msc_boot.magic != USB_MSC_BOOT_MAGIC)
         return false;
-    usb_msc_boot_magic = 0;
+    usb_msc_boot.magic = 0;
     usb_msc_mode = true;
     return true;
 }
 
 void rg_usb_msc_request(void)
 {
-    usb_msc_boot_magic = USB_MSC_BOOT_MAGIC;
+    usb_msc_boot.screen_dim_timeout = rg_settings_get_number(NS_APP, "ScreenDimTimeout", 30);
+    usb_msc_boot.screen_off_timeout = rg_settings_get_number(NS_APP, "ScreenOffTimeout", 10);
+    usb_msc_boot.magic = USB_MSC_BOOT_MAGIC;
     esp_restart();
+}
+
+static esp_err_t usb_sdcard_transaction(int slot, sdmmc_command_t *cmd)
+{
+    if (cmd->opcode == SDMMC_CMD_READ_SINGLE || cmd->opcode == SDMMC_CMD_READ_MULTIPLE)
+    {
+        usb_activity_color = C_GREEN;
+        usb_activity_sequence++;
+    }
+    else if (cmd->opcode == SDMMC_CMD_WRITE_SINGLE || cmd->opcode == SDMMC_CMD_WRITE_MULTIPLE)
+    {
+        usb_activity_color = C_RED;
+        usb_activity_sequence++;
+    }
+    return sdspi_host_do_transaction(slot, cmd);
 }
 
 static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
@@ -79,6 +124,7 @@ static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = *out_slot;
     host.max_freq_khz = RG_STORAGE_SDSPI_SPEED;
+    host.do_transaction = usb_sdcard_transaction;
     err = sdmmc_card_init(&host, card);
     if (err != ESP_OK)
     {
@@ -99,6 +145,82 @@ static void draw_status(const char *error)
     else
         rg_gui_draw_message("USB SD card\n\n%s\nManage files in Explorer.\nSafely eject and unplug USB,\nthen press MENU to restart.",
                             usb_attached ? "Connected to computer." : "Connect the Type-C port to a computer.");
+}
+
+static bool update_screen_timeout(uint32_t joystick, int64_t now)
+{
+    enum { SCREEN_AWAKE, SCREEN_DIMMED, SCREEN_OFF };
+    static int state = SCREEN_AWAKE;
+    static int saved_backlight = -1;
+    static int64_t last_activity;
+    static bool wait_release;
+
+    if (!last_activity)
+        last_activity = now;
+
+    if (wait_release)
+    {
+        if (joystick & RG_KEY_ANY)
+        {
+            last_activity = now;
+            return false;
+        }
+        wait_release = false;
+    }
+
+    if (joystick & RG_KEY_ANY)
+    {
+        last_activity = now;
+        if (state != SCREEN_AWAKE)
+        {
+            rg_display_set_backlight_raw(saved_backlight < 0 ? rg_display_get_backlight() : saved_backlight);
+            saved_backlight = -1;
+            state = SCREEN_AWAKE;
+            wait_release = true;
+            return false;
+        }
+        if (joystick & RG_KEY_MENU)
+            return true;
+    }
+
+    const int dim_timeout = usb_msc_boot.screen_dim_timeout;
+    const int off_timeout = usb_msc_boot.screen_off_timeout;
+    if (dim_timeout <= 0)
+        return false;
+
+    const int64_t idle_ms = (now - last_activity) / 1000;
+    if (state == SCREEN_AWAKE && idle_ms >= dim_timeout * 1000)
+    {
+        saved_backlight = rg_display_get_backlight();
+        rg_display_set_backlight_raw(1);
+        state = SCREEN_DIMMED;
+    }
+    if (state == SCREEN_DIMMED && off_timeout > 0 &&
+        idle_ms >= (dim_timeout + off_timeout) * 1000)
+    {
+        rg_display_set_backlight_raw(0);
+        state = SCREEN_OFF;
+    }
+    return false;
+}
+
+static void update_activity_led(int64_t now)
+{
+    static uint32_t seen_sequence;
+    static int64_t activity_until;
+    static rg_color_t shown = C_NONE;
+    uint32_t sequence = usb_activity_sequence;
+    if (sequence != seen_sequence)
+    {
+        seen_sequence = sequence;
+        activity_until = now + USB_ACTIVITY_HOLD_US;
+    }
+    rg_color_t requested = now < activity_until ? usb_activity_color : C_NONE;
+    if (requested != shown)
+    {
+        shown = requested;
+        rg_system_set_led_color(shown);
+    }
 }
 
 void rg_usb_msc_run(void)
@@ -171,8 +293,13 @@ void rg_usb_msc_run(void)
     bool last_attached = usb_attached;
     draw_status(error);
     rg_input_wait_for_key(RG_KEY_MENU, false, 500);
-    while (!(rg_input_read_gamepad() & RG_KEY_MENU))
+    while (true)
     {
+        int64_t now = rg_system_timer();
+        uint32_t joystick = rg_input_read_gamepad_unfiltered();
+        if (update_screen_timeout(joystick, now))
+            break;
+        update_activity_led(now);
         if (!error && last_attached != usb_attached)
         {
             last_attached = usb_attached;
@@ -181,6 +308,7 @@ void rg_usb_msc_run(void)
         rg_task_delay(20);
     }
 
+    rg_system_set_led_color(C_NONE);
     rg_gui_draw_message("Restarting...\n\nKeep USB unplugged for controller mode.");
     if (tusb_installed)
         tinyusb_driver_uninstall();
@@ -205,4 +333,3 @@ void rg_usb_msc_request(void) { rg_system_restart(); }
 void rg_usb_msc_run(void) { rg_system_restart(); }
 
 #endif
-

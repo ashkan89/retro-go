@@ -191,11 +191,11 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
-static uint8_t brightness = 200;
+static uint8_t brightness = 215;
 
 static inline uint8_t scale(uint8_t v, uint8_t brightness)
 {
-    return (v * brightness) >> 8;
+    return ((uint16_t)v * brightness + 127) / 255;
 }
 
 static inline uint8_t gamma8(uint8_t x)
@@ -209,19 +209,20 @@ static void led_rgb565_to_grb888(rg_color_t color, uint8_t data[3])
     uint8_t r5 = (rgb565 >> 11) & 0x1F;
     uint8_t g6 = (rgb565 >> 5) & 0x3F;
     uint8_t b5 = rgb565 & 0x1F;
+    uint8_t r8 = (r5 << 3) | (r5 >> 2);
+    uint8_t g8 = (g6 << 2) | (g6 >> 4);
+    uint8_t b8 = (b5 << 3) | (b5 >> 2);
 
-    data[0] = scale(g6, brightness);
-    data[1] = scale(r5, brightness);
-    data[2] = scale(b5, brightness);
+    // The on-board addressable LED uses GRB byte order.
+    data[0] = scale(g8, brightness);
+    data[1] = scale(r8, brightness);
+    data[2] = scale(b8, brightness);
 
     for (int i = 0; i < 3; i++)
     {
         data[i] = gamma8(data[i]);
     }
 
-    // data[0] = (g6 << 2) | (g6 >> 4);
-    // data[1] = (r5 << 3) | (r5 >> 2);
-    // data[2] = (b5 << 3) | (b5 >> 2);
 }
 
 static bool led_rmt_init(void)
