@@ -139,7 +139,7 @@ static void audioTask(void *arg)
         rg_audio_sample_t samples[numSamples];
         // TODO: Clearly we need to add a better way to remain in sync with the main task...
         while (emulationPaused)
-            rg_task_yield();
+            rg_task_delay(10);
         psg_update((int16_t *)samples, numSamples, 0xFF);
         rg_audio_submit(samples, numSamples);
     }
@@ -220,7 +220,11 @@ void pce_main(void)
     free(palette);
 
     emulationPaused = true;
-    rg_task_create("pce_sound", &audioTask, NULL, 2 * 1024, RG_TASK_PRIORITY_2, RG_TASK_AFFINITY_AUDIO);
+    // PSG generation is part of the real-time audio pipeline. Keep it below
+    // the I2S writer (priority 9), but above display/USB work (priorities 6/7).
+    // The bounded I2S software queue provides pacing, so this task sleeps as
+    // soon as it has generated enough audio ahead of the hardware clock.
+    rg_task_create("pce_sound", &audioTask, NULL, 2 * 1024, RG_TASK_PRIORITY_8, RG_TASK_AFFINITY_AUDIO);
 
     InitPCE(app->sampleRate, true);
 
