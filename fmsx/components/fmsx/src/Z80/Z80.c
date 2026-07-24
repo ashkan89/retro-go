@@ -16,6 +16,7 @@
 #include "Z80.h"
 #include "Tables.h"
 #include <stdio.h>
+#include "esp_attr.h"
 
 /** INLINE ***************************************************/
 /** C99 standard has "inline", but older compilers used     **/
@@ -537,7 +538,7 @@ void ResetZ80(Z80 *R)
 /** negative, and current register values in R.             **/
 /*************************************************************/
 #ifdef EXECZ80
-int ExecZ80(register Z80 *R,register int RunCycles)
+IRAM_ATTR int ExecZ80(register Z80 *R,register int RunCycles)
 {
   register byte I;
   register pair J;
@@ -657,7 +658,7 @@ void IntZ80(Z80 *R,word Vector)
 /** emulation stopped, and current register values in R.    **/
 /*************************************************************/
 #ifndef EXECZ80
-word RunZ80(Z80 *R)
+IRAM_ATTR word RunZ80(Z80 *R)
 {
   register byte I;
   register pair J;

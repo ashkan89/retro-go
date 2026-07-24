@@ -25,7 +25,7 @@ static uint8_t *framebuffer_top, *framebuffer_bottom;
 /*
 	Draw background tiles between two lines
 */
-static void
+IRAM_ATTR static void
 draw_tiles(uint8_t *screen_buffer, int Y1, int Y2, int scroll_x, int scroll_y)
 {
 	TRACE_GFX("Rendering tiles on lines %3d - %3d\tScroll: (%3d,%3d)\n", Y1, Y2, scroll_x, scroll_y);
@@ -104,7 +104,7 @@ draw_tiles(uint8_t *screen_buffer, int Y1, int Y2, int scroll_x, int scroll_y)
 /*
 	Draw sprite C to framebuffer P
 */
-static void
+IRAM_ATTR static void
 draw_sprite(uint8_t *P, const uint16_t *C, int height, uint32_t attr)
 {
 	uint8_t *PAL = &PCE.Palette[256 + ((attr & 0xF) << 4)];
@@ -195,7 +195,7 @@ draw_sprite(uint8_t *P, const uint16_t *C, int height, uint32_t attr)
 /*
 	Draw sprites between two lines
 */
-static void // Do not inline
+IRAM_ATTR static void // Do not inline
 draw_sprites(uint8_t *screen_buffer, int Y1, int Y2, int priority)
 {
 	TRACE_GFX("Rendering sprites on lines %3d - %3d\tPriority: %d\n", Y1, Y2, priority);
@@ -308,7 +308,7 @@ gfx_latch_context(int force)
 /*
 	Render lines into the buffer from min_line to max_line (inclusive)
 */
-static inline void
+IRAM_ATTR static inline void
 render_lines(int min_line, int max_line)
 {
 	gfx_context.latched = 0;

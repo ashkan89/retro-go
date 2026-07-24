@@ -289,7 +289,7 @@ void S9xStartScreenRefresh(void)
       IPPU.FrameCount = 0;
 }
 
-void RenderLine(uint8_t C)
+IRAM_ATTR void RenderLine(uint8_t C)
 {
    if (IPPU.RenderThisFrame)
    {
@@ -637,7 +637,7 @@ void S9xSetupOBJ(void)
    IPPU.OBJChanged = false;
 }
 
-static void DrawOBJS(bool OnMain, uint8_t D)
+IRAM_ATTR static void DrawOBJS(bool OnMain, uint8_t D)
 {
    struct
    {
@@ -1561,7 +1561,7 @@ static void DrawBackgroundMode5(uint32_t bg, uint8_t Z1, uint8_t Z2)
    GFX.PPL = IPPU.DoubleHeightPixels ? GFX.PPLx2 : (GFX.PPLx2 >> 1);
 }
 
-static void DrawBackground(uint32_t BGMode, uint32_t bg, uint8_t Z1, uint8_t Z2)
+IRAM_ATTR static void DrawBackground(uint32_t BGMode, uint32_t bg, uint8_t Z1, uint8_t Z2)
 {
    uint32_t Tile;
    uint16_t* SC0;

@@ -94,7 +94,7 @@ static inline unsigned blend_pixels(unsigned a, unsigned b)
     // return (((a ^ b) & 0b1101111011110110U) >> 1) + (a & b);
 }
 
-static inline void write_update(const rg_surface_t *update)
+IRAM_ATTR static inline void write_update(const rg_surface_t *update)
 {
     const int64_t time_start = rg_system_timer();
 

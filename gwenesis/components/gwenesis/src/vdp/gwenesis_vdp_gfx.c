@@ -19,6 +19,7 @@ __license__ = "GPLv3"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include "esp_attr.h"
 #include "m68k.h"
 #include "gwenesis_vdp.h"
 #include "gwenesis_io.h"
@@ -1010,7 +1011,7 @@ blit_4to5_line(uint16_t *in, uint16_t *out) {
 }
 */
 
-void gwenesis_vdp_render_line(int line)
+IRAM_ATTR void gwenesis_vdp_render_line(int line)
 {
   mode_h40 = REG12_MODE_H40;
   //mode_pal = REG1_PAL;
