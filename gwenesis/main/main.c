@@ -319,6 +319,14 @@ void app_main(void)
 
         scan_line = 0;
 
+        // Audio (YM2612+PSG) is generated incrementally as system_clock advances,
+        // but used to be handed to the real-time queue only once, after the whole
+        // scanline loop (CPUs + VDP render) finished. Flushing a few times per
+        // frame instead means a slow scanline late in the frame can no longer
+        // delay audio that was already generated earlier in that same frame.
+        int audio_flushed = 0;
+        int next_audio_checkpoint = lines_per_frame / 4;
+
         while (scan_line < lines_per_frame)
         {
             m68k_run(system_clock + VDP_CYCLES_PER_LINE);
@@ -372,6 +380,24 @@ void app_main(void)
             }
 
             system_clock += VDP_CYCLES_PER_LINE;
+
+            // Catch up and flush a chunk of audio at each quarter-frame checkpoint.
+            if (scan_line >= next_audio_checkpoint && next_audio_checkpoint < lines_per_frame)
+            {
+                if (yfm_enabled || z80_enabled)
+                {
+                    gwenesis_SN76489_run(system_clock);
+                    ym2612_run(system_clock);
+
+                    int frames = (ym2612_index - audio_flushed) >> 1;
+                    if (frames > 0)
+                    {
+                        rg_audio_submit((const rg_audio_frame_t *)(gwenesis_ym2612_buffer + audio_flushed), frames);
+                        audio_flushed += frames << 1;
+                    }
+                }
+                next_audio_checkpoint += lines_per_frame / 4;
+            }
         }
 
         /* Audio
@@ -387,11 +413,11 @@ void app_main(void)
         m68k.cycles -= system_clock;
 
         if (yfm_enabled || z80_enabled) {
-            // YM2612/PSG state is cycle-coupled to the emulated CPUs, but the
-            // completed PCM block must cross into the real-time I2S pipeline
-            // before display submission can block.
-            rg_audio_submit((const rg_audio_frame_t *)gwenesis_ym2612_buffer,
-                            AUDIO_BUFFER_LENGTH >> 1);
+            // Hand off whatever this frame's checkpoints above haven't flushed yet
+            // (the tail end, plus anything the accuracy catch-up just completed).
+            int frames = (ym2612_index - audio_flushed) >> 1;
+            if (frames > 0)
+                rg_audio_submit((const rg_audio_frame_t *)(gwenesis_ym2612_buffer + audio_flushed), frames);
         }
 
         if (drawFrame)

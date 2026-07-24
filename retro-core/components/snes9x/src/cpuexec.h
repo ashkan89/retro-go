@@ -36,6 +36,12 @@ void S9xDoHBlankProcessing(void);
 void S9xClearIRQ(uint32_t source);
 void S9xSetIRQ(uint32_t source);
 
+/* Implemented by the host (main_snes.c). Called once per scanline (from the
+ * HBlank-end event) with the current/max V-Counter, so audio can be mixed
+ * and submitted in a few chunks per frame instead of one lump after the
+ * whole frame's CPU+PPU emulation finishes. */
+void S9xAudioTick(int v_counter, int v_counter_max);
+
 extern const SOpcodes S9xOpcodesE1   [256];
 extern const SOpcodes S9xOpcodesM1X1 [256];
 extern const SOpcodes S9xOpcodesM1X0 [256];

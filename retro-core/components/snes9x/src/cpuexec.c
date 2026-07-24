@@ -212,6 +212,7 @@ void S9xDoHBlankProcessing()
             }
          }
       }
+      S9xAudioTick(CPU.V_Counter, Settings.PAL ? SNES_MAX_PAL_VCOUNTER : SNES_MAX_NTSC_VCOUNTER);
 #endif
       break;
    case HTIMER_BEFORE_EVENT:

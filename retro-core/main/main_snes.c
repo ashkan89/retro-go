@@ -282,6 +282,38 @@ static void S9xAudioCallback(void)
     S9xMixSamples((void *)audioBuffer, available_samples);
     rg_audio_submit(audioBuffer, available_samples >> 1);
 }
+#else
+// Called once per scanline from cpuexec.c's HBlank-end event. Mixing and
+// submitting audio in a few chunks per frame (instead of once after
+// S9xMainLoop() returns) means a slow/heavy scanline late in the frame can no
+// longer delay audio that was already generated earlier in that same frame.
+// v_counter == 0 marks the point where the frame that just ended wraps over;
+// that call flushes whatever's left of it before resetting for the new one.
+void S9xAudioTick(int v_counter, int v_counter_max)
+{
+    static int audio_samples_done = 0;
+
+    if (!apu_enabled)
+        return;
+
+    int target_samples = (v_counter == 0) ? AUDIO_BUFFER_LENGTH
+                                           : (int)((int64_t)AUDIO_BUFFER_LENGTH * v_counter / v_counter_max);
+    int pending = target_samples - audio_samples_done;
+
+    if (pending > 0 && (pending >= AUDIO_BUFFER_LENGTH / 4 || v_counter == 0))
+    {
+        if (lowpass_filter)
+            S9xMixSamplesLowPass((void *)(audioBuffer + audio_samples_done), pending << 1, AUDIO_LOW_PASS_RANGE);
+        else
+            S9xMixSamples((void *)(audioBuffer + audio_samples_done), pending << 1);
+
+        rg_audio_submit(audioBuffer + audio_samples_done, pending);
+        audio_samples_done += pending;
+    }
+
+    if (v_counter == 0)
+        audio_samples_done = 0;
+}
 #endif
 
 static void options_handler(rg_gui_option_t *dest)
@@ -403,17 +435,10 @@ void snes_main(void)
         IPPU.RenderThisFrame = drawFrame;
         GFX.Screen = currentUpdate->data;
 
+        // Audio is mixed and queued incrementally by S9xAudioTick() (called from
+        // cpuexec.c once per scanline) as S9xMainLoop() progresses, instead of
+        // once in a lump here after the whole frame's emulation finishes.
         S9xMainLoop();
-
-    #ifndef USE_BLARGG_APU
-        if (apu_enabled && lowpass_filter)
-            S9xMixSamplesLowPass((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1, AUDIO_LOW_PASS_RANGE);
-        else if (apu_enabled)
-            S9xMixSamples((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1);
-
-        if (apu_enabled)
-            rg_audio_submit(audioBuffer, AUDIO_BUFFER_LENGTH);
-    #endif
 
         if (drawFrame)
         {
