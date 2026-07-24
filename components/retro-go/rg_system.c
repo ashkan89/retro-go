@@ -191,7 +191,7 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
-static uint8_t brightness = 215;
+static uint8_t brightness = 200;
 
 static inline uint8_t scale(uint8_t v, uint8_t brightness)
 {
