@@ -402,6 +402,7 @@ void snes_main(void)
     bool menuCancelled = false;
     bool menuPressed = false;
     int skipFrames = 0;
+    bool skip_toggle = false;
 
     while (1)
     {
@@ -451,7 +452,17 @@ void snes_main(void)
         {
             int elapsed = rg_system_timer() - startTime;
             if (app->frameskip > 0)
-                skipFrames = app->frameskip;
+            {
+                // Alternate the skip-group length by +/-1 around the same average so a
+                // fixed periodic skip pattern doesn't permanently alias with a game's own
+                // periodic blink effect (very often toggled every 2/4/8 frames) -- without
+                // this the display always samples the same blink phase and the object
+                // looks frozen or invisible instead of blinking. Same average render rate.
+                skip_toggle = !skip_toggle;
+                skipFrames = app->frameskip + (skip_toggle ? 1 : -1);
+                if (skipFrames < 0)
+                    skipFrames = 0;
+            }
             else if (elapsed > app->frameTime + 1500) // Allow some jitter
                 skipFrames = 1; // (elapsed / frameTime)
             else if (drawFrame && slowFrame)
