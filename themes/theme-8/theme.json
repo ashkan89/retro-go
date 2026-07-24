@@ -1,0 +1,53 @@
+{
+    "description": "Hot Pink Arcade",
+    "website": "https://github.com/ashkan89/retro-go/",
+    "author": "retro-go",
+    "dialog": {
+        "__comment": "This section contains global dialog colors",
+        "background": "0x1022",
+        "foreground": "0xFF3E",
+        "border": "0xC950",
+        "header": "0xFB77",
+        "scrollbar": "0xFCBA",
+        "shadow": "0x0000",
+        "item_standard": "0xFF3E",
+        "item_disabled": "0x8ACF",
+        "item_message": "0xFD5A"
+    },
+    "launcher_1": {
+        "__comment": "This section contains launcher colors variant 1",
+        "background": "0x0000",
+        "foreground": "0xFF3E",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x8ACF",
+        "list_selected_bg": "transparent",
+        "list_selected_fg": "0xFFFF"
+    },
+    "launcher_2": {
+        "__comment": "This section contains launcher colors variant 2",
+        "background": "0x0000",
+        "foreground": "0xFF3E",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x8ACF",
+        "list_selected_bg": "transparent",
+        "list_selected_fg": "0xFAD6"
+    },
+    "launcher_3": {
+        "__comment": "This section contains launcher colors variant 3",
+        "background": "0x0000",
+        "foreground": "0xFF3E",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x8ACF",
+        "list_selected_bg": "0xFFFF",
+        "list_selected_fg": "0x0000"
+    },
+    "launcher_4": {
+        "__comment": "This section contains launcher colors variant 4",
+        "background": "0x0000",
+        "foreground": "0xFF3E",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0xC950",
+        "list_selected_bg": "0xFFFF",
+        "list_selected_fg": "0x0000"
+    }
+}

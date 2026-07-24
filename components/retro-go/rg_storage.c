@@ -69,6 +69,24 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
         // free some memory and try again?
     }
 
+    // The initial mount handshake already retries on these same transient errors
+    // (see rg_storage_init below), but every transaction after that -- including the
+    // ones FatFs issues internally while walking directory clusters during readdir(),
+    // or while reading/writing file data -- previously went through unretried. A single
+    // glitchy block read/write here used to surface as silent, undiagnosable truncation
+    // or corruption further up the stack (e.g. a directory listing that stops early with
+    // no error, or a short file read/write).
+    if (ret == ESP_ERR_TIMEOUT || ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_INVALID_CRC)
+    {
+        for (int attempt = 1; attempt <= 3 && ret != ESP_OK; ++attempt)
+        {
+            RG_LOGW("SD Card transaction failed (0x%x), retry %d/3...\n", ret, attempt);
+            ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
+        }
+        if (ret != ESP_OK)
+            RG_LOGE("SD Card transaction failed after retries (0x%x)\n", ret);
+    }
+
     rg_system_set_indicator(indicator, 0);
     return ret;
 }
@@ -376,8 +394,21 @@ bool rg_storage_scandir(const char *path, rg_scandir_cb_t *callback, void *arg, 
     result->basename = result->path + path_len;
     result->dirname = path;
 
-    while ((ent = readdir(dir)))
+    // readdir() returns NULL both at legitimate end-of-directory and on a real
+    // read error (e.g. a transient SD card glitch mid-listing) -- errno is the only
+    // way to tell those apart, and it must be cleared right before every call since
+    // a successful call isn't guaranteed to reset it.
+    for (;;)
     {
+        errno = 0;
+        ent = readdir(dir);
+        if (!ent)
+        {
+            if (errno != 0)
+                RG_LOGW("readdir() error (%d) while scanning '%s', listing may be incomplete\n", errno, path);
+            break;
+        }
+
         if (ent->d_name[0] == '.' && (!ent->d_name[1] || ent->d_name[1] == '.'))
         {
             // Skip self and parent

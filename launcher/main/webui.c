@@ -34,6 +34,16 @@ static char *urldecode(const char *str)
 static int add_file(const rg_scandir_t *entry, void *arg)
 {
     cJSON *obj = cJSON_CreateObject();
+    if (!obj)
+    {
+        // Out of memory: cJSON's Add* calls below would silently no-op on a NULL
+        // object (and AddItemToArray would silently no-op on a NULL item), which
+        // previously let the scan continue and drop entries from the listing with
+        // no indication anything was wrong. Stop cleanly instead so what's already
+        // been added is returned, and the failure is at least visible in the logs.
+        RG_LOGE("Out of memory building directory listing, truncating at '%s'\n", entry->basename);
+        return RG_SCANDIR_STOP;
+    }
     cJSON_AddStringToObject(obj, "name", entry->basename);
     cJSON_AddNumberToObject(obj, "size", entry->size);
     cJSON_AddNumberToObject(obj, "mtime", entry->mtime);
@@ -178,7 +188,16 @@ static esp_err_t http_download_handler(httpd_req_t *req)
 
         for (size_t len; (len = fread(http_buffer, 1, 0x8000, fp));)
         {
-            httpd_resp_send_chunk(req, http_buffer, len);
+            // A failed/aborted chunk send (client disconnected, socket error) previously
+            // went unnoticed: the loop kept reading and "sending" the rest of the file
+            // for nothing, with no log trace. Stop as soon as a send fails.
+            if (httpd_resp_send_chunk(req, http_buffer, len) != ESP_OK)
+            {
+                RG_LOGW("Download of '%s' aborted mid-transfer\n", filename);
+                fclose(fp);
+                free(filename);
+                return ESP_FAIL;
+            }
             rg_task_yield();
         }
 
