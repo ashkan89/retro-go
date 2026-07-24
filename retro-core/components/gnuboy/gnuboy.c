@@ -97,9 +97,10 @@ void gnuboy_run(bool draw)
 		cycles -= gb_cpu_emulate(cycles);
 	}
 
-	/* When using GB_PIXEL_PALETTED, the host should draw the frame in this callback
-	   because the palette can be modified below before gnuboy_run returns. */
-	if (draw && GB.video.callback) {
+	/* Paletted output must be consumed before vblank can modify its palette.
+	   RGB565 output is deferred until after audio so display back-pressure can
+	   never delay delivery of the completed APU block. */
+	if (draw && GB.video.format == GB_PIXEL_PALETTED && GB.video.callback) {
 		(GB.video.callback)(GB.video.buffer);
 	}
 
@@ -113,6 +114,10 @@ void gnuboy_run(bool draw)
 
 	if (GB.audio.callback && GB.audio.pos > 0) {
 		(GB.audio.callback)(GB.audio.buffer, GB.audio.pos);
+	}
+
+	if (draw && GB.video.format != GB_PIXEL_PALETTED && GB.video.callback) {
+		(GB.video.callback)(GB.video.buffer);
 	}
 }
 

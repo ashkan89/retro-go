@@ -110,6 +110,7 @@ typedef struct nes_s
 
     /* Port functions */
     void (*blit_func)(uint8 *);
+    void (*audio_func)(void);
 } nes_t;
 
 nes_t *nes_getptr(void);

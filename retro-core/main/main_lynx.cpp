@@ -258,6 +258,12 @@ extern "C" void lynx_main(void)
         lynx->SetButtonData(buttons);
         lynx->UpdateFrame(drawFrame);
 
+        // The APU block is complete at UpdateFrame return. Queue it before
+        // display synchronization so a slow SPI transfer cannot starve I2S.
+        size_t audioFrames = gAudioBufferPointer / 2;
+        if (audioFrames)
+            rg_audio_submit((const rg_audio_frame_t *)gAudioBuffer, audioFrames);
+
         if (drawFrame)
         {
             slowFrame = !rg_display_sync(false);
@@ -267,10 +273,9 @@ extern "C" void lynx_main(void)
         }
 
         // The Lynx has a variable tick rate, I don't know of a better way to guess than from audio stream
-        rg_system_set_tick_rate(AUDIO_SAMPLE_RATE / (gAudioBufferPointer / 2));
+        if (audioFrames)
+            rg_system_set_tick_rate(AUDIO_SAMPLE_RATE / audioFrames);
         rg_system_tick(rg_system_timer() - startTime);
-
-        rg_audio_submit((const rg_audio_frame_t *)gAudioBuffer, gAudioBufferPointer / 2);
 
         // See if we need to skip a frame to keep up
         if (skipFrames == 0)

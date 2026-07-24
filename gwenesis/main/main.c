@@ -386,6 +386,14 @@ void app_main(void)
         // reset m68k cycles to the begin of next frame cycle
         m68k.cycles -= system_clock;
 
+        if (yfm_enabled || z80_enabled) {
+            // YM2612/PSG state is cycle-coupled to the emulated CPUs, but the
+            // completed PCM block must cross into the real-time I2S pipeline
+            // before display submission can block.
+            rg_audio_submit((const rg_audio_frame_t *)gwenesis_ym2612_buffer,
+                            AUDIO_BUFFER_LENGTH >> 1);
+        }
+
         if (drawFrame)
         {
             for (int i = 0; i < 256; ++i)
@@ -397,11 +405,6 @@ void app_main(void)
         }
 
         rg_system_tick(rg_system_timer() - startTime);
-
-        if (yfm_enabled || z80_enabled) {
-            // TODO: Mix in gwenesis_sn76489_buffer
-            rg_audio_submit((void *)gwenesis_ym2612_buffer, AUDIO_BUFFER_LENGTH >> 1);
-        }
 
         if (skipFrames == 0)
         {

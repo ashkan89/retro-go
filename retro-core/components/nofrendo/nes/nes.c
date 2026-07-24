@@ -72,10 +72,15 @@ void nes_emulate(bool draw)
 
     nes.scanline = 0;
 
+    apu_emulate();
+
+    // Audio is the real-time deadline. Hand the completed APU block to the
+    // host before a potentially blocking display submission.
+    if (nes.audio_func)
+        nes.audio_func();
+
     if (draw && nes.blit_func)
         nes.blit_func(nes.vidbuf);
-
-    apu_emulate();
 }
 
 uint8 *nes_setvidbuf(uint8 *vidbuf)

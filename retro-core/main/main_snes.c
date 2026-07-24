@@ -405,26 +405,23 @@ void snes_main(void)
 
         S9xMainLoop();
 
+    #ifndef USE_BLARGG_APU
+        if (apu_enabled && lowpass_filter)
+            S9xMixSamplesLowPass((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1, AUDIO_LOW_PASS_RANGE);
+        else if (apu_enabled)
+            S9xMixSamples((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1);
+
+        if (apu_enabled)
+            rg_audio_submit(audioBuffer, AUDIO_BUFFER_LENGTH);
+    #endif
+
         if (drawFrame)
         {
             slowFrame = !rg_display_sync(false);
             rg_display_submit(currentUpdate, 0);
         }
 
-    #ifndef USE_BLARGG_APU
-        if (apu_enabled && lowpass_filter)
-            S9xMixSamplesLowPass((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1, AUDIO_LOW_PASS_RANGE);
-        else if (apu_enabled)
-            S9xMixSamples((void *)audioBuffer, AUDIO_BUFFER_LENGTH << 1);
-    #endif
-
         rg_system_tick(rg_system_timer() - startTime);
-
-    #ifndef USE_BLARGG_APU
-        if (apu_enabled)
-            rg_audio_submit(audioBuffer, AUDIO_BUFFER_LENGTH);
-    #endif
-
         if (skipFrames == 0)
         {
             int elapsed = rg_system_timer() - startTime;

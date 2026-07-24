@@ -163,6 +163,11 @@ static void blit_screen(uint8 *bmp)
     rg_display_submit(currentUpdate, 0);
 }
 
+static void submit_audio(void)
+{
+    rg_audio_submit((const rg_audio_frame_t *)nes->apu->buffer, nes->apu->samples_per_frame);
+}
+
 static void nsf_draw_overlay(void)
 {
     extern int nsf_current_song;
@@ -256,6 +261,8 @@ void nes_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
+    nes->audio_func = submit_audio;
+
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(nes->refresh_rate);
 
@@ -297,9 +304,6 @@ void nes_main(void)
 
         // Tick before submitting audio/syncing
         rg_system_tick(rg_system_timer() - startTime);
-
-        // Audio is used to pace emulation :)
-        rg_audio_submit((void*)nes->apu->buffer, nes->apu->samples_per_frame);
 
         if (skipFrames == 0)
         {

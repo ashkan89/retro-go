@@ -357,7 +357,9 @@ void I_InitSound(void)
     music_player->init(snd_samplerate);
     music_player->setvolume(snd_MusicVolume);
 
-    rg_task_create("doom_sound", &soundTask, NULL, 2048, RG_TASK_PRIORITY_2, RG_TASK_AFFINITY_AUDIO);
+    // Keep software mixing below the I2S writer but above render/USB work.
+    // rg_audio_submit blocks only when the bounded real-time queue is full.
+    rg_task_create("doom_sound", &soundTask, NULL, 2048, RG_TASK_PRIORITY_8, RG_TASK_AFFINITY_AUDIO);
 }
 
 void I_ShutdownSound(void)

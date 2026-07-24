@@ -241,6 +241,16 @@ void sms_main(void)
 
         system_frame(!drawFrame);
 
+        // Remix and queue audio before the display path can block on SPI.
+        size_t sample_count = snd.sample_count;
+        rg_audio_sample_t mixbuffer[sample_count];
+        for (size_t i = 0; i < sample_count; i++)
+        {
+            mixbuffer[i].left = (snd.stream[0][i] * 11) / 4;
+            mixbuffer[i].right = (snd.stream[1][i] * 11) / 4;
+        }
+        rg_audio_submit(mixbuffer, sample_count);
+
         if (drawFrame)
         {
             if (render_copy_palette(currentUpdate->palette))
@@ -251,20 +261,8 @@ void sms_main(void)
             bitmap.data = currentUpdate->data;
         }
 
-        // The emulator's sound buffer isn't in a very convenient format, we must remix it.
-        size_t sample_count = snd.sample_count;
-        rg_audio_sample_t mixbuffer[sample_count];
-        for (size_t i = 0; i < sample_count; i++)
-        {
-            mixbuffer[i].left = snd.stream[0][i] * 2.75f;
-            mixbuffer[i].right = snd.stream[1][i] * 2.75f;
-        }
-
-        // Tick before submitting audio/syncing
+        // Tick after both real-time audio handoff and display submission.
         rg_system_tick(rg_system_timer() - startTime);
-
-        // Audio is used to pace emulation :)
-        rg_audio_submit(mixbuffer, sample_count);
 
         // See if we need to skip a frame to keep up
         if (skipFrames == 0)

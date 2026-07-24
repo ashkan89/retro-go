@@ -263,6 +263,16 @@ void gw_main(void)
         // to execute on the emulated device
         gw_system_run(GW_SYSTEM_CYCLES);
 
+        /* Queue audio before any display wait. */
+        rg_audio_sample_t mixbuffer[GW_AUDIO_BUFFER_LENGTH];
+        for (size_t i = 0; i < GW_AUDIO_BUFFER_LENGTH; i++)
+        {
+            mixbuffer[i].left = gw_audio_buffer[i] << 13;
+            mixbuffer[i].right = gw_audio_buffer[i] << 13;
+        }
+        rg_audio_submit(mixbuffer, GW_AUDIO_BUFFER_LENGTH);
+        gw_audio_buffer_copied = true;
+
         // Our refresh rate is 128Hz, which is way too fast for our display
         // so make sure the previous frame is done sending before queuing a new one
         if (rg_display_sync(false) && drawFrame)
@@ -272,17 +282,7 @@ void gw_main(void)
         }
         /****************************************************************************/
 
-        // Tick before submitting audio/syncing
+        // Tick after real-time audio handoff and optional display work.
         rg_system_tick(rg_system_timer() - startTime);
-
-        /* copy audio samples for DMA */
-        rg_audio_sample_t mixbuffer[GW_AUDIO_BUFFER_LENGTH];
-        for (size_t i = 0; i < GW_AUDIO_BUFFER_LENGTH; i++)
-        {
-            mixbuffer[i].left = gw_audio_buffer[i] << 13;
-            mixbuffer[i].right = gw_audio_buffer[i] << 13;
-        }
-        rg_audio_submit(mixbuffer, GW_AUDIO_BUFFER_LENGTH);
-        gw_audio_buffer_copied = true;
     } // end of loop
 }
