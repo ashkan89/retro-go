@@ -15,6 +15,19 @@ const rg_keyboard_layout_t coleco_keyboard = {
 static const char *SETTING_PALETTE = "palette";
 // --- MAIN
 
+// Called several times per frame by sound.c as soon as a chunk of PSG audio
+// is ready, instead of once after the whole frame finishes rendering.
+void sms_audio_flush(const int16 *left, const int16 *right, int count)
+{
+    rg_audio_sample_t mixbuffer[count];
+    for (int i = 0; i < count; i++)
+    {
+        mixbuffer[i].left = (left[i] * 11) / 4;
+        mixbuffer[i].right = (right[i] * 11) / 4;
+    }
+    rg_audio_submit(mixbuffer, count);
+}
+
 
 static void event_handler(int event, void *arg)
 {
@@ -239,17 +252,10 @@ void sms_main(void)
             }
         }
 
+        // Audio is queued incrementally via sms_audio_flush() as system_frame()
+        // progresses through scanlines, so a slow scanline can't delay a whole
+        // frame's worth of audio behind it.
         system_frame(!drawFrame);
-
-        // Remix and queue audio before the display path can block on SPI.
-        size_t sample_count = snd.sample_count;
-        rg_audio_sample_t mixbuffer[sample_count];
-        for (size_t i = 0; i < sample_count; i++)
-        {
-            mixbuffer[i].left = (snd.stream[0][i] * 11) / 4;
-            mixbuffer[i].right = (snd.stream[1][i] * 11) / 4;
-        }
-        rg_audio_submit(mixbuffer, sample_count);
 
         if (drawFrame)
         {

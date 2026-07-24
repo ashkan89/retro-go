@@ -163,9 +163,9 @@ static void blit_screen(uint8 *bmp)
     rg_display_submit(currentUpdate, 0);
 }
 
-static void submit_audio(void)
+static void submit_audio(int offset, int count)
 {
-    rg_audio_submit((const rg_audio_frame_t *)nes->apu->buffer, nes->apu->samples_per_frame);
+    rg_audio_submit((const rg_audio_frame_t *)nes->apu->buffer + offset, count);
 }
 
 static void nsf_draw_overlay(void)

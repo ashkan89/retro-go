@@ -35,6 +35,15 @@ void nes_emulate(bool draw)
 {
     draw = draw && nes.vidbuf != NULL;
 
+    // Audio is the real-time deadline. Rather than synthesizing and handing off
+    // the whole frame's APU buffer in one lump after every scanline has been
+    // emulated (which lets one slow/heavy scanline delay audio that was already
+    // "ready" earlier in the same frame), flush it in a few chunks as we go.
+    int audio_chunk_target = nes.apu->samples_per_frame / 4;
+    if (audio_chunk_target < 1)
+        audio_chunk_target = 1;
+    int audio_samples_done = 0;
+
     while (nes.scanline < nes.scanlines_per_frame)
     {
         // Running a little bit ahead seems to fix both Battletoads games...
@@ -68,16 +77,29 @@ void nes_emulate(bool draw)
 
         ppu_endline();
         nes.scanline++;
+
+        // Flush a chunk of audio as soon as enough of it is ready.
+        int target_samples = (int)((int64_t)nes.apu->samples_per_frame * nes.scanline / nes.scanlines_per_frame);
+        int pending_samples = target_samples - audio_samples_done;
+        if (pending_samples >= audio_chunk_target)
+        {
+            apu_process(nes.apu->buffer + audio_samples_done * (nes.apu->stereo ? 2 : 1), pending_samples, nes.apu->stereo);
+            if (nes.audio_func)
+                nes.audio_func(audio_samples_done, pending_samples);
+            audio_samples_done = target_samples;
+        }
     }
 
     nes.scanline = 0;
 
-    apu_emulate();
-
-    // Audio is the real-time deadline. Hand the completed APU block to the
-    // host before a potentially blocking display submission.
-    if (nes.audio_func)
-        nes.audio_func();
+    // Flush whatever's left of this frame's audio.
+    int remaining_samples = nes.apu->samples_per_frame - audio_samples_done;
+    if (remaining_samples > 0)
+    {
+        apu_process(nes.apu->buffer + audio_samples_done * (nes.apu->stereo ? 2 : 1), remaining_samples, nes.apu->stereo);
+        if (nes.audio_func)
+            nes.audio_func(audio_samples_done, remaining_samples);
+    }
 
     if (draw && nes.blit_func)
         nes.blit_func(nes.vidbuf);

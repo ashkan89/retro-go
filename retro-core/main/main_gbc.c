@@ -271,7 +271,11 @@ void gbc_main(void)
         RG_PANIC("Emulator init failed!");
 
     gnuboy_set_framebuffer(currentUpdate->data);
-    gnuboy_set_soundbuffer(malloc(AUDIO_BUFFER_LENGTH * 4), AUDIO_BUFFER_LENGTH);
+    // gb_sound_emulate() already flushes to audio_callback as soon as this buffer
+    // fills (see sound.c), so a smaller buffer means audio reaches the real-time
+    // queue in several smaller chunks per frame instead of one big one at the end.
+    // The allocation stays full-size; only the flush threshold shrinks.
+    gnuboy_set_soundbuffer(malloc(AUDIO_BUFFER_LENGTH * 4), AUDIO_BUFFER_LENGTH / 4);
 
     // Load ROM
     if (rg_extension_match(app->romPath, "zip"))

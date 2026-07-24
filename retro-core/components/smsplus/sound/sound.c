@@ -82,6 +82,7 @@ int sound_init(void)
 
   /* Prepare incremental info */
   snd.done_so_far = 0;
+  snd.flushed_so_far = 0;
   lines_per_frame = (sms.display == DISPLAY_NTSC) ? 262 : 313;
   samples_per_line = snd.sample_count / lines_per_frame;
 
@@ -207,8 +208,17 @@ void sound_update(int line)
     if (snd.mixer_callback)
       snd.mixer_callback(snd.stream, snd.output, snd.sample_count);
 
+    /* Hand off whatever this frame hasn't flushed yet, then reset for the
+     * next frame. Spreading flushes throughout the frame (see the "tiny
+     * bit" branch below) means a slow scanline late in the frame no longer
+     * delays audio that was already generated earlier in the same frame. */
+    if (snd.sample_count > snd.flushed_so_far)
+      sms_audio_flush(psg_buffer[0] + snd.flushed_so_far, psg_buffer[1] + snd.flushed_so_far,
+                       snd.sample_count - snd.flushed_so_far);
+
     /* Reset */
     snd.done_so_far = 0;
+    snd.flushed_so_far = 0;
   }
   else
   {
@@ -228,6 +238,14 @@ void sound_update(int line)
 
     /* Sum total */
     snd.done_so_far += samples_per_line;
+
+    /* Flush in quarter-frame chunks as soon as they're ready. */
+    int pending = snd.done_so_far - snd.flushed_so_far;
+    if (pending >= snd.sample_count / 4)
+    {
+      sms_audio_flush(psg_buffer[0] + snd.flushed_so_far, psg_buffer[1] + snd.flushed_so_far, pending);
+      snd.flushed_so_far = snd.done_so_far;
+    }
   }
 }
 

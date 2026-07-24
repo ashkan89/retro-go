@@ -46,6 +46,7 @@ typedef struct
   int sample_count;
   int sample_rate;
   int done_so_far;
+  int flushed_so_far;
   uint32 fm_clock;
   uint32 psg_clock;
 } snd_t;
@@ -65,5 +66,11 @@ void sound_shutdown(void);
 void sound_reset(void);
 void sound_update(int line);
 void sound_mixer_callback(int16 **stream, int16 **output, int length);
+
+/* Implemented by the host (main_sms.c). Called a few times per frame, as
+ * soon as a chunk of PSG samples is ready, instead of waiting for the whole
+ * frame to finish emulating before any of its audio reaches the real-time
+ * queue. left/right point directly into the internal PSG stream buffers. */
+void sms_audio_flush(const int16 *left, const int16 *right, int count);
 
 #endif /* _SOUND_H_ */

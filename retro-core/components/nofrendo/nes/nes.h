@@ -110,7 +110,10 @@ typedef struct nes_s
 
     /* Port functions */
     void (*blit_func)(uint8 *);
-    void (*audio_func)(void);
+    /* Called a few times per frame, as soon as a chunk of APU samples is
+     * ready (see nes_emulate), with the sample offset and count of that
+     * chunk within nes->apu->buffer. */
+    void (*audio_func)(int offset, int count);
 } nes_t;
 
 nes_t *nes_getptr(void);
