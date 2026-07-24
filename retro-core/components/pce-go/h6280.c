@@ -50,7 +50,7 @@ h6280_irq(int type)
 /**
  * CPU emulation
  **/
-void
+IRAM_ATTR void
 h6280_run(int max_cycles)
 {
 	/* Handle active block transfers, ie: do nothing. (tai/tdd/tia/tin/tii) */

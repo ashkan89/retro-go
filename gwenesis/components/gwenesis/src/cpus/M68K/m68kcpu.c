@@ -11,6 +11,8 @@ extern int vdp_68k_irq_ack(int int_level);
 /* ================================ INCLUDES ============================== */
 /* ======================================================================== */
 
+#include "esp_attr.h"
+
 #ifndef BUILD_TABLES
   #ifndef TABLES_FULL
     #include "m68ki_cycles.h"
@@ -259,7 +261,7 @@ void m68k_set_irq_delay(unsigned int int_level)
   m68ki_check_interrupts(); /* Level triggered (IRQ) */
 }
 
-void m68k_run(unsigned int cycles) 
+IRAM_ATTR void m68k_run(unsigned int cycles)
 {
     //  printf("m68K_run current_cycles=%d add=%d STOP=%x\n",m68k.cycles,cycles,CPU_STOPPED);
 
