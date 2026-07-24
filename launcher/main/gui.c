@@ -483,10 +483,10 @@ void gui_draw_tab_indicator(void)
 {
     char buffer[64] = {0};
     memset(buffer, '-', gui.tabs_count);
-    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, C_DIM_GRAY, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
+    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, gui.theme->list.standard_fg, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
     memset(buffer, ' ', gui.tabs_count);
     buffer[gui.selected_tab] = '-';
-    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, C_SNOW, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
+    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, gui.theme->list.selected_fg, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
 }
 
 void gui_draw_status(tab_t *tab)

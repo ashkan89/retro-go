@@ -428,7 +428,7 @@ void ColorSprites(register byte Y,byte *ZBuf)
 /** RefreshLineF() *******************************************/
 /** Dummy refresh function called for non-existing screens. **/
 /*************************************************************/
-void RefreshLineF(register byte Y)
+IRAM_MAYBE void RefreshLineF(register byte Y)
 {
   register pixel *P;
 
@@ -451,7 +451,7 @@ void RefreshLineF(register byte Y)
 /** RefreshLine0() *******************************************/
 /** Refresh line Y (0..191/211) of SCREEN0.                 **/
 /*************************************************************/
-void RefreshLine0(register byte Y)
+IRAM_MAYBE void RefreshLine0(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte X,*T,*G;
@@ -486,7 +486,7 @@ void RefreshLine0(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN1, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine1(register byte Y)
+IRAM_MAYBE void RefreshLine1(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte K,X,*T,*G;
@@ -521,7 +521,7 @@ void RefreshLine1(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN2, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine2(register byte Y)
+IRAM_MAYBE void RefreshLine2(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte K,X,*T;
@@ -558,7 +558,7 @@ void RefreshLine2(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN3, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine3(register byte Y)
+IRAM_MAYBE void RefreshLine3(register byte Y)
 {
   register pixel *P;
   register byte X,K,*T,*G;
@@ -588,7 +588,7 @@ void RefreshLine3(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN4, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine4(register byte Y)
+IRAM_MAYBE void RefreshLine4(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte K,X,C,*T,*R;
@@ -631,7 +631,7 @@ void RefreshLine4(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN5, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine5(register byte Y)
+IRAM_MAYBE void RefreshLine5(register byte Y)
 {
   register pixel *P;
   register byte I,X,*T,*R;
@@ -673,7 +673,7 @@ void RefreshLine5(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN8, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine8(register byte Y)
+IRAM_MAYBE void RefreshLine8(register byte Y)
 {
   static byte SprToScr[16] =
   {
@@ -712,7 +712,7 @@ void RefreshLine8(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN10/11, including   **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine10(register byte Y)
+IRAM_MAYBE void RefreshLine10(register byte Y)
 {
   register pixel *P;
   register byte C,X,*T,*R;
@@ -755,7 +755,7 @@ void RefreshLine10(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN12, including      **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine12(register byte Y)
+IRAM_MAYBE void RefreshLine12(register byte Y)
 {
   register pixel *P;
   register byte C,X,*T,*R;
@@ -803,7 +803,7 @@ void RefreshLine12(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN6, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine6(register byte Y)
+IRAM_MAYBE void RefreshLine6(register byte Y)
 {
   register pixel *P;
   register byte X,*T,*R,C;
@@ -838,7 +838,7 @@ void RefreshLine6(register byte Y)
 /** Refresh line Y (0..191/211) of SCREEN7, including       **/
 /** sprites in this line.                                   **/
 /*************************************************************/
-void RefreshLine7(register byte Y)
+IRAM_MAYBE void RefreshLine7(register byte Y)
 {
   register pixel *P;
   register byte C,X,*T,*R;
@@ -872,7 +872,7 @@ void RefreshLine7(register byte Y)
 /** RefreshLineTx80() ****************************************/
 /** Refresh line Y (0..191/211) of TEXT80.                  **/
 /*************************************************************/
-void RefreshLineTx80(register byte Y)
+IRAM_MAYBE void RefreshLineTx80(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte X,M,*T,*C,*G;

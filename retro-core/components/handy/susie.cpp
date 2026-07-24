@@ -341,7 +341,7 @@ bool CSusie::ContextLoad(LSS_FILE *fp)
    return 1;
 }
 
-ULONG CSusie::PaintSprites(void)
+IRAM_ATTR ULONG CSusie::PaintSprites(void)
 {
    int	sprcount=0;
    int data=0;

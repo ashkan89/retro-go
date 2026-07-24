@@ -85,12 +85,17 @@ static void draw_download_progress(int received, int total, int speed)
     if (surface)
         rg_gui_set_surface(surface);
 
-    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, C_DIM_GRAY, C_NAVY);
-    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", C_WHITE, C_NAVY, RG_TEXT_ALIGN_CENTER);
-    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, C_WHITE, C_BLACK);
+    // Box/text chrome follows the active theme; the progress fill stays a
+    // recognizable blue-on-dark indicator regardless of theme.
+    rg_color_t box_bg = rg_gui_get_theme_color("dialog", "background", C_NAVY);
+    rg_color_t box_border = rg_gui_get_theme_color("dialog", "border", C_DIM_GRAY);
+    rg_color_t box_text = rg_gui_get_theme_color("dialog", "header", C_WHITE);
+    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, box_border, box_bg);
+    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", box_text, box_bg, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, box_text, C_BLACK);
     rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
     rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
-    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, box_text, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
 
     if (surface)
     {

@@ -551,8 +551,8 @@ void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resampl
     }
     else // We fill a rect to show something is missing instead of abort...
     {
-        rg_gui_draw_rect(x_pos, y_pos, width, height, 2, C_RED, C_BLACK);
-        // rg_gui_draw_text(x_pos + 2, y_pos + 2, width - 4, "No image", C_DIM_GRAY, C_BLACK, 0);
+        rg_gui_draw_rect(x_pos, y_pos, width, height, 2, gui.style.box_border, gui.style.box_background);
+        // rg_gui_draw_text(x_pos + 2, y_pos + 2, width - 4, "No image", gui.style.item_disabled, gui.style.box_background, 0);
     }
 }
 
@@ -576,9 +576,12 @@ void rg_gui_draw_icons(void)
         int x_pos = -right;
         int y_pos = icon_top;
 
+        // The fill color is a semantic charge-level indicator (green/orange/red) and is
+        // intentionally NOT theme-driven, so a low-battery warning stays universally readable
+        // regardless of which color theme is active.
         rg_color_t color_fill = (battery.level > 20 ? (battery.level > 40 ? C_FOREST_GREEN : C_ORANGE) : C_RED);
-        rg_color_t color_border = C_SILVER;
-        rg_color_t color_empty = C_BLACK;
+        rg_color_t color_border = gui.style.box_border;
+        rg_color_t color_empty = gui.style.box_background;
 
         rg_gui_draw_rect(x_pos, y_pos, width + 2, height, 1, color_border, C_NONE);
         rg_gui_draw_rect(x_pos + width + 2, y_pos + 2, 2, height - 4, 1, color_border, C_NONE);
@@ -597,8 +600,10 @@ void rg_gui_draw_icons(void)
         int x_pos = -right;
         int y_pos = icon_top + height;
 
+        // Connected/disconnected fill stays a semantic green/none indicator, same reasoning
+        // as the battery fill above.
         rg_color_t color_fill = (network.state == RG_NETWORK_CONNECTED) ? C_GREEN : C_NONE;
-        rg_color_t color_border = (network.state == RG_NETWORK_CONNECTED) ? C_SILVER : C_DIM_GRAY;
+        rg_color_t color_border = (network.state == RG_NETWORK_CONNECTED) ? gui.style.item_standard : gui.style.box_border;
 
         rg_gui_draw_rect(x_pos, y_pos - seg_height * 1, seg_width, seg_height * 1, 1, color_border, color_fill);
         x_pos += seg_width + 2;
@@ -618,7 +623,8 @@ void rg_gui_draw_icons(void)
         struct tm *time = localtime(&time_sec);
 
         sprintf(buffer, "%02d:%02d", time->tm_hour, time->tm_min);
-        rg_gui_draw_text(x_pos, y_pos, 0, buffer, C_SILVER, gui.screen_buffer ? C_TRANSPARENT : C_BLACK, 0);
+        rg_gui_draw_text(x_pos, y_pos, 0, buffer, gui.style.item_standard,
+                         gui.screen_buffer ? C_TRANSPARENT : gui.style.box_background, 0);
     }
 }
 
@@ -652,8 +658,8 @@ void rg_gui_draw_status_bars(void)
         snprintf(footer, max_len, "Retro-Go %s", app->version);
 
     // FIXME: Respect gui.margins (draw black background full screen_width, but pad the text if needed)
-    rg_gui_draw_text(0, RG_GUI_TOP, gui.screen_width, header, C_WHITE, C_BLACK, 0);
-    rg_gui_draw_text(0, RG_GUI_BOTTOM, gui.screen_width, footer, C_WHITE, C_BLACK, 0);
+    rg_gui_draw_text(0, RG_GUI_TOP, gui.screen_width, header, gui.style.item_standard, gui.style.box_background, 0);
+    rg_gui_draw_text(0, RG_GUI_BOTTOM, gui.screen_width, footer, gui.style.item_standard, gui.style.box_background, 0);
 
     rg_gui_draw_icons();
 }
@@ -825,9 +831,11 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
     rg_gui_draw_rect(box_x, box_y, box_width, box_height, box_padding, gui.style.box_background, C_NONE);
     rg_gui_draw_rect(box_x - 1, box_y - 1, box_width + 2, box_height + 2, 1, gui.style.box_border, C_NONE);
 
-    // Draw box shadow
-    // rg_gui_draw_rect(box_x + box_width + 4, box_y + box_height, box_width, 4, 0, C_NONE, gui.style.shadow); // Bottom
-    // rg_gui_draw_rect(box_x + box_width, box_y + 4, 4, box_height, 0, C_NONE, gui.style.shadow); // left
+    // Draw box shadow (invisible by default: themes that don't set "dialog.shadow"
+    // get gui.style.shadow == C_NONE, so this draws nothing and existing themes are
+    // unaffected; themes that opt in get a subtle bottom-right drop shadow).
+    rg_gui_draw_rect(box_x + 4, box_y + box_height, box_width, 4, 0, C_NONE, gui.style.shadow); // Bottom
+    rg_gui_draw_rect(box_x + box_width, box_y + 4, 4, box_height, 0, C_NONE, gui.style.shadow); // Right
 
     // Basic scroll indicators are overlayed at the end...
     if (list_top_i > 0)
@@ -2493,12 +2501,15 @@ static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t eve
             snprintf(buffer, sizeof(buffer), "Slot %d is empty", slot->id);
             color = C_RED;
         }
+        // The border stays a semantic used/empty (blue/red) indicator; the rest of this
+        // overlay's chrome follows the active theme like every other dialog.
         rg_gui_draw_image(0, margin, gui.screen_width, gui.screen_height - margin * 2, true, preview);
         rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, border, color, C_NONE);
-        rg_gui_draw_rect(border, margin + border, gui.screen_width - border * 2, gui.font_height * 2 + 6, 0, C_BLACK,
-                         C_BLACK);
-        rg_gui_draw_text(border + 60, margin + border + 5, gui.screen_width - border * 2 - 120, buffer, C_WHITE,
-                         C_BLACK, RG_TEXT_ALIGN_CENTER | RG_TEXT_BIGGER | RG_TEXT_NO_PADDING);
+        rg_gui_draw_rect(border, margin + border, gui.screen_width - border * 2, gui.font_height * 2 + 6, 0,
+                         gui.style.box_background, gui.style.box_background);
+        rg_gui_draw_text(border + 60, margin + border + 5, gui.screen_width - border * 2 - 120, buffer,
+                         gui.style.item_standard, gui.style.box_background,
+                         RG_TEXT_ALIGN_CENTER | RG_TEXT_BIGGER | RG_TEXT_NO_PADDING);
         rg_surface_free(preview);
     }
     else if (event == RG_DIALOG_ENTER)

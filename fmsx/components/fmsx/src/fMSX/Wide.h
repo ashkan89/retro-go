@@ -67,7 +67,7 @@ pixel *RefreshBorder512(register byte Y,register pixel C)
 /** RefreshScr6() ********************************************/
 /** Function to be called to update SCREEN 6.               **/
 /*************************************************************/
-void RefreshLine6(register byte Y)
+IRAM_MAYBE void RefreshLine6(register byte Y)
 {
   register pixel *P;
   register byte X,*T,*R,C;
@@ -101,7 +101,7 @@ void RefreshLine6(register byte Y)
 /** RefreshScr7() ********************************************/
 /** Function to be called to update SCREEN 7.               **/
 /*************************************************************/
-void RefreshLine7(register byte Y)
+IRAM_MAYBE void RefreshLine7(register byte Y)
 {
   register pixel *P;
   register byte C,X,*T,*R;
@@ -135,7 +135,7 @@ void RefreshLine7(register byte Y)
 /** RefreshTx80() ********************************************/
 /** Function to be called to update TEXT80.                 **/
 /*************************************************************/
-void RefreshLineTx80(register byte Y)
+IRAM_MAYBE void RefreshLineTx80(register byte Y)
 {
   register pixel *P,FC,BC;
   register byte X,M,*T,*C,*G;

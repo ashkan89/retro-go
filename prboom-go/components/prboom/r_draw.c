@@ -46,6 +46,7 @@
 #include "g_game.h"
 #include "am_map.h"
 #include "lprintf.h"
+#include "esp_attr.h"
 
 //
 // All drawing to the view buffer is accomplished in this file.
@@ -755,10 +756,16 @@ void R_InitTranslationTables (void)
 //  and the inner loop has to step in texture space u and v.
 //
 
+// Point-filtered, no-dither is the variant actually used for ordinary floor/ceiling
+// rendering every frame (default filter settings) -- the only span worth making
+// IRAM-resident.
+#define R_DRAWSPAN_IRAM_MAYBE IRAM_ATTR
 #define R_DRAWSPAN_FUNCNAME R_DrawSpan8_PointUV_PointZ
 #define R_DRAWSPAN_PIPELINE_BITS 8
 #define R_DRAWSPAN_PIPELINE (RDC_STANDARD)
 #include "r_drawspan.inl"
+#undef R_DRAWSPAN_IRAM_MAYBE
+#define R_DRAWSPAN_IRAM_MAYBE
 
 #define R_DRAWSPAN_FUNCNAME R_DrawSpan8_PointUV_LinearZ
 #define R_DRAWSPAN_PIPELINE_BITS 8
@@ -784,6 +791,8 @@ void R_InitTranslationTables (void)
 #define R_DRAWSPAN_PIPELINE_BITS 8
 #define R_DRAWSPAN_PIPELINE (RDC_STANDARD | RDC_ROUNDED | RDC_DITHERZ)
 #include "r_drawspan.inl"
+
+#undef R_DRAWSPAN_IRAM_MAYBE
 
 #ifndef NOTRUECOLOR
 #define R_DRAWSPAN_FUNCNAME R_DrawSpan15_PointUV_PointZ

@@ -14,6 +14,16 @@
 #ifndef COMMONMUX_H
 #define COMMONMUX_H
 
+#include "esp_attr.h"
+
+// IRAM_MAYBE expands to IRAM_ATTR only for the BPP16 instantiation below, since
+// that's the only depth this ESP32 port ever actually uses at runtime (see
+// SetScreenDepth() below and main.c's hardcoded Depth=16) -- tagging all three
+// depths would triple the IRAM cost for two variants that are dead code here.
+// Defined empty here too since Common.h/Wide.h are included once, unsuffixed,
+// before any BPP block is selected below.
+#define IRAM_MAYBE
+
 #include "Common.h"
 #include "Wide.h"
 
@@ -76,6 +86,9 @@ extern void (*RefreshLine[MAXSCREEN+2])(byte Y);
 #undef RefreshLineTx80
 #undef BPP8
 
+#undef IRAM_MAYBE
+#define IRAM_MAYBE IRAM_ATTR
+
 #define BPP16
 #define pixel            unsigned short
 #define FirstLine        FirstLine_16
@@ -127,6 +140,9 @@ extern void (*RefreshLine[MAXSCREEN+2])(byte Y);
 #undef RefreshLineTx80
 #undef BPP16
 
+#undef IRAM_MAYBE
+#define IRAM_MAYBE
+
 #define BPP32
 #define pixel            unsigned int
 #define FirstLine        FirstLine_32
@@ -177,6 +193,7 @@ extern void (*RefreshLine[MAXSCREEN+2])(byte Y);
 #undef RefreshLine12  
 #undef RefreshLineTx80
 #undef BPP32
+#undef IRAM_MAYBE
 
 /** SetScreenDepth() *****************************************/
 /** Fill fMSX screen driver array with pointers matching    **/

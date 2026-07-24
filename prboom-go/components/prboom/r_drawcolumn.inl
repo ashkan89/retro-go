@@ -109,7 +109,7 @@
   #define GETDESTCOLOR(col) GETDESTCOLOR32(col)
 #endif
 
-static void R_DRAWCOLUMN_FUNCNAME(draw_column_vars_t *dcvars)
+R_DRAWCOLUMN_IRAM_MAYBE static void R_DRAWCOLUMN_FUNCNAME(draw_column_vars_t *dcvars)
 {
   int              count;
   SCREENTYPE       *dest;            // killough

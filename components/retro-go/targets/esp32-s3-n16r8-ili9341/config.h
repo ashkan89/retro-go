@@ -12,7 +12,7 @@
 // Storage
 #define RG_STORAGE_ROOT             "/sd"
 #define RG_STORAGE_SDSPI_HOST       SPI3_HOST
-#define RG_STORAGE_SDSPI_SPEED      SDMMC_FREQ_DEFAULT
+#define RG_STORAGE_SDSPI_SPEED      SDMMC_FREQ_HIGHSPEED
 
 // Audio
 #define RG_AUDIO_USE_INT_DAC        0
