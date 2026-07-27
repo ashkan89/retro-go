@@ -1,6 +1,7 @@
 #include "rg_system.h"
 #include "rg_gui.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_xinput.h"
 #include "rg_usb_msc.h"
 
 #include <cJSON.h>
@@ -2246,6 +2247,86 @@ static rg_gui_event_t usb_hid_cb(rg_gui_option_t *option, rg_gui_event_t event)
 }
 #endif
 
+#ifdef RG_ENABLE_USB_XINPUT
+static rg_gui_event_t xinput_enable_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    bool enabled = rg_usb_xinput_get_enabled();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+    {
+        enabled = !enabled;
+        rg_usb_xinput_set_enabled(enabled);
+    }
+    strcpy(option->value, enabled ? _("On") : _("Off"));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t xinput_status_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    (void)event;
+    strcpy(option->value, rg_usb_xinput_get_connected() ? _("Connected") : _("None"));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t xinput_mapping_item_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    int key_index = option->arg & 0xFF;
+    if (event == RG_DIALOG_ENTER)
+    {
+        rg_gui_draw_message(_("Press a control on the Xbox controller for %s\n\nTimeout: 10 seconds"),
+                            rg_input_get_key_name(1U << key_index));
+        uint32_t source = 0;
+        if (rg_usb_xinput_capture_source(&source, 10000))
+        {
+            rg_usb_xinput_set_mapping(key_index, source);
+            rg_input_wait_for_key(RG_KEY_ALL, false, 1000);
+        }
+        else
+            rg_gui_alert(_("Xbox controller mapping"), _("No input was detected."));
+        rg_display_force_redraw();
+        return RG_DIALOG_REDRAW;
+    }
+    rg_usb_xinput_source_name(rg_usb_xinput_get_mapping(key_index), option->value, 32);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t xinput_reset_mapping_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    (void)option;
+    if (event == RG_DIALOG_ENTER && rg_gui_confirm(_("Reset Xbox controller mapping?"), NULL, false))
+    {
+        rg_usb_xinput_reset_mappings();
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t xinput_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        rg_gui_option_t xinput_options[RG_KEY_COUNT + 4];
+        xinput_options[0] = (rg_gui_option_t){0, _("Xbox controller input"), "-", RG_DIALOG_FLAG_NORMAL, xinput_enable_cb};
+        xinput_options[1] = (rg_gui_option_t){0, _("Connected"), "-", RG_DIALOG_FLAG_MESSAGE, xinput_status_cb};
+        for (int i = 0; i < RG_KEY_COUNT; ++i)
+        {
+            xinput_options[i + 2] = (rg_gui_option_t){
+                .arg = i,
+                .label = rg_input_get_key_name(1U << i),
+                .value = "-",
+                .flags = RG_DIALOG_FLAG_NORMAL,
+                .update_cb = xinput_mapping_item_cb,
+            };
+        }
+        xinput_options[RG_KEY_COUNT + 2] = (rg_gui_option_t){0, _("Reset mapping"), NULL,
+                                                              RG_DIALOG_FLAG_NORMAL, xinput_reset_mapping_cb};
+        xinput_options[RG_KEY_COUNT + 3] = (rg_gui_option_t)RG_DIALOG_END;
+        rg_gui_dialog(option->label, xinput_options, 0);
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+#endif
+
 static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     if (event == RG_DIALOG_ENTER)
@@ -2277,6 +2358,9 @@ void rg_gui_options_menu(void)
 #endif
 #ifdef RG_ENABLE_USB_HID_HOST
         {0, _("USB controllers"), NULL, RG_DIALOG_FLAG_NORMAL, &usb_hid_cb          },
+#endif
+#ifdef RG_ENABLE_USB_XINPUT
+        {0, _("Xbox controller"), NULL, RG_DIALOG_FLAG_NORMAL, &xinput_cb          },
 #endif
         RG_DIALOG_END,
     };

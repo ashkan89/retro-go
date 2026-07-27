@@ -1,5 +1,6 @@
 #include "rg_system.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_host.h"
 
 #if defined(ESP_PLATFORM) && defined(RG_ENABLE_USB_HID_HOST)
 
@@ -10,7 +11,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
-#include "usb/usb_host.h"
 #include "usb/hid_host.h"
 #include "usb/hid_usage_keyboard.h"
 #include "usb/hid_usage_mouse.h"
@@ -42,8 +42,7 @@ enum
 };
 
 static QueueHandle_t hid_event_queue;
-static volatile bool usb_ready;
-static volatile bool usb_running;
+static volatile bool hid_running;
 static volatile bool hid_enabled;
 static volatile uint32_t connected_mask;
 static portMUX_TYPE hid_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -328,7 +327,7 @@ static void hid_device_task(void *arg)
 {
     (void)arg;
     hid_event_t event;
-    while (usb_running)
+    while (hid_running)
     {
         if (xQueueReceive(hid_event_queue, &event, pdMS_TO_TICKS(100)) != pdTRUE)
             continue;
@@ -380,33 +379,9 @@ static void hid_device_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void usb_event_task(void *arg)
-{
-    (void)arg;
-    const usb_host_config_t config = {
-        .skip_phy_setup = false,
-        .intr_flags = ESP_INTR_FLAG_LEVEL1,
-    };
-    esp_err_t err = usb_host_install(&config);
-    if (err != ESP_OK)
-    {
-        RG_LOGE("USB host install failed: %s", esp_err_to_name(err));
-        usb_ready = true;
-        vTaskDelete(NULL);
-        return;
-    }
-    usb_ready = true;
-    while (usb_running)
-    {
-        uint32_t flags = 0;
-        usb_host_lib_handle_events(pdMS_TO_TICKS(100), &flags);
-    }
-    vTaskDelete(NULL);
-}
-
 void rg_usb_hid_init(void)
 {
-    if (usb_running)
+    if (hid_running)
         return;
     hid_event_queue = xQueueCreate(8, sizeof(hid_event_t));
     if (!hid_event_queue)
@@ -415,12 +390,13 @@ void rg_usb_hid_init(void)
         return;
     }
 
-    usb_running = true;
-    usb_ready = false;
-    xTaskCreatePinnedToCore(usb_event_task, "usb_events", 4096, NULL,
-                            RG_TASK_PRIORITY_7, NULL, RG_TASK_AFFINITY_IO);
-    while (!usb_ready)
-        rg_task_delay(10);
+    if (!rg_usb_host_acquire())
+    {
+        RG_LOGE("USB host library unavailable");
+        vQueueDelete(hid_event_queue);
+        hid_event_queue = NULL;
+        return;
+    }
 
     const hid_host_driver_config_t config = {
         .create_background_task = true,
@@ -434,9 +410,12 @@ void rg_usb_hid_init(void)
     if (err != ESP_OK)
     {
         RG_LOGE("USB HID host install failed: %s", esp_err_to_name(err));
-        usb_running = false;
+        rg_usb_host_release();
+        vQueueDelete(hid_event_queue);
+        hid_event_queue = NULL;
         return;
     }
+    hid_running = true;
     xTaskCreatePinnedToCore(hid_device_task, "usb_hid", 4096, NULL,
                             RG_TASK_PRIORITY_7, NULL, RG_TASK_AFFINITY_IO);
     RG_LOGI("USB HID host ready (input %s)", hid_enabled ? "enabled" : "disabled");

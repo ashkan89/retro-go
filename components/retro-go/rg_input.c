@@ -1,6 +1,7 @@
 #include "rg_system.h"
 #include "rg_input.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_xinput.h"
 #include "rg_usb_msc.h"
 
 #include <stdlib.h>
@@ -207,6 +208,10 @@ bool rg_input_read_gamepad_raw(uint32_t *out)
     state |= rg_usb_hid_get_gamepad_state();
 #endif
 
+#if defined(RG_ENABLE_USB_XINPUT)
+    state |= rg_usb_xinput_get_gamepad_state();
+#endif
+
 #if defined(RG_GAMEPAD_VIRT_MAP)
     for (size_t i = 0; i < RG_COUNT(keymap_virt); ++i)
     {
@@ -361,6 +366,15 @@ void rg_input_init(void)
     }
 #endif
 
+#if defined(RG_ENABLE_USB_XINPUT)
+    if (!rg_usb_msc_boot_requested())
+    {
+        RG_LOGI("Initializing USB Xbox controller host...");
+        rg_usb_xinput_init();
+        gamepad_mapped |= RG_KEY_ALL;
+    }
+#endif
+
 
 #if RG_BATTERY_DRIVER == 1 /* ADC */
     RG_LOGI("Initializing ADC battery driver...");
@@ -396,6 +410,9 @@ void rg_input_deinit(void)
     input_task_running = false;
 #if defined(RG_ENABLE_USB_HID_HOST)
     rg_usb_hid_deinit();
+#endif
+#if defined(RG_ENABLE_USB_XINPUT)
+    rg_usb_xinput_deinit();
 #endif
     // while (gamepad_state != -1)
     //     rg_task_yield();

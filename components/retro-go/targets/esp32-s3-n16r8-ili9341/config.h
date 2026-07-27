@@ -1,6 +1,7 @@
 // Target definition
 #define RG_TARGET_NAME             "ESP32-S3-N16R8-ILI9341"
 #define RG_ENABLE_USB_HID_HOST     1
+#define RG_ENABLE_USB_XINPUT       1
 #define RG_ENABLE_USB_MSC          1
 
 // Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.

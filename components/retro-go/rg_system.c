@@ -9,6 +9,7 @@
 
 #include "rg_update.h"
 #include "rg_usb_hid.h"
+#include "rg_usb_xinput.h"
 #include "rg_usb_msc.h"
 
 #ifdef ESP_PLATFORM
@@ -784,6 +785,9 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     rg_settings_init(enterRecoveryMode || showCrashDialog);
 #if defined(RG_ENABLE_USB_HID_HOST)
     rg_usb_hid_load_settings();
+#endif
+#if defined(RG_ENABLE_USB_XINPUT)
+    rg_usb_xinput_load_settings();
 #endif
     int savedOverclock = (int)rg_settings_get_number(NS_GLOBAL, SETTING_OVERCLOCK, 0);
 #if CONFIG_IDF_TARGET_ESP32S3
