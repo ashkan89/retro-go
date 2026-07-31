@@ -236,10 +236,10 @@ void S9xDeinitDisplay(void)
 
 uint32_t S9xReadJoypad(int32_t port)
 {
-    if (port != 0)
+    if (port != 0 && port != 1)
         return 0;
 
-    uint32_t joystick = rg_input_read_gamepad();
+    uint32_t joystick = rg_input_read_gamepad_player(port == 0 ? RG_PLAYER_1 : RG_PLAYER_2);
     uint32_t joypad = 0;
 
     for (int i = 0; i < RG_COUNT(keymap.keys); ++i)

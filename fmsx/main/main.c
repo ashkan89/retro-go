@@ -189,6 +189,26 @@ int ProcessEvents(int Wait)
             JoyState |= JST_FIREB;
     }
 
+    // fMSX packs both joystick ports into one word: low byte = port 1 (JoyState above),
+    // high byte = port 2 (see MSX.c's `Port? (JoyState>>8):JoyState`).
+    uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    uint16_t joy2State = 0;
+
+    if (joystick2 & RG_KEY_LEFT)
+        joy2State |= JST_LEFT;
+    if (joystick2 & RG_KEY_RIGHT)
+        joy2State |= JST_RIGHT;
+    if (joystick2 & RG_KEY_UP)
+        joy2State |= JST_UP;
+    if (joystick2 & RG_KEY_DOWN)
+        joy2State |= JST_DOWN;
+    if (joystick2 & RG_KEY_A)
+        joy2State |= JST_FIREA;
+    if (joystick2 & RG_KEY_B)
+        joy2State |= JST_FIREB;
+
+    JoyState |= joy2State << 8;
+
     return 0;
 }
 

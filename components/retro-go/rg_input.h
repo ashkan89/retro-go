@@ -88,6 +88,31 @@ typedef struct
     bool charging;
 } rg_battery_t;
 
+// Local multiplayer: which player a physical input source's presses count towards.
+typedef enum
+{
+    RG_PLAYER_1 = 0,
+    RG_PLAYER_2 = 1,
+    RG_PLAYER_COUNT,
+} rg_player_t;
+
+// A physical input source that can independently be assigned to a player.
+typedef enum
+{
+    RG_INPUT_SOURCE_BUILTIN = 0,
+    RG_INPUT_SOURCE_USB_GAMEPAD_1,
+    RG_INPUT_SOURCE_USB_GAMEPAD_2,
+    RG_INPUT_SOURCE_USB_KEYBOARD,
+    RG_INPUT_SOURCE_USB_MOUSE,
+    RG_INPUT_SOURCE_XINPUT_1,
+    RG_INPUT_SOURCE_XINPUT_2,
+    RG_INPUT_SOURCE_COUNT,
+} rg_input_source_t;
+
+// Stored assignment values (in addition to RG_PLAYER_1/RG_PLAYER_2):
+#define RG_INPUT_PLAYER_AUTO (-2) // Resolve automatically based on connection order
+#define RG_INPUT_PLAYER_OFF  (-1) // Never contributes to any player
+
 void rg_input_init(void);
 void rg_input_deinit(void);
 bool rg_input_key_is_present(rg_key_t mask);
@@ -95,7 +120,15 @@ bool rg_input_key_is_pressed(rg_key_t mask);
 bool rg_input_wait_for_key(rg_key_t mask, bool pressed, int timeout_ms);
 uint32_t rg_input_read_gamepad(void);
 uint32_t rg_input_read_gamepad_unfiltered(void);
+uint32_t rg_input_read_gamepad_player(rg_player_t player);
 rg_battery_t rg_input_read_battery(void);
 bool rg_input_read_gamepad_raw(uint32_t *out);
 bool rg_input_read_battery_raw(rg_battery_t *out);
 const char *rg_input_get_key_name(rg_key_t key);
+
+// Local multiplayer: source discovery and player assignment.
+bool rg_input_source_connected(rg_input_source_t source);
+const char *rg_input_source_name(rg_input_source_t source);
+int rg_input_source_get_assignment(rg_input_source_t source); // Raw stored value: RG_INPUT_PLAYER_AUTO/OFF or a player index
+void rg_input_source_set_assignment(rg_input_source_t source, int assignment);
+int rg_input_source_get_player(rg_input_source_t source); // Resolved player index, or RG_INPUT_PLAYER_OFF if unassigned

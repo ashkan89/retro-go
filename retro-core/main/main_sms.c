@@ -194,6 +194,8 @@ void sms_main(void)
             continue;
         }
 
+        uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+
         input.pad[0] = 0x00;
         input.pad[1] = 0x00;
         input.system = 0x00;
@@ -204,6 +206,13 @@ void sms_main(void)
         if (joystick & RG_KEY_RIGHT) input.pad[0] |= INPUT_RIGHT;
         if (joystick & RG_KEY_A)     input.pad[0] |= INPUT_BUTTON2;
         if (joystick & RG_KEY_B)     input.pad[0] |= INPUT_BUTTON1;
+
+        if (joystick2 & RG_KEY_UP)    input.pad[1] |= INPUT_UP;
+        if (joystick2 & RG_KEY_DOWN)  input.pad[1] |= INPUT_DOWN;
+        if (joystick2 & RG_KEY_LEFT)  input.pad[1] |= INPUT_LEFT;
+        if (joystick2 & RG_KEY_RIGHT) input.pad[1] |= INPUT_RIGHT;
+        if (joystick2 & RG_KEY_A)     input.pad[1] |= INPUT_BUTTON2;
+        if (joystick2 & RG_KEY_B)     input.pad[1] |= INPUT_BUTTON1;
 
         if (IS_SMS)
         {

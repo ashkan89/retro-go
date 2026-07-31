@@ -85,7 +85,7 @@ void input_update(int port, int state)
 input_t *input_init(void)
 {
     input_connect(0, NES_JOYPAD);
-    input_connect(1, NES_NOTHING);
+    input_connect(1, NES_JOYPAD);
     return (input_t *)ports;
 }
 

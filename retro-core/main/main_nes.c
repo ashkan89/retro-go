@@ -293,6 +293,18 @@ void nes_main(void)
         if (joystick & RG_KEY_A)      buttons |= NES_PAD_A;
         if (joystick & RG_KEY_B)      buttons |= NES_PAD_B;
 
+        uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+        int buttons2 = 0;
+
+        if (joystick2 & RG_KEY_START)  buttons2 |= NES_PAD_START;
+        if (joystick2 & RG_KEY_SELECT) buttons2 |= NES_PAD_SELECT;
+        if (joystick2 & RG_KEY_UP)     buttons2 |= NES_PAD_UP;
+        if (joystick2 & RG_KEY_RIGHT)  buttons2 |= NES_PAD_RIGHT;
+        if (joystick2 & RG_KEY_DOWN)   buttons2 |= NES_PAD_DOWN;
+        if (joystick2 & RG_KEY_LEFT)   buttons2 |= NES_PAD_LEFT;
+        if (joystick2 & RG_KEY_A)      buttons2 |= NES_PAD_A;
+        if (joystick2 & RG_KEY_B)      buttons2 |= NES_PAD_B;
+
         if (drawFrame)
         {
             currentUpdate = updates[currentUpdate == updates[0]];
@@ -300,6 +312,7 @@ void nes_main(void)
         }
 
         input_update(0, buttons);
+        input_update(1, buttons2);
         nes_emulate(drawFrame);
 
         // Tick before submitting audio/syncing

@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define RG_USB_HID_MAX_GAMEPADS 2
+
 typedef enum
 {
     RG_USB_HID_GAMEPAD = 0,
@@ -15,11 +17,14 @@ typedef enum
 void rg_usb_hid_init(void);
 void rg_usb_hid_deinit(void);
 void rg_usb_hid_load_settings(void);
-uint32_t rg_usb_hid_get_gamepad_state(void);
+uint32_t rg_usb_hid_get_gamepad_state(int instance);
+uint32_t rg_usb_hid_get_keyboard_state(void);
+uint32_t rg_usb_hid_get_mouse_state(void);
 
 bool rg_usb_hid_get_enabled(void);
 void rg_usb_hid_set_enabled(bool enabled);
 uint32_t rg_usb_hid_get_connected(void);
+bool rg_usb_hid_get_gamepad_connected(int instance);
 
 uint32_t rg_usb_hid_get_mapping(rg_usb_hid_device_t device, int key_index);
 void rg_usb_hid_set_mapping(rg_usb_hid_device_t device, int key_index, uint32_t source);

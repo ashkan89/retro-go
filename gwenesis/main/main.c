@@ -267,6 +267,7 @@ void app_main(void)
 
     uint32_t keymap[8] = {RG_KEY_UP, RG_KEY_DOWN, RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_B, RG_KEY_SELECT, RG_KEY_START};
     uint32_t joystick = 0, joystick_old;
+    uint32_t joystick2 = 0, joystick2_old;
 
     int skipFrames = 0;
 
@@ -275,6 +276,8 @@ void app_main(void)
     {
         joystick_old = joystick;
         joystick = rg_input_read_gamepad();
+        joystick2_old = joystick2;
+        joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
 
         if (joystick & (RG_KEY_MENU | RG_KEY_OPTION))
         {
@@ -283,14 +286,27 @@ void app_main(void)
             else
                 rg_gui_options_menu();
         }
-        else if (joystick != joystick_old)
+        else
         {
-            for (int i = 0; i < 8; i++)
+            if (joystick != joystick_old)
             {
-                if ((joystick & keymap[i]) == keymap[i])
-                    gwenesis_io_pad_press_button(0, i);
-                else
-                    gwenesis_io_pad_release_button(0, i);
+                for (int i = 0; i < 8; i++)
+                {
+                    if ((joystick & keymap[i]) == keymap[i])
+                        gwenesis_io_pad_press_button(0, i);
+                    else
+                        gwenesis_io_pad_release_button(0, i);
+                }
+            }
+            if (joystick2 != joystick2_old)
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    if ((joystick2 & keymap[i]) == keymap[i])
+                        gwenesis_io_pad_press_button(1, i);
+                    else
+                        gwenesis_io_pad_release_button(1, i);
+                }
             }
         }
 

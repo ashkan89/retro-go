@@ -42,9 +42,17 @@ static rg_keymap_serial_t keymap_serial[] = RG_GAMEPAD_SERIAL_MAP;
 static rg_keymap_virt_t keymap_virt[] = RG_GAMEPAD_VIRT_MAP;
 #endif
 static bool input_task_running = false;
-static uint32_t gamepad_state = -1; // _Atomic
+static uint32_t gamepad_state[RG_PLAYER_COUNT] = {(uint32_t)-1, (uint32_t)-1}; // _Atomic
 static uint32_t gamepad_mapped = 0;
 static rg_battery_t battery_state = {0};
+
+// Local multiplayer: per-source player assignment (RG_INPUT_PLAYER_AUTO/OFF or RG_PLAYER_1/2)
+// and the currently resolved player for each source (RG_INPUT_PLAYER_OFF or RG_PLAYER_1/2).
+static int8_t source_assignment[RG_INPUT_SOURCE_COUNT];
+static int8_t source_resolved_player[RG_INPUT_SOURCE_COUNT];
+static uint16_t source_connect_seq[RG_INPUT_SOURCE_COUNT];
+static bool source_was_connected[RG_INPUT_SOURCE_COUNT];
+static uint16_t connect_seq_counter;
 
 #define UPDATE_GLOBAL_MAP(keymap)                 \
     for (size_t i = 0; i < RG_COUNT(keymap); ++i) \
@@ -108,7 +116,21 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
     return true;
 }
 
-bool rg_input_read_gamepad_raw(uint32_t *out)
+static uint32_t apply_virt_map(uint32_t state)
+{
+#if defined(RG_GAMEPAD_VIRT_MAP)
+    for (size_t i = 0; i < RG_COUNT(keymap_virt); ++i)
+    {
+        if (state == keymap_virt[i].src)
+            return keymap_virt[i].key;
+    }
+#endif
+    return state;
+}
+
+// Combines every built-in (non-USB) input driver into a single bitmask. There is only ever
+// one built-in control surface, so unlike USB sources it doesn't need a player slot of its own.
+static uint32_t read_builtin_state(void)
 {
     uint32_t state = 0;
 
@@ -204,21 +226,96 @@ bool rg_input_read_gamepad_raw(uint32_t *out)
     }
 #endif
 
-#if defined(RG_ENABLE_USB_HID_HOST)
-    state |= rg_usb_hid_get_gamepad_state();
-#endif
+    return state;
+}
 
-#if defined(RG_ENABLE_USB_XINPUT)
-    state |= rg_usb_xinput_get_gamepad_state();
-#endif
-
-#if defined(RG_GAMEPAD_VIRT_MAP)
-    for (size_t i = 0; i < RG_COUNT(keymap_virt); ++i)
+static uint32_t read_source_state(rg_input_source_t source)
+{
+    switch (source)
     {
-        if (state == keymap_virt[i].src)
-            state = keymap_virt[i].key;
+    case RG_INPUT_SOURCE_BUILTIN: return read_builtin_state();
+    case RG_INPUT_SOURCE_USB_GAMEPAD_1: return rg_usb_hid_get_gamepad_state(0);
+    case RG_INPUT_SOURCE_USB_GAMEPAD_2: return rg_usb_hid_get_gamepad_state(1);
+    case RG_INPUT_SOURCE_USB_KEYBOARD: return rg_usb_hid_get_keyboard_state();
+    case RG_INPUT_SOURCE_USB_MOUSE: return rg_usb_hid_get_mouse_state();
+    case RG_INPUT_SOURCE_XINPUT_1: return rg_usb_xinput_get_gamepad_state(0);
+    case RG_INPUT_SOURCE_XINPUT_2: return rg_usb_xinput_get_gamepad_state(1);
+    default: return 0;
     }
-#endif
+}
+
+static bool source_connected(rg_input_source_t source)
+{
+    switch (source)
+    {
+    case RG_INPUT_SOURCE_BUILTIN: return true;
+    case RG_INPUT_SOURCE_USB_GAMEPAD_1: return rg_usb_hid_get_gamepad_connected(0);
+    case RG_INPUT_SOURCE_USB_GAMEPAD_2: return rg_usb_hid_get_gamepad_connected(1);
+    case RG_INPUT_SOURCE_USB_KEYBOARD: return (rg_usb_hid_get_connected() & (1U << RG_USB_HID_KEYBOARD)) != 0;
+    case RG_INPUT_SOURCE_USB_MOUSE: return (rg_usb_hid_get_connected() & (1U << RG_USB_HID_MOUSE)) != 0;
+    case RG_INPUT_SOURCE_XINPUT_1: return rg_usb_xinput_get_connected(0);
+    case RG_INPUT_SOURCE_XINPUT_2: return rg_usb_xinput_get_connected(1);
+    default: return false;
+    }
+}
+
+static void load_player_assignments(void)
+{
+    char key[24];
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+    {
+        int default_assignment = (s == RG_INPUT_SOURCE_BUILTIN) ? RG_PLAYER_1 : RG_INPUT_PLAYER_AUTO;
+        snprintf(key, sizeof(key), "InputPlayer_%d", s);
+        source_assignment[s] = (int8_t)rg_settings_get_number(NS_GLOBAL, key, default_assignment);
+    }
+}
+
+// Recomputes, for every source, which player (if any) it currently contributes to. Sources set
+// to RG_INPUT_PLAYER_AUTO resolve to: builtin -> player 1, and the first-connected (by connect
+// order) other auto source -> player 2. Explicit assignments always win.
+static void update_source_resolution(void)
+{
+    bool connected[RG_INPUT_SOURCE_COUNT];
+
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+    {
+        connected[s] = source_connected((rg_input_source_t)s);
+        if (connected[s] && !source_was_connected[s])
+            source_connect_seq[s] = ++connect_seq_counter;
+        else if (!connected[s])
+            source_connect_seq[s] = 0;
+        source_was_connected[s] = connected[s];
+    }
+
+    int auto_p2 = -1;
+    for (int s = 1; s < RG_INPUT_SOURCE_COUNT; ++s) // Skip RG_INPUT_SOURCE_BUILTIN
+    {
+        if (connected[s] && source_assignment[s] == RG_INPUT_PLAYER_AUTO)
+        {
+            if (auto_p2 < 0 || source_connect_seq[s] < source_connect_seq[auto_p2])
+                auto_p2 = s;
+        }
+    }
+
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+    {
+        int assignment = source_assignment[s];
+        if (assignment == RG_INPUT_PLAYER_AUTO)
+            source_resolved_player[s] = (s == RG_INPUT_SOURCE_BUILTIN) ? RG_PLAYER_1 :
+                                         (s == auto_p2) ? RG_PLAYER_2 : RG_INPUT_PLAYER_OFF;
+        else
+            source_resolved_player[s] = assignment;
+    }
+}
+
+bool rg_input_read_gamepad_raw(uint32_t *out)
+{
+    uint32_t state = read_builtin_state();
+
+    for (int s = RG_INPUT_SOURCE_USB_GAMEPAD_1; s < RG_INPUT_SOURCE_COUNT; ++s)
+        state |= read_source_state((rg_input_source_t)s);
+
+    state = apply_virt_map(state);
 
     if (out)
         *out = state;
@@ -227,10 +324,9 @@ bool rg_input_read_gamepad_raw(uint32_t *out)
 
 static void input_task(void *arg)
 {
-    uint8_t debounce[RG_KEY_COUNT];
-    uint32_t local_gamepad_state = 0;
-    uint32_t old_gamepad_state = 0;
-    uint32_t state;
+    uint8_t debounce[RG_PLAYER_COUNT][RG_KEY_COUNT];
+    uint32_t local_gamepad_state[RG_PLAYER_COUNT] = {0};
+    uint32_t old_gamepad_state[RG_PLAYER_COUNT] = {0};
     int64_t next_battery_update = 0;
     bool feedback_ready = false;
 
@@ -240,32 +336,48 @@ static void input_task(void *arg)
 
     while (input_task_running)
     {
-        if (rg_input_read_gamepad_raw(&state))
+        update_source_resolution();
+
+        uint32_t source_state[RG_INPUT_SOURCE_COUNT];
+        for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+            source_state[s] = read_source_state((rg_input_source_t)s);
+
+        uint32_t player_raw[RG_PLAYER_COUNT] = {0};
+        for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
         {
+            int player = source_resolved_player[s];
+            if (player >= 0 && player < RG_PLAYER_COUNT)
+                player_raw[player] |= source_state[s];
+        }
+
+        for (int player = 0; player < RG_PLAYER_COUNT; ++player)
+        {
+            uint32_t state = apply_virt_map(player_raw[player]);
+
             for (int i = 0; i < RG_KEY_COUNT; ++i)
             {
-                uint32_t val = ((debounce[i] << 1) | ((state >> i) & 1));
-                debounce[i] = val & 0xFF;
+                uint32_t val = ((debounce[player][i] << 1) | ((state >> i) & 1));
+                debounce[player][i] = val & 0xFF;
 
                 if ((val & ((1 << RG_GAMEPAD_DEBOUNCE_PRESS) - 1)) == ((1 << RG_GAMEPAD_DEBOUNCE_PRESS) - 1))
                 {
-                    local_gamepad_state |= (1 << i); // Pressed
+                    local_gamepad_state[player] |= (1 << i); // Pressed
                 }
                 else if ((val & ((1 << RG_GAMEPAD_DEBOUNCE_RELEASE) - 1)) == 0)
                 {
-                    local_gamepad_state &= ~(1 << i); // Released
+                    local_gamepad_state[player] &= ~(1 << i); // Released
                 }
             }
-            gamepad_state = local_gamepad_state;
+            gamepad_state[player] = local_gamepad_state[player];
 
 #if RG_HAPTIC_INPUT_FEEDBACK_MS > 0
-            uint32_t pressed = local_gamepad_state & ~old_gamepad_state;
+            uint32_t pressed = local_gamepad_state[player] & ~old_gamepad_state[player];
             if (feedback_ready && pressed)
                 rg_system_vibrate(RG_HAPTIC_INPUT_FEEDBACK_MS);
-            old_gamepad_state = local_gamepad_state;
-            feedback_ready = true;
+            old_gamepad_state[player] = local_gamepad_state[player];
 #endif
         }
+        feedback_ready = true;
 
         if (rg_system_timer() >= next_battery_update)
         {
@@ -285,7 +397,8 @@ static void input_task(void *arg)
     }
 
     input_task_running = false;
-    gamepad_state = -1;
+    for (int player = 0; player < RG_PLAYER_COUNT; ++player)
+        gamepad_state[player] = -1;
 }
 
 void rg_input_init(void)
@@ -395,14 +508,16 @@ void rg_input_init(void)
     }
 #endif
 
+    load_player_assignments();
+
     // The first read returns bogus data in some drivers, waste it.
     rg_input_read_gamepad_raw(NULL);
 
     // Start background polling
     rg_task_create("rg_input", &input_task, NULL, 3 * 1024, RG_TASK_PRIORITY_6, RG_TASK_AFFINITY_IO);
-    while (gamepad_state == -1)
+    while (gamepad_state[RG_PLAYER_1] == (uint32_t)-1)
         rg_task_yield();
-    RG_LOGI("Input ready. state=" PRINTF_BINARY_16 "\n", PRINTF_BINVAL_16(gamepad_state));
+    RG_LOGI("Input ready. state=" PRINTF_BINARY_16 "\n", PRINTF_BINVAL_16(gamepad_state[RG_PLAYER_1]));
 }
 
 void rg_input_deinit(void)
@@ -429,12 +544,21 @@ uint32_t rg_input_read_gamepad_unfiltered(void)
 #ifdef RG_TARGET_SDL2
     SDL_PumpEvents();
 #endif
-    return gamepad_state;
+    return gamepad_state[RG_PLAYER_1];
 }
 
 uint32_t rg_input_read_gamepad(void)
 {
     return rg_system_filter_screen_timeout_input(rg_input_read_gamepad_unfiltered());
+}
+
+uint32_t rg_input_read_gamepad_player(rg_player_t player)
+{
+    if (player == RG_PLAYER_1)
+        return rg_input_read_gamepad();
+    if (player < 0 || player >= RG_PLAYER_COUNT)
+        return 0;
+    return gamepad_state[player];
 }
 
 bool rg_input_key_is_pressed(rg_key_t mask)
@@ -480,4 +604,54 @@ const char *rg_input_get_key_name(rg_key_t key)
     case RG_KEY_NONE: return "None";
     default: return "Unknown";
     }
+}
+
+bool rg_input_source_connected(rg_input_source_t source)
+{
+    if (source < 0 || source >= RG_INPUT_SOURCE_COUNT)
+        return false;
+    return source_connected(source);
+}
+
+const char *rg_input_source_name(rg_input_source_t source)
+{
+    switch (source)
+    {
+    case RG_INPUT_SOURCE_BUILTIN: return "Built-in controls";
+    case RG_INPUT_SOURCE_USB_GAMEPAD_1: return "USB Gamepad 1";
+    case RG_INPUT_SOURCE_USB_GAMEPAD_2: return "USB Gamepad 2";
+    case RG_INPUT_SOURCE_USB_KEYBOARD: return "USB Keyboard";
+    case RG_INPUT_SOURCE_USB_MOUSE: return "USB Mouse";
+    case RG_INPUT_SOURCE_XINPUT_1: return "Xbox Controller 1";
+    case RG_INPUT_SOURCE_XINPUT_2: return "Xbox Controller 2";
+    default: return "Unknown";
+    }
+}
+
+int rg_input_source_get_assignment(rg_input_source_t source)
+{
+    if (source < 0 || source >= RG_INPUT_SOURCE_COUNT)
+        return RG_INPUT_PLAYER_OFF;
+    return source_assignment[source];
+}
+
+void rg_input_source_set_assignment(rg_input_source_t source, int assignment)
+{
+    if (source < 0 || source >= RG_INPUT_SOURCE_COUNT)
+        return;
+    if (assignment != RG_INPUT_PLAYER_AUTO && assignment != RG_INPUT_PLAYER_OFF &&
+        (assignment < 0 || assignment >= RG_PLAYER_COUNT))
+        return;
+    source_assignment[source] = (int8_t)assignment;
+    char key[24];
+    snprintf(key, sizeof(key), "InputPlayer_%d", source);
+    rg_settings_set_number(NS_GLOBAL, key, assignment);
+    rg_settings_commit();
+}
+
+int rg_input_source_get_player(rg_input_source_t source)
+{
+    if (source < 0 || source >= RG_INPUT_SOURCE_COUNT)
+        return RG_INPUT_PLAYER_OFF;
+    return source_resolved_player[source];
 }

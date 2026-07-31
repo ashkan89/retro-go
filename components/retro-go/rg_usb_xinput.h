@@ -4,14 +4,16 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define RG_USB_XINPUT_MAX_DEVICES 2
+
 void rg_usb_xinput_init(void);
 void rg_usb_xinput_deinit(void);
 void rg_usb_xinput_load_settings(void);
-uint32_t rg_usb_xinput_get_gamepad_state(void);
+uint32_t rg_usb_xinput_get_gamepad_state(int instance);
 
 bool rg_usb_xinput_get_enabled(void);
 void rg_usb_xinput_set_enabled(bool enabled);
-bool rg_usb_xinput_get_connected(void);
+bool rg_usb_xinput_get_connected(int instance);
 
 uint32_t rg_usb_xinput_get_mapping(int key_index);
 void rg_usb_xinput_set_mapping(int key_index, uint32_t source);

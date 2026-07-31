@@ -2263,7 +2263,11 @@ static rg_gui_event_t xinput_enable_cb(rg_gui_option_t *option, rg_gui_event_t e
 static rg_gui_event_t xinput_status_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     (void)event;
-    strcpy(option->value, rg_usb_xinput_get_connected() ? _("Connected") : _("None"));
+    int count = (rg_usb_xinput_get_connected(0) ? 1 : 0) + (rg_usb_xinput_get_connected(1) ? 1 : 0);
+    if (count == 0)
+        strcpy(option->value, _("None"));
+    else
+        sprintf(option->value, "%d", count);
     return RG_DIALOG_VOID;
 }
 
@@ -2327,6 +2331,69 @@ static rg_gui_event_t xinput_cb(rg_gui_option_t *option, rg_gui_event_t event)
 }
 #endif
 
+#if defined(RG_ENABLE_USB_HID_HOST) || defined(RG_ENABLE_USB_XINPUT)
+static void multiplayer_value_text(rg_input_source_t source, char *out, size_t out_size)
+{
+    int assignment = rg_input_source_get_assignment(source);
+    const char *suffix = rg_input_source_connected(source) ? "" : _(" (unplugged)");
+    if (assignment == RG_INPUT_PLAYER_AUTO)
+    {
+        int resolved = rg_input_source_get_player(source);
+        snprintf(out, out_size, "%s%s", resolved == RG_PLAYER_1 ? _("Auto (P1)") :
+                                        resolved == RG_PLAYER_2 ? _("Auto (P2)") : _("Auto (Off)"), suffix);
+    }
+    else
+    {
+        snprintf(out, out_size, "%s%s", assignment == RG_PLAYER_1 ? _("P1") :
+                                        assignment == RG_PLAYER_2 ? _("P2") : _("Off"), suffix);
+    }
+}
+
+static rg_gui_event_t multiplayer_item_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    rg_input_source_t source = (rg_input_source_t)option->arg;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+    {
+        static const int cycle[] = {RG_INPUT_PLAYER_AUTO, RG_INPUT_PLAYER_OFF, RG_PLAYER_1, RG_PLAYER_2};
+        int assignment = rg_input_source_get_assignment(source);
+        int index = 0;
+        for (int i = 0; i < (int)RG_COUNT(cycle); ++i)
+            if (cycle[i] == assignment)
+                index = i;
+        index = (index + (event == RG_DIALOG_PREV ? RG_COUNT(cycle) - 1 : 1)) % RG_COUNT(cycle);
+        rg_input_source_set_assignment(source, cycle[index]);
+    }
+    multiplayer_value_text(source, option->value, 32);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t multiplayer_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        rg_gui_option_t items[RG_INPUT_SOURCE_COUNT + 1];
+        int count = 0;
+        for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+        {
+            bool connected = rg_input_source_connected((rg_input_source_t)s);
+            if (!connected && rg_input_source_get_assignment((rg_input_source_t)s) == RG_INPUT_PLAYER_AUTO)
+                continue; // Never plugged in and not explicitly assigned, don't clutter the list
+            items[count++] = (rg_gui_option_t){
+                .arg = s,
+                .label = rg_input_source_name((rg_input_source_t)s),
+                .value = "-",
+                .flags = RG_DIALOG_FLAG_NORMAL,
+                .update_cb = multiplayer_item_cb,
+            };
+        }
+        items[count++] = (rg_gui_option_t)RG_DIALOG_END;
+        rg_gui_dialog(option->label, items, 0);
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+#endif
+
 static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     if (event == RG_DIALOG_ENTER)
@@ -2361,6 +2428,9 @@ void rg_gui_options_menu(void)
 #endif
 #ifdef RG_ENABLE_USB_XINPUT
         {0, _("Xbox controller"), NULL, RG_DIALOG_FLAG_NORMAL, &xinput_cb          },
+#endif
+#if defined(RG_ENABLE_USB_HID_HOST) || defined(RG_ENABLE_USB_XINPUT)
+        {0, _("Multiplayer"),     NULL, RG_DIALOG_FLAG_NORMAL, &multiplayer_cb     },
 #endif
         RG_DIALOG_END,
     };

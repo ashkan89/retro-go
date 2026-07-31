@@ -51,18 +51,20 @@ static uint32_t mappings[RG_USB_HID_DEVICE_COUNT][RG_KEY_COUNT];
 static bool keyboard_keys[256];
 static uint8_t mouse_buttons;
 static int64_t mouse_motion_until[4];
-static uint8_t generic_report[USB_HID_REPORT_MAX];
-static size_t generic_report_len;
+
+static hid_host_device_handle_t gamepad_handles[RG_USB_HID_MAX_GAMEPADS];
+static uint8_t generic_report[RG_USB_HID_MAX_GAMEPADS][USB_HID_REPORT_MAX];
+static size_t generic_report_len[RG_USB_HID_MAX_GAMEPADS];
 
 static volatile int capture_device = -1;
 static volatile uint32_t capture_result;
 static bool capture_keyboard_baseline[256];
 static uint8_t capture_mouse_baseline;
-static uint8_t capture_generic_baseline[USB_HID_REPORT_MAX];
-static size_t capture_generic_len;
-static bool capture_generic_valid;
-static uint32_t capture_generic_candidate;
-static uint8_t capture_generic_candidate_count;
+static uint8_t capture_generic_baseline[RG_USB_HID_MAX_GAMEPADS][USB_HID_REPORT_MAX];
+static size_t capture_generic_len[RG_USB_HID_MAX_GAMEPADS];
+static bool capture_generic_valid[RG_USB_HID_MAX_GAMEPADS];
+static uint32_t capture_generic_candidate[RG_USB_HID_MAX_GAMEPADS];
+static uint8_t capture_generic_candidate_count[RG_USB_HID_MAX_GAMEPADS];
 
 static const uint16_t default_keyboard[RG_KEY_COUNT] = {
     [0] = HID_KEY_UP,
@@ -190,25 +192,33 @@ static void process_mouse_report(const uint8_t *data, size_t length)
     portEXIT_CRITICAL(&hid_lock);
 }
 
-static void process_generic_report(const uint8_t *data, size_t length)
+static int find_gamepad_slot(hid_host_device_handle_t handle)
+{
+    for (int i = 0; i < RG_USB_HID_MAX_GAMEPADS; ++i)
+        if (gamepad_handles[i] == handle)
+            return i;
+    return -1;
+}
+
+static void process_generic_report(int instance, const uint8_t *data, size_t length)
 {
     length = RG_MIN(length, USB_HID_REPORT_MAX);
     portENTER_CRITICAL(&hid_lock);
-    memcpy(generic_report, data, length);
-    generic_report_len = length;
+    memcpy(generic_report[instance], data, length);
+    generic_report_len[instance] = length;
 
     if (capture_device == RG_USB_HID_GAMEPAD)
     {
-        if (!capture_generic_valid)
+        if (!capture_generic_valid[instance])
         {
-            memcpy(capture_generic_baseline, data, length);
-            capture_generic_len = length;
-            capture_generic_valid = true;
+            memcpy(capture_generic_baseline[instance], data, length);
+            capture_generic_len[instance] = length;
+            capture_generic_valid[instance] = true;
         }
         else
         {
             uint32_t candidate = 0;
-            size_t count = RG_MIN(length, capture_generic_len);
+            size_t count = RG_MIN(length, capture_generic_len[instance]);
             int best_axis = -1;
             int best_delta = 0;
             int changed_bits = 0;
@@ -216,9 +226,9 @@ static void process_generic_report(const uint8_t *data, size_t length)
             uint8_t changed_mask = 0;
             for (size_t i = 0; i < count; ++i)
             {
-                int delta = (int)data[i] - capture_generic_baseline[i];
+                int delta = (int)data[i] - capture_generic_baseline[instance][i];
                 int magnitude = abs(delta);
-                uint8_t changed = data[i] ^ capture_generic_baseline[i];
+                uint8_t changed = data[i] ^ capture_generic_baseline[instance][i];
                 if (changed)
                 {
                     changed_bits += __builtin_popcount(changed);
@@ -237,8 +247,8 @@ static void process_generic_report(const uint8_t *data, size_t length)
              * analog byte as a button; values such as 0x80/0x81 commonly
              * alternate because of stick noise. */
             bool button_byte = changed_byte >= 0 &&
-                               (capture_generic_baseline[changed_byte] == 0x00 ||
-                                capture_generic_baseline[changed_byte] == 0xFF);
+                               (capture_generic_baseline[instance][changed_byte] == 0x00 ||
+                                capture_generic_baseline[instance][changed_byte] == 0xFF);
             if (changed_bits == 1 && button_byte)
             {
                 uint8_t expected = (data[changed_byte] & changed_mask) != 0;
@@ -249,17 +259,17 @@ static void process_generic_report(const uint8_t *data, size_t length)
             {
                 candidate = ((uint32_t)SOURCE_GENERIC_AXIS << 28) |
                             ((uint32_t)best_axis << 16) |
-                            ((uint32_t)capture_generic_baseline[best_axis] << 8) | data[best_axis];
+                            ((uint32_t)capture_generic_baseline[instance][best_axis] << 8) | data[best_axis];
             }
-            if (candidate == capture_generic_candidate)
+            if (candidate == capture_generic_candidate[instance])
             {
-                if (++capture_generic_candidate_count >= USB_HID_CAPTURE_CONFIRM_REPORTS)
+                if (++capture_generic_candidate_count[instance] >= USB_HID_CAPTURE_CONFIRM_REPORTS)
                     finish_capture(candidate);
             }
             else
             {
-                capture_generic_candidate = candidate;
-                capture_generic_candidate_count = candidate ? 1 : 0;
+                capture_generic_candidate[instance] = candidate;
+                capture_generic_candidate_count[instance] = candidate ? 1 : 0;
             }
         }
     }
@@ -273,29 +283,56 @@ static void interface_callback(hid_host_device_handle_t handle, hid_host_interfa
     if (hid_host_device_get_params(handle, &params) != ESP_OK)
         return;
 
+    bool is_keyboard = params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_KEYBOARD;
+    bool is_mouse = params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_MOUSE;
+
     if (event == HID_HOST_INTERFACE_EVENT_INPUT_REPORT)
     {
         uint8_t data[USB_HID_REPORT_MAX];
         size_t length = 0;
         if (hid_host_device_get_raw_input_report_data(handle, data, sizeof(data), &length) != ESP_OK)
             return;
-        if (params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_KEYBOARD)
+        if (is_keyboard)
             process_keyboard_report(data, length);
-        else if (params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_MOUSE)
+        else if (is_mouse)
             process_mouse_report(data, length);
         else
-            process_generic_report(data, length);
+        {
+            int instance = find_gamepad_slot(handle);
+            if (instance >= 0)
+                process_generic_report(instance, data, length);
+        }
     }
     else if (event == HID_HOST_INTERFACE_EVENT_DISCONNECTED)
     {
-        uint32_t mask = params.proto == HID_PROTOCOL_KEYBOARD ? (1U << RG_USB_HID_KEYBOARD) :
-                        params.proto == HID_PROTOCOL_MOUSE ? (1U << RG_USB_HID_MOUSE) :
-                                                            (1U << RG_USB_HID_GAMEPAD);
+        uint32_t mask = is_keyboard ? (1U << RG_USB_HID_KEYBOARD) :
+                        is_mouse ? (1U << RG_USB_HID_MOUSE) :
+                                   (1U << RG_USB_HID_GAMEPAD);
         portENTER_CRITICAL(&hid_lock);
+        if (is_keyboard)
+            memset(keyboard_keys, 0, sizeof(keyboard_keys));
+        else if (is_mouse)
+        {
+            mouse_buttons = 0;
+            memset(mouse_motion_until, 0, sizeof(mouse_motion_until));
+        }
+        else
+        {
+            int instance = find_gamepad_slot(handle);
+            if (instance >= 0)
+            {
+                generic_report_len[instance] = 0;
+                gamepad_handles[instance] = NULL;
+            }
+            bool any_gamepad_left = false;
+            for (int i = 0; i < RG_USB_HID_MAX_GAMEPADS; ++i)
+                any_gamepad_left |= gamepad_handles[i] != NULL;
+            if (!any_gamepad_left)
+                mask = 1U << RG_USB_HID_GAMEPAD;
+            else
+                mask = 0;
+        }
         connected_mask &= ~mask;
-        memset(keyboard_keys, 0, sizeof(keyboard_keys));
-        mouse_buttons = 0;
-        generic_report_len = 0;
         portEXIT_CRITICAL(&hid_lock);
         hid_host_device_close(handle);
     }
@@ -305,9 +342,16 @@ static void interface_callback(hid_host_device_handle_t handle, hid_host_interfa
          * component. Clear latched input immediately and recover from the
          * device task, outside the driver's callback context. */
         portENTER_CRITICAL(&hid_lock);
-        memset(keyboard_keys, 0, sizeof(keyboard_keys));
-        mouse_buttons = 0;
-        generic_report_len = 0;
+        if (is_keyboard)
+            memset(keyboard_keys, 0, sizeof(keyboard_keys));
+        else if (is_mouse)
+            mouse_buttons = 0;
+        else
+        {
+            int instance = find_gamepad_slot(handle);
+            if (instance >= 0)
+                generic_report_len[instance] = 0;
+        }
         portEXIT_CRITICAL(&hid_lock);
         hid_event_t queued = {.handle = handle, .event = USB_HID_EVENT_RECOVER};
         if (!hid_event_queue || xQueueSend(hid_event_queue, &queued, 0) != pdTRUE)
@@ -363,18 +407,45 @@ static void hid_device_task(void *arg)
             if (params.proto == HID_PROTOCOL_KEYBOARD)
                 hid_class_request_set_idle(event.handle, 0, 0);
         }
+        bool is_keyboard = params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_KEYBOARD;
+        bool is_mouse = params.sub_class == HID_SUBCLASS_BOOT_INTERFACE && params.proto == HID_PROTOCOL_MOUSE;
+        int instance = -1;
+        if (!is_keyboard && !is_mouse)
+        {
+            for (int i = 0; i < RG_USB_HID_MAX_GAMEPADS; ++i)
+            {
+                if (gamepad_handles[i] == NULL)
+                {
+                    instance = i;
+                    break;
+                }
+            }
+            if (instance < 0)
+            {
+                /* No free gamepad slot; leave the interface open/running but untracked. */
+                RG_LOGW("USB HID gamepad connected but all %d slots are in use", RG_USB_HID_MAX_GAMEPADS);
+            }
+        }
+
         if (hid_host_device_start(event.handle) != ESP_OK)
         {
             hid_host_device_close(event.handle);
             continue;
         }
-        uint32_t mask = params.proto == HID_PROTOCOL_KEYBOARD ? (1U << RG_USB_HID_KEYBOARD) :
-                        params.proto == HID_PROTOCOL_MOUSE ? (1U << RG_USB_HID_MOUSE) :
-                                                            (1U << RG_USB_HID_GAMEPAD);
+        uint32_t mask = is_keyboard ? (1U << RG_USB_HID_KEYBOARD) :
+                        is_mouse ? (1U << RG_USB_HID_MOUSE) :
+                                   (1U << RG_USB_HID_GAMEPAD);
         portENTER_CRITICAL(&hid_lock);
+        if (instance >= 0)
+        {
+            gamepad_handles[instance] = event.handle;
+            generic_report_len[instance] = 0;
+            capture_generic_valid[instance] = false;
+        }
         connected_mask |= mask;
         portEXIT_CRITICAL(&hid_lock);
-        RG_LOGI("USB HID interface connected (protocol=%d, interface=%d)", params.proto, params.iface_num);
+        RG_LOGI("USB HID interface connected (protocol=%d, interface=%d, instance=%d)",
+                params.proto, params.iface_num, instance);
     }
     vTaskDelete(NULL);
 }
@@ -433,7 +504,7 @@ void rg_usb_hid_load_settings(void)
     RG_LOGI("USB HID settings loaded (input %s)", hid_enabled ? "enabled" : "disabled");
 }
 
-static bool source_active(uint32_t source, int64_t now)
+static bool source_active(int instance, uint32_t source, int64_t now)
 {
     uint8_t type = SOURCE_TYPE(source);
     if (type == SOURCE_KEYBOARD)
@@ -442,39 +513,68 @@ static bool source_active(uint32_t source, int64_t now)
         return (mouse_buttons & (1U << (source & 7))) != 0;
     if (type == SOURCE_MOUSE_MOTION)
         return (source & 3) < 4 && mouse_motion_until[source & 3] > now;
+    if (instance < 0)
+        return false;
     if (type == SOURCE_GENERIC_BIT)
     {
         uint8_t index = (source >> 16) & 0xFF;
         uint8_t mask = (source >> 8) & 0xFF;
         bool expected = source & 1;
-        return index < generic_report_len && ((generic_report[index] & mask) != 0) == expected;
+        return index < generic_report_len[instance] && ((generic_report[instance][index] & mask) != 0) == expected;
     }
     if (type == SOURCE_GENERIC_AXIS)
     {
         uint8_t index = (source >> 16) & 0xFF;
         uint8_t neutral = (source >> 8) & 0xFF;
         uint8_t target = source & 0xFF;
-        if (index >= generic_report_len)
+        if (index >= generic_report_len[instance])
             return false;
         int target_delta = (int)target - (int)neutral;
-        int value_delta = (int)generic_report[index] - (int)neutral;
+        int value_delta = (int)generic_report[instance][index] - (int)neutral;
         int threshold = RG_MAX(USB_HID_AXIS_DEADZONE, abs(target_delta) / 2);
         return target_delta < 0 ? value_delta < -threshold : value_delta > threshold;
     }
     return false;
 }
 
-uint32_t rg_usb_hid_get_gamepad_state(void)
+uint32_t rg_usb_hid_get_gamepad_state(int instance)
+{
+    if (!hid_enabled || instance < 0 || instance >= RG_USB_HID_MAX_GAMEPADS)
+        return 0;
+    uint32_t state = 0;
+    int64_t now = rg_system_timer();
+    portENTER_CRITICAL(&hid_lock);
+    for (int i = 0; i < RG_KEY_COUNT; ++i)
+        if (source_active(instance, mappings[RG_USB_HID_GAMEPAD][i], now))
+            state |= 1U << i;
+    portEXIT_CRITICAL(&hid_lock);
+    return state;
+}
+
+uint32_t rg_usb_hid_get_keyboard_state(void)
 {
     if (!hid_enabled)
         return 0;
     uint32_t state = 0;
     int64_t now = rg_system_timer();
     portENTER_CRITICAL(&hid_lock);
-    for (int device = 0; device < RG_USB_HID_DEVICE_COUNT; ++device)
-        for (int i = 0; i < RG_KEY_COUNT; ++i)
-            if (source_active(mappings[device][i], now))
-                state |= 1U << i;
+    for (int i = 0; i < RG_KEY_COUNT; ++i)
+        if (source_active(-1, mappings[RG_USB_HID_KEYBOARD][i], now))
+            state |= 1U << i;
+    portEXIT_CRITICAL(&hid_lock);
+    return state;
+}
+
+uint32_t rg_usb_hid_get_mouse_state(void)
+{
+    if (!hid_enabled)
+        return 0;
+    uint32_t state = 0;
+    int64_t now = rg_system_timer();
+    portENTER_CRITICAL(&hid_lock);
+    for (int i = 0; i < RG_KEY_COUNT; ++i)
+        if (source_active(-1, mappings[RG_USB_HID_MOUSE][i], now))
+            state |= 1U << i;
     portEXIT_CRITICAL(&hid_lock);
     return state;
 }
@@ -494,6 +594,13 @@ void rg_usb_hid_set_enabled(bool enabled)
 uint32_t rg_usb_hid_get_connected(void)
 {
     return connected_mask;
+}
+
+bool rg_usb_hid_get_gamepad_connected(int instance)
+{
+    if (instance < 0 || instance >= RG_USB_HID_MAX_GAMEPADS)
+        return false;
+    return gamepad_handles[instance] != NULL;
 }
 
 uint32_t rg_usb_hid_get_mapping(rg_usb_hid_device_t device, int key_index)
@@ -531,11 +638,14 @@ bool rg_usb_hid_capture_source(rg_usb_hid_device_t device, uint32_t *source, int
     capture_device = device;
     memcpy(capture_keyboard_baseline, keyboard_keys, sizeof(keyboard_keys));
     capture_mouse_baseline = mouse_buttons;
-    memcpy(capture_generic_baseline, generic_report, generic_report_len);
-    capture_generic_len = generic_report_len;
-    capture_generic_valid = generic_report_len > 0;
-    capture_generic_candidate = 0;
-    capture_generic_candidate_count = 0;
+    for (int i = 0; i < RG_USB_HID_MAX_GAMEPADS; ++i)
+    {
+        memcpy(capture_generic_baseline[i], generic_report[i], generic_report_len[i]);
+        capture_generic_len[i] = generic_report_len[i];
+        capture_generic_valid[i] = generic_report_len[i] > 0;
+        capture_generic_candidate[i] = 0;
+        capture_generic_candidate_count[i] = 0;
+    }
     portEXIT_CRITICAL(&hid_lock);
 
     int64_t deadline = rg_system_timer() + (int64_t)timeout_ms * 1000;
@@ -606,10 +716,13 @@ void rg_usb_hid_source_name(rg_usb_hid_device_t device, uint32_t source, char *o
 void rg_usb_hid_init(void) {}
 void rg_usb_hid_deinit(void) {}
 void rg_usb_hid_load_settings(void) {}
-uint32_t rg_usb_hid_get_gamepad_state(void) { return 0; }
+uint32_t rg_usb_hid_get_gamepad_state(int instance) { (void)instance; return 0; }
+uint32_t rg_usb_hid_get_keyboard_state(void) { return 0; }
+uint32_t rg_usb_hid_get_mouse_state(void) { return 0; }
 bool rg_usb_hid_get_enabled(void) { return false; }
 void rg_usb_hid_set_enabled(bool enabled) { (void)enabled; }
 uint32_t rg_usb_hid_get_connected(void) { return 0; }
+bool rg_usb_hid_get_gamepad_connected(int instance) { (void)instance; return false; }
 uint32_t rg_usb_hid_get_mapping(rg_usb_hid_device_t device, int key_index) { (void)device; (void)key_index; return 0; }
 void rg_usb_hid_set_mapping(rg_usb_hid_device_t device, int key_index, uint32_t source) { (void)device; (void)key_index; (void)source; }
 void rg_usb_hid_reset_mappings(rg_usb_hid_device_t device) { (void)device; }

@@ -46,24 +46,24 @@ typedef struct
 } xinput_device_t;
 
 static usb_host_client_handle_t client_handle;
-static xinput_device_t dev;
+static xinput_device_t devs[RG_USB_XINPUT_MAX_DEVICES];
 static volatile bool task_running;
 static volatile bool xinput_enabled;
 static portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
 
 static uint32_t mapping[RG_KEY_COUNT];
-static uint16_t buttons;
-static uint8_t report[XINPUT_REPORT_MAX];
-static size_t report_len;
+static uint16_t buttons[RG_USB_XINPUT_MAX_DEVICES];
+static uint8_t report[RG_USB_XINPUT_MAX_DEVICES][XINPUT_REPORT_MAX];
+static size_t report_len[RG_USB_XINPUT_MAX_DEVICES];
 
 static volatile bool capture_active;
 static volatile uint32_t capture_result;
-static bool capture_valid;
-static uint16_t capture_baseline_buttons;
-static uint8_t capture_baseline_report[XINPUT_REPORT_MAX];
-static size_t capture_baseline_len;
-static uint32_t capture_candidate;
-static uint8_t capture_candidate_count;
+static bool capture_valid[RG_USB_XINPUT_MAX_DEVICES];
+static uint16_t capture_baseline_buttons[RG_USB_XINPUT_MAX_DEVICES];
+static uint8_t capture_baseline_report[RG_USB_XINPUT_MAX_DEVICES][XINPUT_REPORT_MAX];
+static size_t capture_baseline_len[RG_USB_XINPUT_MAX_DEVICES];
+static uint32_t capture_candidate[RG_USB_XINPUT_MAX_DEVICES];
+static uint8_t capture_candidate_count[RG_USB_XINPUT_MAX_DEVICES];
 
 // Bit index within the GIP button mask (see process_input_report) for each RG_KEY_*,
 // in RG_KEY_UP..RG_KEY_R order. -1 means "no default, map it manually".
@@ -99,7 +99,7 @@ static void finish_capture(uint32_t source)
         capture_result = source;
 }
 
-static void process_input_report(const uint8_t *data, size_t length)
+static void process_input_report(int instance, const uint8_t *data, size_t length)
 {
     if (length < 4 || data[0] != GIP_CMD_INPUT)
         return;
@@ -109,22 +109,22 @@ static void process_input_report(const uint8_t *data, size_t length)
         return;
 
     portENTER_CRITICAL(&lock);
-    memcpy(report, payload, payload_len);
-    report_len = payload_len;
-    buttons = payload[0] | ((uint16_t)payload[1] << 8);
+    memcpy(report[instance], payload, payload_len);
+    report_len[instance] = payload_len;
+    buttons[instance] = payload[0] | ((uint16_t)payload[1] << 8);
 
     if (capture_active)
     {
-        if (!capture_valid)
+        if (!capture_valid[instance])
         {
-            capture_baseline_buttons = buttons;
-            memcpy(capture_baseline_report, payload, payload_len);
-            capture_baseline_len = payload_len;
-            capture_valid = true;
+            capture_baseline_buttons[instance] = buttons[instance];
+            memcpy(capture_baseline_report[instance], payload, payload_len);
+            capture_baseline_len[instance] = payload_len;
+            capture_valid[instance] = true;
         }
         else
         {
-            uint16_t pressed = buttons & (uint16_t)~capture_baseline_buttons;
+            uint16_t pressed = buttons[instance] & (uint16_t)~capture_baseline_buttons[instance];
             uint32_t candidate = 0;
             if (pressed)
             {
@@ -132,11 +132,11 @@ static void process_input_report(const uint8_t *data, size_t length)
             }
             else
             {
-                size_t count = RG_MIN(payload_len, capture_baseline_len);
+                size_t count = RG_MIN(payload_len, capture_baseline_len[instance]);
                 int best_axis = -1, best_delta = 0;
                 for (size_t i = 2; i < count; ++i)
                 {
-                    int delta = (int)payload[i] - (int)capture_baseline_report[i];
+                    int delta = (int)payload[i] - (int)capture_baseline_report[instance][i];
                     int magnitude = abs(delta);
                     if (magnitude > best_delta)
                     {
@@ -146,17 +146,17 @@ static void process_input_report(const uint8_t *data, size_t length)
                 }
                 if (best_axis >= 0 && best_delta >= XINPUT_AXIS_CAPTURE_THRESHOLD)
                     candidate = ((uint32_t)SOURCE_AXIS << 28) | ((uint32_t)best_axis << 16) |
-                                ((uint32_t)capture_baseline_report[best_axis] << 8) | payload[best_axis];
+                                ((uint32_t)capture_baseline_report[instance][best_axis] << 8) | payload[best_axis];
             }
-            if (candidate == capture_candidate)
+            if (candidate == capture_candidate[instance])
             {
-                if (++capture_candidate_count >= XINPUT_CAPTURE_CONFIRM_REPORTS)
+                if (++capture_candidate_count[instance] >= XINPUT_CAPTURE_CONFIRM_REPORTS)
                     finish_capture(candidate);
             }
             else
             {
-                capture_candidate = candidate;
-                capture_candidate_count = candidate ? 1 : 0;
+                capture_candidate[instance] = candidate;
+                capture_candidate_count[instance] = candidate ? 1 : 0;
             }
         }
     }
@@ -165,9 +165,10 @@ static void process_input_report(const uint8_t *data, size_t length)
 
 static void in_xfer_done(usb_transfer_t *xfer)
 {
+    int instance = (int)(intptr_t)xfer->context;
     if (xfer->status == USB_TRANSFER_STATUS_COMPLETED)
     {
-        process_input_report(xfer->data_buffer, (size_t)xfer->actual_num_bytes);
+        process_input_report(instance, xfer->data_buffer, (size_t)xfer->actual_num_bytes);
         usb_host_transfer_submit(xfer);
         return;
     }
@@ -183,16 +184,17 @@ static void out_xfer_done(usb_transfer_t *xfer)
         RG_LOGW("Xbox controller command failed, status=%d", xfer->status);
 }
 
-static void send_power_on(void)
+static void send_power_on(int instance)
 {
-    uint8_t packet[] = {GIP_CMD_POWER, 0x20, dev.seq++, 0x01, 0x00};
-    usb_transfer_t *xfer = dev.out_xfer;
+    xinput_device_t *dev = &devs[instance];
+    uint8_t packet[] = {GIP_CMD_POWER, 0x20, dev->seq++, 0x01, 0x00};
+    usb_transfer_t *xfer = dev->out_xfer;
     memcpy(xfer->data_buffer, packet, sizeof(packet));
-    xfer->device_handle = dev.dev_hdl;
-    xfer->bEndpointAddress = dev.ep_out;
+    xfer->device_handle = dev->dev_hdl;
+    xfer->bEndpointAddress = dev->ep_out;
     xfer->num_bytes = sizeof(packet);
     xfer->callback = out_xfer_done;
-    xfer->context = NULL;
+    xfer->context = (void *)(intptr_t)instance;
     usb_host_transfer_submit(xfer);
 }
 
@@ -227,7 +229,17 @@ static void try_open_device(uint8_t dev_addr)
     if (usb_host_get_active_config_descriptor(dev_hdl, &config_desc) == ESP_OK)
         xinput_iface = find_xinput_interface(config_desc);
 
-    if (!xinput_iface || dev.connected)
+    int instance = -1;
+    for (int i = 0; i < RG_USB_XINPUT_MAX_DEVICES; ++i)
+    {
+        if (!devs[i].connected)
+        {
+            instance = i;
+            break;
+        }
+    }
+
+    if (!xinput_iface || instance < 0)
     {
         usb_host_device_close(client_handle, dev_hdl);
         return;
@@ -272,47 +284,60 @@ static void try_open_device(uint8_t dev_addr)
         return;
     }
 
+    xinput_device_t *dev = &devs[instance];
     portENTER_CRITICAL(&lock);
-    dev.dev_hdl = dev_hdl;
-    dev.iface_num = xinput_iface->bInterfaceNumber;
-    dev.ep_in = ep_in;
-    dev.ep_out = ep_out;
-    dev.in_xfer = in_xfer;
-    dev.out_xfer = out_xfer;
-    dev.seq = 0;
-    dev.connected = true;
-    buttons = 0;
-    report_len = 0;
+    dev->dev_hdl = dev_hdl;
+    dev->iface_num = xinput_iface->bInterfaceNumber;
+    dev->ep_in = ep_in;
+    dev->ep_out = ep_out;
+    dev->in_xfer = in_xfer;
+    dev->out_xfer = out_xfer;
+    dev->seq = 0;
+    dev->connected = true;
+    buttons[instance] = 0;
+    report_len[instance] = 0;
+    capture_valid[instance] = false;
     portEXIT_CRITICAL(&lock);
 
     in_xfer->device_handle = dev_hdl;
     in_xfer->bEndpointAddress = ep_in;
     in_xfer->callback = in_xfer_done;
-    in_xfer->context = NULL;
+    in_xfer->context = (void *)(intptr_t)instance;
     in_xfer->num_bytes = (int)in_xfer->data_buffer_size;
     usb_host_transfer_submit(in_xfer);
 
-    send_power_on();
+    send_power_on(instance);
 
-    RG_LOGI("Xbox controller connected (addr=%d, iface=%d)", dev_addr, dev.iface_num);
+    RG_LOGI("Xbox controller connected (addr=%d, iface=%d, instance=%d)", dev_addr, dev->iface_num, instance);
 }
 
 static void handle_device_gone(usb_device_handle_t dev_hdl)
 {
-    if (!dev.connected || dev.dev_hdl != dev_hdl)
+    int instance = -1;
+    for (int i = 0; i < RG_USB_XINPUT_MAX_DEVICES; ++i)
+    {
+        if (devs[i].connected && devs[i].dev_hdl == dev_hdl)
+        {
+            instance = i;
+            break;
+        }
+    }
+    if (instance < 0)
         return;
 
+    xinput_device_t *dev = &devs[instance];
+
     portENTER_CRITICAL(&lock);
-    buttons = 0;
-    report_len = 0;
+    buttons[instance] = 0;
+    report_len[instance] = 0;
     portEXIT_CRITICAL(&lock);
 
-    usb_host_transfer_free(dev.in_xfer);
-    usb_host_transfer_free(dev.out_xfer);
-    usb_host_interface_release(client_handle, dev.dev_hdl, dev.iface_num);
-    usb_host_device_close(client_handle, dev.dev_hdl);
-    memset(&dev, 0, sizeof(dev));
-    RG_LOGI("Xbox controller disconnected");
+    usb_host_transfer_free(dev->in_xfer);
+    usb_host_transfer_free(dev->out_xfer);
+    usb_host_interface_release(client_handle, dev->dev_hdl, dev->iface_num);
+    usb_host_device_close(client_handle, dev->dev_hdl);
+    memset(dev, 0, sizeof(*dev));
+    RG_LOGI("Xbox controller disconnected (instance=%d)", instance);
 }
 
 static void client_event_cb(const usb_host_client_event_msg_t *event, void *arg)
@@ -374,34 +399,34 @@ void rg_usb_xinput_load_settings(void)
     RG_LOGI("USB Xbox controller settings loaded (input %s)", xinput_enabled ? "enabled" : "disabled");
 }
 
-static bool source_active(uint32_t source)
+static bool source_active(int instance, uint32_t source)
 {
     uint8_t type = SOURCE_TYPE(source);
     if (type == SOURCE_BUTTON)
-        return (buttons & (1U << (source & 0xF))) != 0;
+        return (buttons[instance] & (1U << (source & 0xF))) != 0;
     if (type == SOURCE_AXIS)
     {
         uint8_t index = (source >> 16) & 0xFF;
         uint8_t neutral = (source >> 8) & 0xFF;
         uint8_t target = source & 0xFF;
-        if (index >= report_len)
+        if (index >= report_len[instance])
             return false;
         int target_delta = (int)target - (int)neutral;
-        int value_delta = (int)report[index] - (int)neutral;
+        int value_delta = (int)report[instance][index] - (int)neutral;
         int threshold = RG_MAX(XINPUT_AXIS_DEADZONE, abs(target_delta) / 2);
         return target_delta < 0 ? value_delta < -threshold : value_delta > threshold;
     }
     return false;
 }
 
-uint32_t rg_usb_xinput_get_gamepad_state(void)
+uint32_t rg_usb_xinput_get_gamepad_state(int instance)
 {
-    if (!xinput_enabled)
+    if (!xinput_enabled || instance < 0 || instance >= RG_USB_XINPUT_MAX_DEVICES)
         return 0;
     uint32_t state = 0;
     portENTER_CRITICAL(&lock);
     for (int i = 0; i < RG_KEY_COUNT; ++i)
-        if (source_active(mapping[i]))
+        if (source_active(instance, mapping[i]))
             state |= 1U << i;
     portEXIT_CRITICAL(&lock);
     return state;
@@ -419,9 +444,11 @@ void rg_usb_xinput_set_enabled(bool enabled)
     rg_settings_commit();
 }
 
-bool rg_usb_xinput_get_connected(void)
+bool rg_usb_xinput_get_connected(int instance)
 {
-    return dev.connected;
+    if (instance < 0 || instance >= RG_USB_XINPUT_MAX_DEVICES)
+        return false;
+    return devs[instance].connected;
 }
 
 uint32_t rg_usb_xinput_get_mapping(int key_index)
@@ -454,12 +481,15 @@ bool rg_usb_xinput_capture_source(uint32_t *source, int timeout_ms)
         return false;
     portENTER_CRITICAL(&lock);
     capture_result = 0;
-    capture_valid = report_len > 0;
-    capture_baseline_buttons = buttons;
-    memcpy(capture_baseline_report, report, report_len);
-    capture_baseline_len = report_len;
-    capture_candidate = 0;
-    capture_candidate_count = 0;
+    for (int i = 0; i < RG_USB_XINPUT_MAX_DEVICES; ++i)
+    {
+        capture_valid[i] = report_len[i] > 0;
+        capture_baseline_buttons[i] = buttons[i];
+        memcpy(capture_baseline_report[i], report[i], report_len[i]);
+        capture_baseline_len[i] = report_len[i];
+        capture_candidate[i] = 0;
+        capture_candidate_count[i] = 0;
+    }
     capture_active = true;
     portEXIT_CRITICAL(&lock);
 
@@ -509,10 +539,10 @@ void rg_usb_xinput_source_name(uint32_t source, char *out, size_t out_size)
 void rg_usb_xinput_init(void) {}
 void rg_usb_xinput_deinit(void) {}
 void rg_usb_xinput_load_settings(void) {}
-uint32_t rg_usb_xinput_get_gamepad_state(void) { return 0; }
+uint32_t rg_usb_xinput_get_gamepad_state(int instance) { (void)instance; return 0; }
 bool rg_usb_xinput_get_enabled(void) { return false; }
 void rg_usb_xinput_set_enabled(bool enabled) { (void)enabled; }
-bool rg_usb_xinput_get_connected(void) { return false; }
+bool rg_usb_xinput_get_connected(int instance) { (void)instance; return false; }
 uint32_t rg_usb_xinput_get_mapping(int key_index) { (void)key_index; return 0; }
 void rg_usb_xinput_set_mapping(int key_index, uint32_t source) { (void)key_index; (void)source; }
 void rg_usb_xinput_reset_mappings(void) {}
