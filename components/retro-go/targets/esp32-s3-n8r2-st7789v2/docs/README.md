@@ -1,0 +1,16 @@
+# ESP32-S3-N8R2 + ST7789V2
+- Status: DIY / hand-wired build, no official device or prebuilt release
+- Module: ESP32-S3-N8R2 (8MB flash, 2MB Quad PSRAM)
+- Display: ST7789V2, 1.69" panel, 300x240 controller RAM (280x240 visible area), SPI
+
+# Hardware info
+This target is for a self-wired handheld built around a bare ESP32-S3-N8R2 module or dev board. There is no fixed
+enclosure/PCB, so full features and the wiring diagram/table are documented once for all 6 N16R8/N8R2 variants in the
+[root README](../../../../README.md#esp32-s3-n16r8--n8r2-diy-builds).
+
+Pin assignments are defined in [`config.h`](../config.h).
+
+# Known issues:
+
+# Images
+No photos available yet.

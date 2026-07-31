@@ -1,6 +1,7 @@
 # Table of contents
 - [Description](#description)
 - [Installation](#installation)
+- [ESP32-S3 N16R8 / N8R2 (DIY builds)](#esp32-s3-n16r8--n8r2-diy-builds)
 - [Usage](#usage)
 - [Issues](#issues)
 - [Development](#development)
@@ -62,6 +63,113 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 Your particular device may require extra steps (like holding a button during power up) or different esptool flags or a special cable. If the above steps fail, you might need to ask the manufacturer for instructions on how to flash new firmware!
 
 If your device is not already supported or if a prebuilt version isn't available for it you can check the [development section](#Development) for more information on how to build for your device.
+
+
+# ESP32-S3 N16R8 / N8R2 (DIY builds)
+
+These targets are for hand-wired / DIY handhelds built around a bare **ESP32-S3-N16R8** (16MB flash, 8MB Octal PSRAM) or **ESP32-S3-N8R2** (8MB flash, 2MB Quad PSRAM) module or dev board (e.g. an ESP32-S3-DevKitC-1), rather than a pre-made retro handheld. There is no `.fw`/`.img` release for these since the wiring is up to you, so they must be [built from source](#development) with `rg_tool.py`.
+
+Each memory variant is available with 3 display controllers, for 6 build targets total:
+
+| Build target (`--target`)     | Module          | Display controller | Resolution |
+|--------------------------------|-----------------|---------------------|------------|
+| `esp32-s3-n16r8-ili9341`       | ESP32-S3-N16R8  | ILI9341             | 320x240    |
+| `esp32-s3-n16r8-st7789v2`      | ESP32-S3-N16R8  | ST7789V2 (1.69")    | 300x240 (visible 280x240) |
+| `esp32-s3-n16r8-st7796`        | ESP32-S3-N16R8  | ST7796              | 480x320    |
+| `esp32-s3-n8r2-ili9341`        | ESP32-S3-N8R2   | ILI9341             | 320x240    |
+| `esp32-s3-n8r2-st7789v2`       | ESP32-S3-N8R2   | ST7789V2 (1.69")    | 300x240 (visible 280x240) |
+| `esp32-s3-n8r2-st7796`         | ESP32-S3-N8R2   | ST7796              | 480x320    |
+
+Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port COM3 build-img install`
+
+### Features
+- ESP32-S3 dual-core Xtensa LX7 @ 240MHz, with emulator/game logic pinned to core 0 and IO/audio helper tasks pinned to core 1 for smoother frame pacing.
+- SPI TFT display (ILI9341, ST7789V2 or ST7796 depending on target) at up to 80MHz SPI clock, with backlight control.
+- microSD card storage over its own dedicated SPI bus (separate from the display bus, so there's no contention between the two).
+- USB HID host support: USB gamepads, XInput controllers, and USB mass-storage (MSC) devices (drag-and-drop ROM/save management from a PC without pulling the SD card).
+- 10-button digital gamepad matrix (D-Pad, A, B, Start, Select, Menu, Option) plus a virtual Menu shortcut (Start+Select) if a dedicated Menu button isn't wired.
+- WS2812 addressable RGB status LED.
+- Haptic feedback (vibration motor) driver output.
+- External I2S DAC audio output (e.g. MAX98357A class-D amplifier module) — no onboard battery-voltage ADC on this target, so battery percentage isn't available.
+- Firmware updater support (downloads and flashes new images from `/sd/retro-go/firmware` via the factory app).
+
+### Wiring diagram
+
+```
+                                  ┌───────────────────────────────┐
+                                  │           ESP32-S3             │
+                                  │  N16R8: 16MB flash / 8MB OPI   │
+                                  │  N8R2 :  8MB flash / 2MB QPI   │
+                                  └───────────────┬─────────────────┘
+                                                   │
+        Display — SPI2 @ 40-80MHz                 │                 microSD — SPI3 (dedicated bus)
+ ┌─────────────────────────────┐                  │                ┌─────────────────────────────┐
+ │ GPIO13 ───────── MOSI (SDA) │                  │                │ GPIO41 ───────── MOSI (CMD)  │
+ │ GPIO14 ───────── SCK        │                  │                │ GPIO40 ───────── SCK (CLK)   │
+ │ GPIO10 ───────── CS         │                  │                │ GPIO42 ───────── CS (DAT3)   │
+ │ GPIO11 ───────── DC         │                  │                │ GPIO39 ───────── MISO (DAT0) │
+ │ GPIO12 ───────── RESET      │                  │                └─────────────────────────────┘
+ │ GPIO21 ───────── LED (BL)   │                  │                       microSD card slot
+ │  N/C   ───────── MISO       │                  │
+ │  3V3   ───────── VCC        │                  │
+ │  GND   ───────── GND        │                  │
+ └─────────────────────────────┘                  │
+      ILI9341 / ST7789V2 / ST7796 panel            │
+                                                   │
+        I2S audio — external DAC                  │                Status LED / Haptics
+ ┌─────────────────────────────┐                  │                ┌─────────────────────────────┐
+ │ GPIO5  ───────── BCLK       │                  │                │ GPIO48 ───────── DIN (WS2812)│
+ │ GPIO4  ───────── LRC / WS   │                  │                │ GPIO38 ───────── Vibrator    │
+ │ GPIO6  ───────── DIN        │                  │                │                  motor driver │
+ └─────────────────────────────┘                  │                └─────────────────────────────┘
+   MAX98357A (or similar I2S DAC)                  │
+                                                   │
+                        Gamepad matrix — active-low buttons to GND, internal pull-ups enabled
+      ┌──────────────────────────────────────────────────────────────────────────────────────┐
+      │  UP = GPIO17     DOWN = GPIO3     LEFT = GPIO8      RIGHT = GPIO18                    │
+      │  A  = GPIO45     B    = GPIO47    START = GPIO15    SELECT = GPIO16                   │
+      │  MENU = GPIO2 (recovery/boot-menu button, or hold START+SELECT)   OPTION = GPIO7      │
+      └──────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+<details>
+  <summary>Full pinout table</summary>
+
+  | Function              | Signal        | GPIO         |
+  |------------------------|--------------|--------------|
+  | Display (SPI2)         | MOSI          | GPIO13       |
+  | Display (SPI2)         | CLK           | GPIO14       |
+  | Display (SPI2)         | CS            | GPIO10       |
+  | Display (SPI2)         | DC            | GPIO11       |
+  | Display (SPI2)         | RESET         | GPIO12       |
+  | Display (SPI2)         | Backlight     | GPIO21       |
+  | Display (SPI2)         | MISO          | not connected (write-only panel) |
+  | microSD (SPI3)         | MISO          | GPIO39       |
+  | microSD (SPI3)         | MOSI          | GPIO41       |
+  | microSD (SPI3)         | CLK           | GPIO40       |
+  | microSD (SPI3)         | CS            | GPIO42       |
+  | I2S audio (ext. DAC)   | BCK           | GPIO5        |
+  | I2S audio (ext. DAC)   | WS / LRC      | GPIO4        |
+  | I2S audio (ext. DAC)   | DATA / DIN    | GPIO6        |
+  | Status LED             | WS2812 DIN    | GPIO48       |
+  | Haptics                | Vibrator      | GPIO38       |
+  | Gamepad                | UP            | GPIO17       |
+  | Gamepad                | DOWN          | GPIO3        |
+  | Gamepad                | LEFT          | GPIO8        |
+  | Gamepad                | RIGHT         | GPIO18       |
+  | Gamepad                | A             | GPIO45       |
+  | Gamepad                | B             | GPIO47       |
+  | Gamepad                | START         | GPIO15       |
+  | Gamepad                | SELECT        | GPIO16       |
+  | Gamepad                | MENU (recovery)| GPIO2       |
+  | Gamepad                | OPTION        | GPIO7        |
+
+  All gamepad buttons are wired to GND and rely on the ESP32-S3's internal pull-ups (`pullup = 1`, active low) — no external resistors needed.
+</details>
+
+> **Note:** GPIO45 is a strapping pin (selects VDD_SPI voltage at reset) and GPIO3 is used by JTAG signal source selection. Both default to the correct state for this board already, but avoid holding the A or Down buttons while resetting/flashing if you experience boot issues. The display and SD card intentionally use two separate SPI buses (SPI2 and SPI3) so both peripherals can be active without bus contention.
+
+Source of truth for all pin assignments: [`config.h`](components/retro-go/targets/esp32-s3-n16r8-ili9341/config.h) (identical GPIO map across all 6 targets — only the display driver differs).
 
 
 # Usage

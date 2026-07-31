@@ -8,7 +8,13 @@ Retro-Go's shared library (or framework) provides an easy way to port emulators 
 | Name                                                          | Notes |
 |---------------------------------------------------------------|--------|
 | [byteboi-rev1](targets/byteboi-rev1/docs/README.md)           |   |
-| [esp32s3-devkit-c](targets/esp32s3-devkit-c/docs/README.md)   |   |
+| [esp32-s3-devkit](targets/esp32-s3-devkit/docs/README.md)     |   |
+| [esp32-s3-n16r8-ili9341](targets/esp32-s3-n16r8-ili9341/docs/README.md)   | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-s3-n16r8-st7789v2](targets/esp32-s3-n16r8-st7789v2/docs/README.md) | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-s3-n16r8-st7796](targets/esp32-s3-n16r8-st7796/docs/README.md)     | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-s3-n8r2-ili9341](targets/esp32-s3-n8r2-ili9341/docs/README.md)     | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-s3-n8r2-st7789v2](targets/esp32-s3-n8r2-st7789v2/docs/README.md)   | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-s3-n8r2-st7796](targets/esp32-s3-n8r2-st7796/docs/README.md)       | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
 | [esplay-micro](targets/esplay-micro/docs/README.md)           |   |
 | [esplay-s3](targets/esplay-s3/docs/README.md)                 | Broken |
 | [fri3d-2024](targets/fri3d-2024/docs/README.md)               |   |
