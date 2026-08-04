@@ -259,7 +259,16 @@ static bool source_connected(rg_input_source_t source)
     }
 }
 
-static void load_player_assignments(void)
+static void set_default_player_assignments(void)
+{
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+        source_assignment[s] = (s == RG_INPUT_SOURCE_BUILTIN) ? RG_PLAYER_1 : RG_INPUT_PLAYER_AUTO;
+}
+
+// Must be called after rg_settings_init(), once the settings store is actually readable.
+// rg_input_init() runs before rg_settings_init() (it doesn't otherwise depend on settings),
+// so it only seeds hardcoded defaults; this reloads the persisted per-source assignments.
+void rg_input_load_settings(void)
 {
     char key[24];
     for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
@@ -306,6 +315,22 @@ static void update_source_resolution(void)
         else
             source_resolved_player[s] = assignment;
     }
+
+    // Safety net: the built-in controls are the only source that's always physically present, so
+    // never let them stay excluded (explicit Off, or an unplugged source stealing player 1) while
+    // no other connected source is actually driving player 1. Otherwise a disconnected controller
+    // (or a stale "Off" chosen while pairing one) can leave the device with no usable input at all.
+    bool player1_has_input = false;
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+    {
+        if (connected[s] && source_resolved_player[s] == RG_PLAYER_1)
+        {
+            player1_has_input = true;
+            break;
+        }
+    }
+    if (!player1_has_input)
+        source_resolved_player[RG_INPUT_SOURCE_BUILTIN] = RG_PLAYER_1;
 }
 
 bool rg_input_read_gamepad_raw(uint32_t *out)
@@ -508,7 +533,7 @@ void rg_input_init(void)
     }
 #endif
 
-    load_player_assignments();
+    set_default_player_assignments();
 
     // The first read returns bogus data in some drivers, waste it.
     rg_input_read_gamepad_raw(NULL);

@@ -115,6 +115,7 @@ typedef enum
 
 void rg_input_init(void);
 void rg_input_deinit(void);
+void rg_input_load_settings(void); // Must be called after rg_settings_init()
 bool rg_input_key_is_present(rg_key_t mask);
 bool rg_input_key_is_pressed(rg_key_t mask);
 bool rg_input_wait_for_key(rg_key_t mask, bool pressed, int timeout_ms);

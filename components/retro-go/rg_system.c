@@ -783,6 +783,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     }
 
     rg_settings_init(enterRecoveryMode || showCrashDialog);
+    rg_input_load_settings();
 #if defined(RG_ENABLE_USB_HID_HOST)
     rg_usb_hid_load_settings();
 #endif
