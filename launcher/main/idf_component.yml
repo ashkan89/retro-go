@@ -1,0 +1,9 @@
+dependencies:
+  espressif/esp_audio_codec:
+    version: "^2.0.2"
+    rules:
+      - if: "target in [esp32, esp32s3]"
+  espressif/esp_jpeg:
+    version: "^1.2.1"
+    rules:
+      - if: "target in [esp32, esp32s3]"

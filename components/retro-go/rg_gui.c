@@ -248,6 +248,74 @@ bool rg_gui_set_font(int index)
     return true;
 }
 
+int rg_gui_get_font(void)
+{
+    return gui.font_index;
+}
+
+typedef struct { uint16_t base, isolated, final, initial, medial; bool join_left, join_right; } arabic_form_t;
+static const arabic_form_t arabic_forms[] = {
+    {0x0621,0xFE80,0,0,0,0,0},{0x0622,0xFE81,0xFE82,0,0,1,0},{0x0623,0xFE83,0xFE84,0,0,1,0},
+    {0x0624,0xFE85,0xFE86,0,0,1,0},{0x0625,0xFE87,0xFE88,0,0,1,0},{0x0626,0xFE89,0xFE8A,0xFE8B,0xFE8C,1,1},
+    {0x0627,0xFE8D,0xFE8E,0,0,1,0},{0x0628,0xFE8F,0xFE90,0xFE91,0xFE92,1,1},{0x0629,0xFE93,0xFE94,0,0,1,0},
+    {0x062A,0xFE95,0xFE96,0xFE97,0xFE98,1,1},{0x062B,0xFE99,0xFE9A,0xFE9B,0xFE9C,1,1},{0x062C,0xFE9D,0xFE9E,0xFE9F,0xFEA0,1,1},
+    {0x062D,0xFEA1,0xFEA2,0xFEA3,0xFEA4,1,1},{0x062E,0xFEA5,0xFEA6,0xFEA7,0xFEA8,1,1},{0x062F,0xFEA9,0xFEAA,0,0,1,0},
+    {0x0630,0xFEAB,0xFEAC,0,0,1,0},{0x0631,0xFEAD,0xFEAE,0,0,1,0},{0x0632,0xFEAF,0xFEB0,0,0,1,0},
+    {0x0633,0xFEB1,0xFEB2,0xFEB3,0xFEB4,1,1},{0x0634,0xFEB5,0xFEB6,0xFEB7,0xFEB8,1,1},{0x0635,0xFEB9,0xFEBA,0xFEBB,0xFEBC,1,1},
+    {0x0636,0xFEBD,0xFEBE,0xFEBF,0xFEC0,1,1},{0x0637,0xFEC1,0xFEC2,0xFEC3,0xFEC4,1,1},{0x0638,0xFEC5,0xFEC6,0xFEC7,0xFEC8,1,1},
+    {0x0639,0xFEC9,0xFECA,0xFECB,0xFECC,1,1},{0x063A,0xFECD,0xFECE,0xFECF,0xFED0,1,1},{0x0641,0xFED1,0xFED2,0xFED3,0xFED4,1,1},
+    {0x0642,0xFED5,0xFED6,0xFED7,0xFED8,1,1},{0x0643,0xFED9,0xFEDA,0xFEDB,0xFEDC,1,1},{0x0644,0xFEDD,0xFEDE,0xFEDF,0xFEE0,1,1},
+    {0x0645,0xFEE1,0xFEE2,0xFEE3,0xFEE4,1,1},{0x0646,0xFEE5,0xFEE6,0xFEE7,0xFEE8,1,1},{0x0647,0xFEE9,0xFEEA,0xFEEB,0xFEEC,1,1},
+    {0x0648,0xFEED,0xFEEE,0,0,1,0},{0x0649,0xFEEF,0xFEF0,0,0,1,0},{0x064A,0xFEF1,0xFEF2,0xFEF3,0xFEF4,1,1},
+    {0x067E,0xFB56,0xFB57,0xFB58,0xFB59,1,1},{0x0686,0xFB7A,0xFB7B,0xFB7C,0xFB7D,1,1},{0x0698,0xFB8A,0xFB8B,0,0,1,0},
+    {0x06A9,0xFB8E,0xFB8F,0xFB90,0xFB91,1,1},{0x06AF,0xFB92,0xFB93,0xFB94,0xFB95,1,1},{0x06CC,0xFBFC,0xFBFD,0xFBFE,0xFBFF,1,1},
+};
+
+static const arabic_form_t *find_arabic(uint32_t cp)
+{
+    for (size_t i = 0; i < RG_COUNT(arabic_forms); i++) if (arabic_forms[i].base == cp) return &arabic_forms[i];
+    return NULL;
+}
+
+static size_t encode_utf8(char *out, uint32_t cp)
+{
+    if (cp < 0x80) { out[0] = cp; return 1; }
+    if (cp < 0x800) { out[0] = 0xc0 | (cp >> 6); out[1] = 0x80 | (cp & 63); return 2; }
+    if (cp < 0x10000) { out[0] = 0xe0 | (cp >> 12); out[1] = 0x80 | ((cp >> 6) & 63); out[2] = 0x80 | (cp & 63); return 3; }
+    out[0] = 0xf0 | (cp >> 18); out[1] = 0x80 | ((cp >> 12) & 63); out[2] = 0x80 | ((cp >> 6) & 63); out[3] = 0x80 | (cp & 63); return 4;
+}
+
+rg_rect_t rg_gui_draw_text_bidi(int x, int y, int width, const char *text, rg_color_t fg, rg_color_t bg, uint32_t flags)
+{
+    uint32_t cp[256], shaped[256]; size_t count = 0; const char *p = text;
+    bool rtl = false;
+    while (*p && count < RG_COUNT(cp)) { cp[count] = rg_utf8_decode(&p); if (find_arabic(cp[count])) rtl = true; count++; }
+    if (!rtl) return rg_gui_draw_text(x, y, width, text, fg, bg, flags);
+    for (size_t i = 0; i < count; i++) {
+        const arabic_form_t *f = find_arabic(cp[i]);
+        if (!f) { shaped[i] = cp[i]; continue; }
+        const arabic_form_t *prev = i ? find_arabic(cp[i - 1]) : NULL;
+        const arabic_form_t *next = i + 1 < count ? find_arabic(cp[i + 1]) : NULL;
+        bool before = prev && prev->join_right && f->join_left;
+        bool after = next && f->join_right && next->join_left;
+        shaped[i] = before && after && f->medial ? f->medial : before && f->final ? f->final : after && f->initial ? f->initial : f->isolated;
+    }
+    char visual[1024]; size_t used = 0;
+    /* Compact bidi: reverse run order, but preserve LTR characters within each run. */
+    size_t end = count;
+    while (end) {
+        bool arabic = find_arabic(cp[end - 1]) != NULL;
+        size_t start = end - 1;
+        while (start && (find_arabic(cp[start - 1]) != NULL) == arabic) start--;
+        if (arabic) for (size_t i = end; i-- > start && used + 4 < sizeof(visual);) used += encode_utf8(visual + used, shaped[i]);
+        else for (size_t i = start; i < end && used + 4 < sizeof(visual); i++) used += encode_utf8(visual + used, shaped[i]);
+        end = start;
+    }
+    visual[used] = 0;
+    if (!(flags & (RG_TEXT_ALIGN_LEFT | RG_TEXT_ALIGN_CENTER | RG_TEXT_ALIGN_RIGHT))) flags |= RG_TEXT_ALIGN_RIGHT;
+    return rg_gui_draw_text(x, y, width, visual, fg, bg, flags);
+}
+
 void rg_gui_set_surface(rg_surface_t *surface)
 {
     gui.screen_buffer = surface ? surface->data : NULL;

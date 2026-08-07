@@ -1,5 +1,9 @@
 from PIL import Image, ImageDraw, ImageFont
-from tkinter import Tk, Label, Entry, StringVar, Button, Frame, Canvas, filedialog, ttk, Checkbutton, IntVar
+try:
+    from tkinter import Tk, Label, Entry, StringVar, Button, Frame, Canvas, filedialog, ttk, Checkbutton, IntVar
+except ImportError:
+    # Headless font generation (for example generate_media_font.py) does not need Tk.
+    Tk = Label = Entry = StringVar = Button = Frame = Canvas = filedialog = ttk = Checkbutton = IntVar = None
 import os
 import re
 

@@ -37,6 +37,9 @@ enum
     RG_TEXT_MONOSPACE    = (1 << 7),
 };
 
+/* Font slot containing Latin, Arabic and Persian presentation glyphs. */
+#define RG_GUI_FONT_MEDIA 7
+
 enum
 {
     RG_GUI_CENTER = 0xF18000,
@@ -111,6 +114,7 @@ void rg_gui_update_geometry(void);
 bool rg_gui_set_language_id(int index);
 void rg_gui_set_surface(rg_surface_t *surface);
 bool rg_gui_set_font(int index);
+int rg_gui_get_font(void);
 bool rg_gui_set_theme(const char *name);
 const char *rg_gui_get_theme_name(void);
 rg_image_t *rg_gui_get_theme_image(const char *name);
@@ -120,6 +124,9 @@ void rg_gui_copy_buffer(int left, int top, int width, int height, int stride, co
 
 rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, // const rg_font_t *font,
                            rg_color_t color_fg, rg_color_t color_bg, uint32_t flags);
+/* Shapes Arabic/Persian presentation forms and applies a compact RTL bidi pass. */
+rg_rect_t rg_gui_draw_text_bidi(int x_pos, int y_pos, int width, const char *text,
+                                rg_color_t color_fg, rg_color_t color_bg, uint32_t flags);
 rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, size_t options_count, int sel);
 rg_rect_t rg_gui_draw_message_flags(int flags, const char *format, ...);
 rg_rect_t rg_gui_draw_message(const char *format, ...);

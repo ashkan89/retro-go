@@ -3,6 +3,8 @@ __pycache__/
 .cache/
 .vscode/
 build/
+/launcher/managed_components/espressif__esp_audio_codec/
+/launcher/managed_components/espressif__esp_jpeg/
 
 # ESP32 build
 /partitions.bin

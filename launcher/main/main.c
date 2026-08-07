@@ -15,6 +15,7 @@
 #include "gui.h"
 #include "webui.h"
 #include "updater.h"
+#include "media_library.h"
 
 static rg_app_t *app;
 
@@ -266,6 +267,7 @@ static void retro_loop(void)
 
     gui_init(app->isColdBoot);
     applications_init();
+    media_library_init();
     bookmarks_init();
     // browser_init();
 
