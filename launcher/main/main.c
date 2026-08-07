@@ -28,9 +28,15 @@ static rg_gui_event_t toggle_tab_cb(rg_gui_option_t *option, rg_gui_event_t even
     tab_t *tab = gui.tabs[option->arg];
     if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
     {
-        tab->enabled = !tab->enabled;
+        if (!tab->enabled) tab->enabled = true;
+        else {
+            size_t visible = 0;
+            for (size_t i = 0; i < gui.tabs_count; i++) visible += gui.tabs[i]->enabled;
+            if (visible > 1) tab->enabled = false;
+        }
     }
-    strcpy(option->value, tab->enabled ? _("Show") : _("Hide"));
+    /* This menu describes the action/state of Hide tabs: enabled tabs are not hidden. */
+    strcpy(option->value, tab->enabled ? _("Hide") : _("Show"));
     return RG_DIALOG_VOID;
 }
 
@@ -42,7 +48,7 @@ static rg_gui_event_t toggle_tabs_cb(rg_gui_option_t *option, rg_gui_event_t eve
         rg_gui_option_t *opt = options;
 
         for (size_t i = 0; i < gui.tabs_count; ++i)
-            *opt++ = (rg_gui_option_t){i, gui.tabs[i]->name, "...", 1, &toggle_tab_cb};
+            *opt++ = (rg_gui_option_t){i, gui.tabs[i]->desc, "...", 1, &toggle_tab_cb};
         *opt++ = (rg_gui_option_t)RG_DIALOG_END;
 
         rg_gui_dialog(option->label, options, 0);
@@ -266,8 +272,10 @@ static void retro_loop(void)
     bool redraw_pending = true;
 
     gui_init(app->isColdBoot);
-    applications_init();
+    /* Music is a launcher-native tab. Register it first so a fresh install always
+       has a useful tab even when no emulator partitions are present. */
     media_library_init();
+    applications_init();
     bookmarks_init();
     // browser_init();
 
@@ -433,6 +441,9 @@ static void retro_loop(void)
         {
             rg_task_delay(10);
         }
+
+        /* Playback maintenance must continue while any launcher tab is active. */
+        media_library_tick();
     }
 }
 

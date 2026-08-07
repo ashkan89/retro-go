@@ -262,6 +262,7 @@ bool media_player_play(const char *path, const media_metadata_t *meta, uint32_t 
 
 void media_player_toggle_pause(void)
 {
+    if (!player.initialized || !player.lock) return;
     lock();
     if (!player.stop && player.view.state != MEDIA_ERROR) {
         player.paused = !player.paused;
@@ -270,14 +271,27 @@ void media_player_toggle_pause(void)
     unlock();
 }
 
+void media_player_set_paused(bool paused)
+{
+    if (!player.initialized || !player.lock) return;
+    lock();
+    if (!player.stop && player.view.state != MEDIA_ERROR) {
+        player.paused = paused;
+        player.view.state = paused ? MEDIA_PAUSED : MEDIA_BUFFERING;
+    }
+    unlock();
+}
+
 void media_player_stop(void)
 {
+    if (!player.initialized || !player.lock) return;
     lock(); player.stop = true; player.paused = false; player.used = 0; player.eof = false;
     player.view.state = MEDIA_STOPPED; player.view.position_ms = 0; player.view.buffered_ms = 0; unlock();
 }
 
 void media_player_seek_to(uint32_t ms)
 {
+    if (!player.initialized || !player.lock) return;
     lock(); uint32_t duration = player.view.duration_ms; char path[RG_PATH_MAX + 1];
     media_metadata_t meta = player.view.metadata; snprintf(path, sizeof(path), "%s", player.view.path); unlock();
     if (duration && ms > duration) ms = duration;
@@ -292,10 +306,17 @@ void media_player_seek(int32_t delta)
 
 void media_player_get_snapshot(media_player_snapshot_t *s)
 {
+    if (!s) return;
+    if (!player.initialized || !player.lock) {
+        memset(s, 0, sizeof(*s));
+        s->state = MEDIA_STOPPED;
+        return;
+    }
     lock(); *s = player.view; unlock();
 }
 
 bool media_player_take_finished(void)
 {
+    if (!player.initialized || !player.lock) return false;
     lock(); bool finished = player.view.finished; player.view.finished = false; unlock(); return finished;
 }

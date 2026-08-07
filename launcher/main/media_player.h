@@ -28,9 +28,9 @@ typedef struct {
 bool media_player_init(void);
 bool media_player_play(const char *path, const media_metadata_t *metadata, uint32_t start_ms);
 void media_player_toggle_pause(void);
+void media_player_set_paused(bool paused);
 void media_player_stop(void);
 void media_player_seek(int32_t delta_ms);
 void media_player_seek_to(uint32_t position_ms);
 void media_player_get_snapshot(media_player_snapshot_t *snapshot);
 bool media_player_take_finished(void);
-

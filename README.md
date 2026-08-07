@@ -37,6 +37,22 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 - Wifi file manager
 - And more!
 
+### Launcher music player
+
+The launcher Music tab reads MP3, M3U and M3U8 files below `/sd/media`. Relative M3U paths
+are resolved from the playlist directory; absolute SD paths may start with either `/sd/` or
+`/`. Playback position and play mode are saved automatically.
+
+- `A`: pause/resume; `Start`: stop; `B`: return to the launcher while audio continues.
+- `Select`: change player page; `L`/`R`: previous/next; arrows: seek and volume.
+- `Option` + `Select`: repeat-all, repeat-one or shuffle.
+- `Option` + `Start`: off, 15, 30, 60 or 90 minute sleep timer.
+
+Boards with a headphone-jack switch can define `RG_GPIO_HEADPHONE_DETECT` in their target
+`config.h`. `RG_HEADPHONE_DETECT_LEVEL` selects the inserted level (default `0`) and
+`RG_HEADPHONE_DETECT_PULLUP` selects the internal pull-up (default `1`). Playback pauses on
+removal and resumes after a debounced insertion.
+
 ### Screenshots
 ![Preview](assets/retro-go-preview.jpg)
 

@@ -64,7 +64,18 @@ tab_t *gui_add_tab(const char *name, const char *desc, void *arg, void *event_ha
 {
     RG_ASSERT_ARG(name && desc);
 
+    if (gui.tabs_count >= RG_COUNT(gui.tabs))
+    {
+        RG_LOGE("Unable to add tab '%s': tab table is full", name);
+        return NULL;
+    }
+
     tab_t *tab = calloc(1, sizeof(tab_t));
+    if (!tab)
+    {
+        RG_LOGE("Unable to add tab '%s': out of memory", name);
+        return NULL;
+    }
 
     snprintf(tab->name, sizeof(tab->name), "%s", name);
     snprintf(tab->desc, sizeof(tab->desc), "%s", desc);
@@ -81,6 +92,13 @@ tab_t *gui_add_tab(const char *name, const char *desc, void *arg, void *event_ha
         .cursor = 0,
         .sort_mode = SORT_TEXT_ASC,
     };
+
+    if (!tab->listbox.items)
+    {
+        free(tab);
+        RG_LOGE("Unable to add tab '%s': out of memory", name);
+        return NULL;
+    }
 
     gui.tabs[gui.tabs_count++] = tab;
 

@@ -1,6 +1,7 @@
 #include "media_library.h"
 
 #include <rg_system.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,14 +11,31 @@
 #include "media_metadata.h"
 #include "media_player.h"
 
-typedef enum { ENTRY_DIRECTORY, ENTRY_MP3 } entry_type_t;
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_HEADPHONE_DETECT)
+#include <driver/gpio.h>
+#ifndef RG_HEADPHONE_DETECT_LEVEL
+#define RG_HEADPHONE_DETECT_LEVEL 0
+#endif
+#ifndef RG_HEADPHONE_DETECT_PULLUP
+#define RG_HEADPHONE_DETECT_PULLUP 1
+#endif
+#endif
+
+#define SETTING_MEDIA_PATH "MediaPath"
+#define SETTING_MEDIA_POSITION "MediaPosition"
+#define SETTING_MEDIA_PLAY_MODE "MediaPlayMode"
+#define RESUME_SAVE_INTERVAL_US 15000000
+
+typedef enum { ENTRY_DIRECTORY, ENTRY_PLAYLIST, ENTRY_MP3 } entry_type_t;
+typedef enum { PLAY_REPEAT_ALL, PLAY_REPEAT_ONE, PLAY_SHUFFLE, PLAY_MODE_COUNT } play_mode_t;
 typedef struct {
     char *name;
     entry_type_t type;
     size_t size;
+    bool metadata_loaded;
     media_metadata_t metadata;
 } media_entry_t;
-typedef struct { char path[RG_PATH_MAX + 1]; media_metadata_t metadata; } playlist_track_t;
+typedef struct { char path[RG_PATH_MAX + 1]; bool metadata_loaded; media_metadata_t metadata; } playlist_track_t;
 
 static media_entry_t *entries;
 static size_t entry_count, entry_capacity;
@@ -28,8 +46,23 @@ static playlist_track_t *playlist;
 static size_t playlist_count;
 static rg_image_t *player_cover;
 static media_lyrics_t player_lyrics;
+static play_mode_t play_mode;
+static char *resume_path;
+static uint32_t resume_position;
+static uint32_t last_saved_position;
+static int64_t next_resume_save;
+static int64_t sleep_deadline;
+static uint16_t sleep_minutes;
+static bool media_ready;
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_HEADPHONE_DETECT)
+static bool headphone_present;
+static bool headphone_raw;
+static bool paused_for_headphones;
+static int64_t headphone_changed_at;
+#endif
 
-static bool is_mp3(const char *name) { return rg_extension_match(name, "mp3") == 0; }
+static bool is_mp3(const char *name) { return rg_extension_match(name, "mp3"); }
+static bool is_playlist(const char *name) { return rg_extension_match(name, "m3u m3u8"); }
 
 static int entry_compare(const void *a, const void *b)
 {
@@ -40,7 +73,7 @@ static int entry_compare(const void *a, const void *b)
 
 static int scan_cb(const rg_scandir_t *item, void *arg)
 {
-    if (!item->is_dir && !(item->is_file && is_mp3(item->basename))) return RG_SCANDIR_CONTINUE;
+    if (!item->is_dir && !(item->is_file && (is_mp3(item->basename) || is_playlist(item->basename)))) return RG_SCANDIR_CONTINUE;
     if (entry_count == entry_capacity) {
         size_t capacity = entry_capacity ? entry_capacity * 2 : 32;
         media_entry_t *resized = realloc(entries, capacity * sizeof(*entries));
@@ -49,8 +82,7 @@ static int scan_cb(const rg_scandir_t *item, void *arg)
     }
     media_entry_t *entry = &entries[entry_count++]; memset(entry, 0, sizeof(*entry));
     entry->name = strdup(item->basename); entry->size = item->size;
-    entry->type = item->is_dir ? ENTRY_DIRECTORY : ENTRY_MP3;
-    if (entry->type == ENTRY_MP3) media_metadata_read(item->path, &entry->metadata, true);
+    entry->type = item->is_dir ? ENTRY_DIRECTORY : is_playlist(item->basename) ? ENTRY_PLAYLIST : ENTRY_MP3;
     return RG_SCANDIR_CONTINUE;
 }
 
@@ -69,12 +101,14 @@ static void scan_directory(tab_t *tab, const char *path, const char *selection)
     gui_resize_list(tab, entry_count); tab->listbox.cursor = 0;
     for (size_t i = 0; i < entry_count; i++) {
         listbox_item_t *item = &tab->listbox.items[i]; media_entry_t *entry = &entries[i];
-        item->arg = entry; item->group = entry->type == ENTRY_DIRECTORY ? 1 : 2;
+        item->arg = entry; item->group = entry->type == ENTRY_DIRECTORY ? 1 : entry->type == ENTRY_PLAYLIST ? 2 : 3;
         if (entry->type == ENTRY_DIRECTORY) snprintf(item->text, sizeof(item->text), "[%.89s]", entry->name);
-        else if (entry->metadata.artist[0]) snprintf(item->text, sizeof(item->text), "%.45s - %.40s", entry->metadata.title, entry->metadata.artist);
-        else snprintf(item->text, sizeof(item->text), "%.91s", entry->metadata.title);
+        else if (entry->type == ENTRY_PLAYLIST) snprintf(item->text, sizeof(item->text), "{Playlist} %.80s", entry->name);
+        else if (entry->metadata_loaded && entry->metadata.artist[0]) snprintf(item->text, sizeof(item->text), "%.45s - %.40s", entry->metadata.title, entry->metadata.artist);
+        else snprintf(item->text, sizeof(item->text), "%.91s", entry->metadata_loaded ? entry->metadata.title : entry->name);
         if (selection && !strcmp(entry->name, selection)) tab->listbox.cursor = i;
     }
+    gui_set_status(tab, "", "");
     gui_scroll_list(tab, SCROLL_SET, tab->listbox.cursor);
 }
 
@@ -90,22 +124,112 @@ static int track_index(const media_entry_t *entry)
     return entry && entry >= entries && entry < entries + entry_count ? entry - entries : -1;
 }
 
-static int adjacent_track(int from, int direction)
+static int adjacent_track(int from, int direction, bool automatic)
 {
     if (!playlist_count) return -1;
+    if (automatic && play_mode == PLAY_REPEAT_ONE) return from;
+    if (play_mode == PLAY_SHUFFLE && playlist_count > 1) {
+        int next;
+        do next = rand() % playlist_count; while (next == from);
+        return next;
+    }
     return (from + direction + playlist_count) % playlist_count;
 }
 
-static bool play_playlist_track(int index)
+static void save_resume(bool commit)
+{
+    if (!media_ready) return;
+    media_player_snapshot_t s;
+    media_player_get_snapshot(&s);
+    if (!s.path[0] || s.state == MEDIA_STOPPED) return;
+    uint32_t position = s.position_ms;
+    if (s.duration_ms && position + 5000 >= s.duration_ms) position = 0;
+    if (position == last_saved_position && resume_path && !strcmp(resume_path, s.path)) return;
+    free(resume_path);
+    resume_path = strdup(s.path);
+    resume_position = last_saved_position = position;
+    rg_settings_set_string(NS_APP, SETTING_MEDIA_PATH, s.path);
+    rg_settings_set_number(NS_APP, SETTING_MEDIA_POSITION, position);
+    if (commit) rg_settings_commit();
+}
+
+static bool play_playlist_track_at(int index, uint32_t start_ms)
 {
     if (index < 0 || index >= (int)playlist_count) return false;
-    const char *path = playlist[index].path;
-    if (!media_player_play(path, &playlist[index].metadata, 0)) return false;
+    save_resume(false);
+    playlist_track_t *track = &playlist[index];
+    const char *path = track->path;
+    if (!track->metadata_loaded) {
+        if (!media_metadata_read(path, &track->metadata, true)) return false;
+        track->metadata_loaded = true;
+    }
+    if (!media_player_play(path, &track->metadata, start_ms)) return false;
+    media_ready = true;
     current_track = index;
+    next_resume_save = rg_system_timer() + RESUME_SAVE_INTERVAL_US;
+    last_saved_position = start_ms;
     rg_surface_free(player_cover);
-    player_cover = media_metadata_load_cover(path, &playlist[index].metadata, gui.width, gui.height);
+    player_cover = media_metadata_load_cover(path, &track->metadata, gui.width, gui.height);
     media_lyrics_load(path, &player_lyrics);
     return true;
+}
+
+static bool play_playlist_track(int index) { return play_playlist_track_at(index, 0); }
+
+static bool playlist_append(playlist_track_t **tracks, size_t *count, size_t *capacity, const char *path)
+{
+    if (!is_mp3(path) || !rg_storage_exists(path)) return false;
+    if (*count == *capacity) {
+        size_t next_capacity = *capacity ? *capacity * 2 : 16;
+        playlist_track_t *resized = realloc(*tracks, next_capacity * sizeof(**tracks));
+        if (!resized) return false;
+        *tracks = resized; *capacity = next_capacity;
+    }
+    playlist_track_t *track = &(*tracks)[(*count)++];
+    memset(track, 0, sizeof(*track));
+    snprintf(track->path, sizeof(track->path), "%s", path);
+    return true;
+}
+
+static bool load_m3u(const char *m3u_path)
+{
+    FILE *file = fopen(m3u_path, "rb");
+    if (!file) return false;
+    char base[RG_PATH_MAX + 1]; snprintf(base, sizeof(base), "%s", m3u_path);
+    char *slash = strrchr(base, '/'); if (slash) *slash = 0;
+    playlist_track_t *next = NULL; size_t count = 0, capacity = 0;
+    char line[RG_PATH_MAX + 4];
+    while (fgets(line, sizeof(line), file)) {
+        char *text = line;
+        if ((unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF) text += 3;
+        while (isspace((unsigned char)*text)) text++;
+        char *end = text + strlen(text); while (end > text && isspace((unsigned char)end[-1])) *--end = 0;
+        if (!*text || *text == '#' || strstr(text, "://")) continue;
+        for (char *p = text; *p; p++) if (*p == '\\') *p = '/';
+        char path[RG_PATH_MAX + 1];
+        if (text[0] == '/' && !strncmp(text, RG_STORAGE_ROOT "/", strlen(RG_STORAGE_ROOT) + 1)) snprintf(path, sizeof(path), "%s", text);
+        else if (text[0] == '/') {
+            size_t root_length = strlen(RG_STORAGE_ROOT), text_length = strlen(text);
+            if (root_length + text_length >= sizeof(path)) continue;
+            memcpy(path, RG_STORAGE_ROOT, root_length);
+            memcpy(path + root_length, text, text_length + 1);
+        }
+        else {
+            size_t base_length = strlen(base), text_length = strlen(text);
+            if (base_length + 1 + text_length >= sizeof(path)) continue;
+            memcpy(path, base, base_length); path[base_length] = '/';
+            memcpy(path + base_length + 1, text, text_length + 1);
+        }
+        playlist_append(&next, &count, &capacity, path);
+    }
+    fclose(file);
+    if (!count) { free(next); return false; }
+    free(playlist); playlist = next; playlist_count = count;
+    int selected = 0; uint32_t start = 0;
+    if (resume_path) for (size_t i = 0; i < playlist_count; i++) if (!strcmp(resume_path, playlist[i].path)) {
+        selected = i; start = resume_position; break;
+    }
+    return play_playlist_track_at(selected, start);
 }
 
 static bool play_track(int entry_index)
@@ -118,12 +242,75 @@ static bool play_track(int entry_index)
     int selected = -1; size_t out = 0;
     for (size_t i = 0; i < entry_count; i++) if (entries[i].type == ENTRY_MP3) {
         path_for_entry(&entries[i], next[out].path, sizeof(next[out].path));
-        next[out].metadata = entries[i].metadata;
+        next[out].metadata_loaded = entries[i].metadata_loaded;
+        if (entries[i].metadata_loaded) next[out].metadata = entries[i].metadata;
         if ((int)i == entry_index) selected = out;
         out++;
     }
     free(playlist); playlist = next; playlist_count = count;
-    return play_playlist_track(selected);
+    uint32_t start = resume_path && selected >= 0 && !strcmp(resume_path, playlist[selected].path) ? resume_position : 0;
+    return play_playlist_track_at(selected, start);
+}
+
+static const char *play_mode_name(void)
+{
+    static const char *names[] = {"REPEAT ALL", "REPEAT ONE", "SHUFFLE"};
+    return names[play_mode % PLAY_MODE_COUNT];
+}
+
+static void cycle_play_mode(void)
+{
+    play_mode = (play_mode + 1) % PLAY_MODE_COUNT;
+    rg_settings_set_number(NS_APP, SETTING_MEDIA_PLAY_MODE, play_mode);
+    rg_settings_commit();
+}
+
+static void cycle_sleep_timer(void)
+{
+    static const uint16_t choices[] = {0, 15, 30, 60, 90};
+    size_t index = 0;
+    while (index + 1 < RG_COUNT(choices) && choices[index] != sleep_minutes) index++;
+    sleep_minutes = choices[(index + 1) % RG_COUNT(choices)];
+    sleep_deadline = sleep_minutes ? rg_system_timer() + (int64_t)sleep_minutes * 60 * 1000000 : 0;
+}
+
+static void playback_service(void)
+{
+    if (!media_ready) return;
+    int64_t now = rg_system_timer();
+    media_player_snapshot_t s; media_player_get_snapshot(&s);
+    if (sleep_deadline && now >= sleep_deadline) {
+        save_resume(true);
+        media_player_stop();
+        sleep_deadline = 0; sleep_minutes = 0;
+        return;
+    }
+    if ((s.state == MEDIA_PLAYING || s.state == MEDIA_PAUSED) && now >= next_resume_save) {
+        save_resume(true);
+        next_resume_save = now + RESUME_SAVE_INTERVAL_US;
+    }
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_HEADPHONE_DETECT)
+    bool raw = gpio_get_level(RG_GPIO_HEADPHONE_DETECT) == RG_HEADPHONE_DETECT_LEVEL;
+    if (raw != headphone_raw) { headphone_raw = raw; headphone_changed_at = now; }
+    if (raw != headphone_present && now - headphone_changed_at >= 150000) {
+        headphone_present = raw;
+        if (!raw && (s.state == MEDIA_PLAYING || s.state == MEDIA_BUFFERING)) {
+            media_player_set_paused(true);
+            paused_for_headphones = true;
+        } else if (raw && paused_for_headphones) {
+            media_player_set_paused(false);
+            paused_for_headphones = false;
+        }
+    }
+#endif
+}
+
+static void play_finished_track(void)
+{
+    if (!media_ready) return;
+    if (!media_player_take_finished()) return;
+    int index = adjacent_track(current_track, 1, true);
+    if (index >= 0) play_playlist_track(index);
 }
 
 static void shade_surface(rg_surface_t *surface, int divisor)
@@ -227,11 +414,14 @@ static void draw_player(int page)
     static const char *pages[] = {"NOW PLAYING", "SYNCED LYRICS", "TRACK DETAILS", "SPECTRUM"};
     rg_gui_draw_rect(0, 0, gui.width, 32, 0, 0, C_NAVY);
     rg_gui_draw_text(10, 7, gui.width - 20, pages[page], C_AQUA, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
-    char status[32]; snprintf(status, sizeof(status), "%s  VOL %d%%", s.state == MEDIA_PAUSED ? "PAUSED" : s.state == MEDIA_BUFFERING ? "BUFFERING" : s.state == MEDIA_ERROR ? "ERROR" : "PLAYING", rg_audio_get_volume());
+    char status[64]; snprintf(status, sizeof(status), "%s V%d%%", s.state == MEDIA_PAUSED ? "PAUSED" : s.state == MEDIA_BUFFERING ? "BUFFERING" : s.state == MEDIA_ERROR ? "ERROR" : s.state == MEDIA_STOPPED ? "STOPPED" : "PLAYING", rg_audio_get_volume());
     rg_gui_draw_text(5, 7, gui.width - 10, status, C_WHITE, C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
     if (page == 0) draw_now_playing(&s); else if (page == 1) draw_lyrics(&s); else if (page == 2) draw_details(&s); else draw_spectrum(&s);
     draw_progress(&s);
-    rg_gui_draw_text(0, gui.height - 19, gui.width, "A Pause  Start Stop  Option+Arrows Track/Light", C_SILVER, C_NAVY, RG_TEXT_ALIGN_CENTER);
+    char footer[96];
+    if (sleep_minutes) snprintf(footer, sizeof(footer), "%s | SLEEP %um | Opt+Select/Start", play_mode_name(), sleep_minutes);
+    else snprintf(footer, sizeof(footer), "%s | Opt+Select mode  Opt+Start sleep", play_mode_name());
+    rg_gui_draw_text(0, gui.height - 19, gui.width, footer, C_SILVER, C_NAVY, RG_TEXT_ALIGN_CENTER);
     if (s.state == MEDIA_ERROR) rg_gui_draw_text(10, gui.height / 2, gui.width - 20, s.error, C_LIGHT_CORAL, C_NAVY, RG_TEXT_ALIGN_CENTER);
     rg_gui_set_surface(NULL); rg_display_submit(gui.surface, 0);
 }
@@ -249,10 +439,16 @@ static void show_player(void)
             if (state.state == MEDIA_STOPPED || state.state == MEDIA_ERROR) play_playlist_track(current_track);
             else media_player_toggle_pause();
         }
-        if (pressed & RG_KEY_START) media_player_stop();
-        if (pressed & RG_KEY_SELECT) page = (page + 1) % 4;
-        if (pressed & RG_KEY_L) { int i = adjacent_track(current_track, -1); if (i >= 0) play_playlist_track(i); }
-        if (pressed & RG_KEY_R) { int i = adjacent_track(current_track, 1); if (i >= 0) play_playlist_track(i); }
+        if (pressed & RG_KEY_START) {
+            if (keys & RG_KEY_OPTION) cycle_sleep_timer();
+            else { save_resume(true); media_player_stop(); }
+        }
+        if (pressed & RG_KEY_SELECT) {
+            if (keys & RG_KEY_OPTION) cycle_play_mode();
+            else page = (page + 1) % 4;
+        }
+        if (pressed & RG_KEY_L) { int i = adjacent_track(current_track, -1, false); if (i >= 0) play_playlist_track(i); }
+        if (pressed & RG_KEY_R) { int i = adjacent_track(current_track, 1, false); if (i >= 0) play_playlist_track(i); }
         if (pressed & RG_KEY_UP) {
             if (keys & RG_KEY_OPTION) rg_display_set_backlight(RG_MIN(100, rg_display_get_backlight() + 10));
             else rg_audio_set_volume(RG_MIN(100, rg_audio_get_volume() + 5));
@@ -262,11 +458,11 @@ static void show_player(void)
             else rg_audio_set_volume(RG_MAX(0, rg_audio_get_volume() - 5));
         }
         if (pressed & RG_KEY_LEFT) {
-            if (keys & RG_KEY_OPTION) { int i = adjacent_track(current_track, -1); if (i >= 0) play_playlist_track(i); }
+            if (keys & RG_KEY_OPTION) { int i = adjacent_track(current_track, -1, false); if (i >= 0) play_playlist_track(i); }
             else media_player_seek(-10000);
         }
         if (pressed & RG_KEY_RIGHT) {
-            if (keys & RG_KEY_OPTION) { int i = adjacent_track(current_track, 1); if (i >= 0) play_playlist_track(i); }
+            if (keys & RG_KEY_OPTION) { int i = adjacent_track(current_track, 1, false); if (i >= 0) play_playlist_track(i); }
             else media_player_seek(10000);
         }
         if (pressed & RG_KEY_Y) rg_display_set_backlight(RG_MIN(100, rg_display_get_backlight() + 10));
@@ -275,10 +471,12 @@ static void show_player(void)
         else if (!(keys & RG_KEY_OPTION) && (keys & (RG_KEY_LEFT | RG_KEY_RIGHT)) && rg_system_timer() >= repeat_at) {
             media_player_seek(keys & RG_KEY_LEFT ? -10000 : 10000); repeat_at = rg_system_timer() + 180000;
         }
-        if (media_player_take_finished()) { int i = adjacent_track(current_track, 1); if (i >= 0) play_playlist_track(i); }
+        playback_service();
+        play_finished_track();
         if (rg_system_timer() >= next_draw || pressed) { draw_player(page); next_draw = rg_system_timer() + 50000; }
         previous = keys; rg_task_delay(5);
     }
+    save_resume(true);
     rg_gui_set_font(old_font); rg_input_wait_for_key(RG_KEY_ALL, false, 300); gui_redraw();
 }
 
@@ -288,16 +486,26 @@ static void update_browser_preview(tab_t *tab, media_entry_t *entry)
     if (!entry) return;
     char path[RG_PATH_MAX + 1], status[24] = ""; path_for_entry(entry, path, sizeof(path));
     if (entry->type == ENTRY_MP3) {
+        if (!entry->metadata_loaded) {
+            entry->metadata_loaded = media_metadata_read(path, &entry->metadata, true);
+            listbox_item_t *item = gui_get_selected_item(tab);
+            if (item && entry->metadata_loaded) {
+                if (entry->metadata.artist[0]) snprintf(item->text, sizeof(item->text), "%.45s - %.40s", entry->metadata.title, entry->metadata.artist);
+                else snprintf(item->text, sizeof(item->text), "%.91s", entry->metadata.title);
+            }
+        }
         gui_set_preview(tab, media_metadata_load_cover(path, &entry->metadata, gui.width / 2, gui.height * 2 / 3));
         char duration[12]; media_format_time(entry->metadata.duration_ms, duration, sizeof(duration));
         snprintf(status, sizeof(status), "%s %luk", duration, (unsigned long)(entry->metadata.bitrate / 1000));
-    } else {
+    } else if (entry->type == ENTRY_DIRECTORY) {
         media_metadata_t empty = {0};
         char probe[RG_PATH_MAX + 1];
         size_t length = strlen(path);
         if (length + 2 < sizeof(probe)) { memcpy(probe, path, length); memcpy(probe + length, "/_", 3);
             gui_set_preview(tab, media_metadata_load_cover(probe, &empty, gui.width / 2, gui.height * 2 / 3)); }
         snprintf(status, sizeof(status), "Album folder");
+    } else {
+        snprintf(status, sizeof(status), "M3U playlist");
     }
     gui_set_status(tab, NULL, status);
 }
@@ -312,21 +520,46 @@ static void event_handler(gui_event_t event, tab_t *tab)
     else if (event == TAB_ACTION && entry) {
         char path[RG_PATH_MAX + 1]; path_for_entry(entry, path, sizeof(path));
         if (entry->type == ENTRY_DIRECTORY) scan_directory(tab, path, NULL);
-        else if (play_track(track_index(entry))) show_player();
+        else if (entry->type == ENTRY_PLAYLIST ? load_m3u(path) : play_track(track_index(entry))) show_player();
     } else if (event == TAB_BACK) {
         if (!strcmp(current_path, RG_BASE_PATH_MEDIA)) tab->navpath = NULL;
         else { char selected[RG_PATH_MAX + 1]; snprintf(selected, sizeof(selected), "%s", rg_basename(current_path));
             char parent[RG_PATH_MAX + 1]; snprintf(parent, sizeof(parent), "%s", current_path); char *slash = strrchr(parent, '/'); if (slash) *slash = 0;
             scan_directory(tab, parent, selected); }
-    } else if (event == TAB_IDLE && media_player_take_finished()) {
-        int i = adjacent_track(current_track, 1); if (i >= 0) play_playlist_track(i);
     }
+}
+
+void media_library_tick(void)
+{
+    static int64_t next_tick;
+    int64_t now = rg_system_timer();
+    if (now < next_tick) return;
+    next_tick = now + 50000;
+    playback_service();
+    play_finished_track();
 }
 
 void media_library_init(void)
 {
     snprintf(current_path, sizeof(current_path), "%s", RG_BASE_PATH_MEDIA);
     if (!rg_storage_exists(current_path)) rg_storage_mkdir(current_path);
-    if (!media_player_init()) RG_LOGE("Media player tasks could not start");
+    resume_path = rg_settings_get_string(NS_APP, SETTING_MEDIA_PATH, NULL);
+    resume_position = rg_settings_get_number(NS_APP, SETTING_MEDIA_POSITION, 0);
+    int saved_mode = rg_settings_get_number(NS_APP, SETTING_MEDIA_PLAY_MODE, PLAY_REPEAT_ALL);
+    play_mode = saved_mode >= 0 && saved_mode < PLAY_MODE_COUNT ? saved_mode : PLAY_REPEAT_ALL;
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_HEADPHONE_DETECT)
+    gpio_config_t detect_config = {
+        .pin_bit_mask = 1ULL << RG_GPIO_HEADPHONE_DETECT,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = RG_HEADPHONE_DETECT_PULLUP ? GPIO_PULLUP_ENABLE : GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&detect_config);
+    headphone_present = headphone_raw = gpio_get_level(RG_GPIO_HEADPHONE_DETECT) == RG_HEADPHONE_DETECT_LEVEL;
+    headphone_changed_at = rg_system_timer();
+#endif
     media_tab = gui_add_tab("music", "Music Player", NULL, event_handler);
+    if (!media_tab) RG_LOGE("Music tab could not be registered");
+    else gui_set_status(media_tab, "", "");
 }
