@@ -77,6 +77,8 @@
 // Status LED
 #define RG_GPIO_LED                 GPIO_NUM_48
 #define RG_GPIO_LED_WS2812          1
+// Uncomment if red and green come out swapped (an RGB-order SK6812/WS2812C instead of GRB):
+#define RG_GPIO_LED_WS2812_RGB   1
 
 // Haptic feedback motor driver
 #define RG_GPIO_VIBRATOR            GPIO_NUM_38

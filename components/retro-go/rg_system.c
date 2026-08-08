@@ -105,6 +105,7 @@ static int overclockLevel, overclockMhz;
 static int requestedOverclockLevel;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+static rg_mutex_t *ledLock;
 static bool hapticEnabled = true;
 static int hapticStrength = 100;
 static rg_stats_t statistics;
@@ -192,11 +193,11 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
-static uint8_t brightness = 200;
+static uint8_t brightness = 150;
 
-static inline uint8_t scale(uint8_t v, uint8_t brightness)
+static inline uint8_t scale(uint8_t v, uint8_t amount)
 {
-    return ((uint16_t)v * brightness + 127) / 255;
+    return ((uint16_t)v * amount + 127) / 255;
 }
 
 static inline uint8_t gamma8(uint8_t x)
@@ -204,26 +205,30 @@ static inline uint8_t gamma8(uint8_t x)
     return powf(x / 255.0f, 2.2f) * 255.0f;
 }
 
-static void led_rgb565_to_grb888(rg_color_t color, uint8_t data[3])
+static void led_rgb565_to_pixel(rg_color_t color, uint8_t data[3])
 {
     uint16_t rgb565 = color > 0 ? color : 0;
     uint8_t r5 = (rgb565 >> 11) & 0x1F;
     uint8_t g6 = (rgb565 >> 5) & 0x3F;
     uint8_t b5 = rgb565 & 0x1F;
-    uint8_t r8 = (r5 << 3) | (r5 >> 2);
-    uint8_t g8 = (g6 << 2) | (g6 >> 4);
-    uint8_t b8 = (b5 << 3) | (b5 >> 2);
+    // Gamma converts the perceptual 8bit value to the LED's linear duty cycle, brightness is then
+    // a plain linear dimmer. Scaling before the gamma would apply (brightness/255)^2.2 instead,
+    // which dims a lot more than asked for.
+    uint8_t r8 = scale(gamma8((r5 << 3) | (r5 >> 2)), brightness);
+    uint8_t g8 = scale(gamma8((g6 << 2) | (g6 >> 4)), brightness);
+    uint8_t b8 = scale(gamma8((b5 << 3) | (b5 >> 2)), brightness);
 
-    // The on-board addressable LED uses GRB byte order.
-    data[0] = scale(g8, brightness);
-    data[1] = scale(r8, brightness);
-    data[2] = scale(b8, brightness);
-
-    for (int i = 0; i < 3; i++)
-    {
-        data[i] = gamma8(data[i]);
-    }
-
+#if defined(RG_GPIO_LED_WS2812_RGB)
+    // Some SK6812/WS2812C variants expect plain RGB byte order instead.
+    data[0] = r8;
+    data[1] = g8;
+    data[2] = b8;
+#else
+    // WS2812/WS2812B use GRB byte order.
+    data[0] = g8;
+    data[1] = r8;
+    data[2] = b8;
+#endif
 }
 
 static bool led_rmt_init(void)
@@ -235,7 +240,9 @@ static bool led_rmt_init(void)
     rmt_tx_channel_config_t channel_config = {
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .gpio_num = RG_GPIO_LED,
-        .mem_block_symbols = 128,
+        // A single pixel is 24 symbols, and the ESP32-S3 allocates these in blocks of 48 out of
+        // a pool shared by all 4 TX channels. Asking for 128 rounds up to 3 blocks for nothing.
+        .mem_block_symbols = 64,
         .resolution_hz = WS2812_RESOLUTION_HZ,
         .trans_queue_depth = 1,
     };
@@ -283,7 +290,7 @@ static bool led_rmt_set_color(rg_color_t color)
     if (!led_rmt_init())
         return false;
 
-    led_rgb565_to_grb888(color, data);
+    led_rgb565_to_pixel(color, data);
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
     rmt_transmit_config_t tx_config = {
@@ -317,7 +324,10 @@ static bool led_rmt_set_color(rg_color_t color)
         return false;
 #endif
 
-    esp_rom_delay_us(80);
+    // Reset/latch. The original WS2812B only needs 50us, but the WS2812B-V5 and 2020 parts found
+    // on current ESP32-S3 boards need 280us. Latch too early and the chip treats the next frame as
+    // a continuation of this one, so the bytes land in the wrong channels and the color is wrong.
+    esp_rom_delay_us(300);
     return true;
 }
 #endif
@@ -520,7 +530,7 @@ static void update_indicators(bool reset_animation)
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
     bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     static int animation_step = 0;
-    rg_color_t newColor = 0; // C_GREEN
+    rg_color_t newColor = 0; // LED off
 
     if (reset_animation)
         animation_step = 0;
@@ -650,6 +660,9 @@ static void enter_recovery_mode(void)
 
 static void platform_init(void)
 {
+    // Must exist before any task can reach rg_system_set_led_color().
+    ledLock = rg_mutex_create();
+
 #if defined(ESP_PLATFORM)
     // At boot time those pins are muxed to JTAG and can interfere with other things.
     #if CONFIG_IDF_TARGET_ESP32
@@ -1548,18 +1561,35 @@ bool rg_system_get_indicator_mask(rg_indicator_t indicator)
 
 bool rg_system_set_led_color(rg_color_t color)
 {
-    ledColor = color;
-#if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
-    return led_rmt_set_color(color);
-#elif defined(RG_GPIO_LED)
+    // Callers live on different tasks: the SD card transaction hook runs on whichever task is doing
+    // I/O, while system_monitor_task updates the battery indicator once a second. Without this lock
+    // two frames can reach the wire out of order and leave the LED lit in a color that no longer
+    // matches ledColor, which then makes update_indicators() skip the correction.
+    bool success = true;
+
+    if (ledLock)
+        rg_mutex_take(ledLock, 1000);
+
+#if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+    success = led_rmt_set_color(color);
+#elif defined(ESP_PLATFORM) && defined(RG_GPIO_LED)
     int value = color > 0; // GPIO LED doesn't support colors, so any color = on
     #if defined(RG_GPIO_LED_INVERT)
     value = !value;
     #endif
     if (RG_GPIO_LED != GPIO_NUM_NC)
-        return gpio_set_level(RG_GPIO_LED, value) == ESP_OK;
+        success = gpio_set_level(RG_GPIO_LED, value) == ESP_OK;
 #endif
-    return true;
+
+    // Only publish the new state once the LED actually took it, otherwise a failed transmit would
+    // be remembered as applied and never retried.
+    if (success)
+        ledColor = color;
+
+    if (ledLock)
+        rg_mutex_give(ledLock);
+
+    return success;
 }
 
 rg_color_t rg_system_get_led_color(void)
