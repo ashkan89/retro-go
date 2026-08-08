@@ -116,6 +116,34 @@
 #define RG_RECOVERY_BTN RG_KEY_ANY
 #endif
 
+// Headphone jack support. The headphone DAC hangs off the same I2S bus as the speaker amplifier
+// and a GPIO tells us which one to enable, so this costs no extra peripheral.
+#ifndef RG_AUDIO_USE_HEADPHONE_JACK
+#define RG_AUDIO_USE_HEADPHONE_JACK 0
+#endif
+
+// Level read on RG_GPIO_SND_HP_DETECT while a plug is inserted. Keep this the *opposite* of the
+// pin's idle level (pulled up, so 0) or an unwired board would think it always has headphones.
+#ifndef RG_GPIO_SND_HP_DETECT_LEVEL
+#define RG_GPIO_SND_HP_DETECT_LEVEL 0
+#endif
+
+// How long the detect line must hold a new state before we switch outputs
+#ifndef RG_AUDIO_HP_DEBOUNCE_MS
+#define RG_AUDIO_HP_DEBOUNCE_MS 200
+#endif
+
+// How often the detect line is sampled while no audio is being submitted
+#ifndef RG_AUDIO_HP_POLL_INTERVAL_MS
+#define RG_AUDIO_HP_POLL_INTERVAL_MS 50
+#endif
+
+// Volume is remembered per route. Headphones sit in your ears and need far less drive than a
+// speaker, so their first-run default is deliberately low.
+#ifndef RG_AUDIO_HP_DEFAULT_VOLUME
+#define RG_AUDIO_HP_DEFAULT_VOLUME 25
+#endif
+
 #ifndef RG_BATTERY_CALC_PERCENT
 #define RG_BATTERY_CALC_PERCENT(raw) (100)
 #endif

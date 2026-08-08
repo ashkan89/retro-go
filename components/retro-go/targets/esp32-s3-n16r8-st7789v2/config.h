@@ -18,6 +18,7 @@
 // Audio
 #define RG_AUDIO_USE_INT_DAC        0
 #define RG_AUDIO_USE_EXT_DAC        1
+#define RG_AUDIO_USE_HEADPHONE_JACK 1   // Headphone DAC shares the I2S bus with the speaker amp
 #define RG_AUDIO_DMA_BUFFER_COUNT   8   // 48 ms reserve at 32 kHz absorbs heavy render spikes
 #define RG_AUDIO_DMA_BUFFER_LENGTH  192
 #define RG_AUDIO_I2S_INTR_FLAGS     ESP_INTR_FLAG_LEVEL2
@@ -98,10 +99,20 @@
 #define RG_GPIO_SDSPI_CLK           GPIO_NUM_40
 #define RG_GPIO_SDSPI_CS            GPIO_NUM_42
 
-// External I2S DAC (MAX98357A)
+// External I2S DAC. The bus is shared by two slaves: a MAX98357A driving the speaker and a
+// PCM5102A driving the 3.5mm jack. Only one of them is enabled at a time.
 #define RG_GPIO_SND_I2S_BCK         GPIO_NUM_5
 #define RG_GPIO_SND_I2S_WS          GPIO_NUM_4
 #define RG_GPIO_SND_I2S_DATA        GPIO_NUM_6
+
+// Output routing. AMP_ENABLE drives MAX98357A SD_MODE (through 470k, see README), HP_ENABLE
+// drives PCM5102A XSMT (or a headphone amp shutdown). Both are active high.
+#define RG_GPIO_SND_AMP_ENABLE      GPIO_NUM_9
+#define RG_GPIO_SND_HP_ENABLE       GPIO_NUM_46
+// Jack detect: the 4th (ring2) contact, shorted to the plug's sleeve when one is inserted.
+// Idle state is the internal pull-up, so a board without the mod correctly reports no headphones.
+#define RG_GPIO_SND_HP_DETECT       GPIO_NUM_1
+#define RG_GPIO_SND_HP_DETECT_LEVEL 0
 
 // Updater
 #define RG_UPDATER_ENABLE               1

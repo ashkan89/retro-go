@@ -1529,7 +1529,9 @@ static rg_gui_event_t audio_update_cb(rg_gui_option_t *option, rg_gui_event_t ev
     if (sink != prev_sink)
         rg_audio_set_sink(sinks[sink].driver->name, sinks[sink].device);
 
-    strcpy(option->value, sinks[sink].name);
+    // Ask the audio layer rather than using sinks[sink].name directly: an automatic sink only
+    // becomes meaningful once the hardware has resolved it to a speaker or headphones.
+    rg_audio_get_sink_label(option->value, 32);
 
     return RG_DIALOG_VOID;
 }

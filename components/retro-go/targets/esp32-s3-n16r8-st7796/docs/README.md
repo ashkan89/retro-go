@@ -10,6 +10,10 @@ enclosure/PCB, so full features and the wiring diagram/table are documented once
 
 Pin assignments are defined in [`config.h`](../config.h).
 
+The optional 3.5mm headphone jack (PCM5102A sharing the I2S bus with the speaker amp, plus jack detection on
+GPIO1) is wired up in the [headphone jack section](../../../../README.md#headphone-jack-optional) of the root
+README. It is enabled in `config.h` by default and is inert on boards that don't have it wired.
+
 # Known issues:
 
 # Images

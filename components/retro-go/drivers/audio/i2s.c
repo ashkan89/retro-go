@@ -12,6 +12,18 @@
 #error "Your chip has no DAC! Please set RG_AUDIO_USE_INT_DAC to 0 in your target file."
 #endif
 
+#if RG_AUDIO_USE_HEADPHONE_JACK
+#if !RG_AUDIO_USE_EXT_DAC
+#error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_AUDIO_USE_EXT_DAC, the headphone DAC shares the I2S bus."
+#elif RG_AUDIO_USE_INT_DAC
+#error "RG_AUDIO_USE_HEADPHONE_JACK cannot be combined with RG_AUDIO_USE_INT_DAC (ambiguous sink names)."
+#elif !defined(RG_GPIO_SND_HP_DETECT)
+#error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_GPIO_SND_HP_DETECT to be defined in your target file."
+#elif !defined(RG_GPIO_SND_AMP_ENABLE)
+#error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_GPIO_SND_AMP_ENABLE, the speaker amp must be shut down."
+#endif
+#endif
+
 #include <driver/gpio.h>
 #include <driver/i2s.h>
 #include <esp_intr_alloc.h>
@@ -19,13 +31,31 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+// Speaker amplifier shutdown pin (MAX98357A SD_MODE and friends). Active high unless inverted.
 #ifdef RG_GPIO_SND_AMP_ENABLE_INVERT
-#define MUTE_ENABLE 1
-#define MUTE_DISABLE 0
+#define AMP_ON 0
+#define AMP_OFF 1
 #else
-#define MUTE_ENABLE 0
-#define MUTE_DISABLE 1
+#define AMP_ON 1
+#define AMP_OFF 0
 #endif
+
+// Headphone path enable pin (PCM5102A XSMT or a headphone amp shutdown). Active high unless inverted.
+#ifdef RG_GPIO_SND_HP_ENABLE_INVERT
+#define HP_ON 0
+#define HP_OFF 1
+#else
+#define HP_ON 1
+#define HP_OFF 0
+#endif
+
+// Devices 1-3 all drive the same external I2S bus, they differ only in where the analog
+// signal is allowed to leave the board. Device 0 is the ESP32's built-in DAC.
+#define DEVICE_INT_DAC 0
+#define DEVICE_EXT_AUTO 1
+#define DEVICE_EXT_SPEAKER 2
+#define DEVICE_EXT_HEADPHONES 3
+#define DEVICE_IS_EXTERNAL(dev) ((dev) >= DEVICE_EXT_AUTO && (dev) <= DEVICE_EXT_HEADPHONES)
 
 // We can safely assume that no application will submit more than 640 audio frames per call to
 // driver_submit (32000/50). Using a single large buffer risks blocking the call needlessly because
@@ -69,6 +99,10 @@ static struct {
     int device;
     int volume;
     bool muted;
+    volatile rg_audio_route_t route;
+    bool jack_present;
+    bool jack_candidate;
+    int64_t jack_changed_at;
     rg_audio_frame_t *queue;
     size_t queue_read;
     size_t queue_write;
@@ -83,13 +117,86 @@ static portMUX_TYPE queue_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool write_frames(const rg_audio_frame_t *frames, size_t count);
 
+// Drive the two analog output stages from the current route and mute state. Exactly one of
+// them is ever enabled, so the speaker can't keep playing into the room while someone is
+// wearing headphones, and the headphone amp isn't left running into an empty jack.
+static void apply_route(void)
+{
+    // A board with no enable pins at all (amplifier hardwired on) has nothing to do here
+    bool headphones = state.route == RG_AUDIO_ROUTE_HEADPHONES;
+    bool audible = !state.muted;
+    (void)headphones, (void)audible;
+
+    #ifdef RG_GPIO_SND_AMP_ENABLE
+    gpio_set_level(RG_GPIO_SND_AMP_ENABLE, (audible && !headphones) ? AMP_ON : AMP_OFF);
+    #endif
+    #ifdef RG_GPIO_SND_HP_ENABLE
+    gpio_set_level(RG_GPIO_SND_HP_ENABLE, (audible && headphones) ? HP_ON : HP_OFF);
+    #endif
+}
+
+static void resolve_route(void)
+{
+    if (state.device == DEVICE_EXT_HEADPHONES)
+        state.route = RG_AUDIO_ROUTE_HEADPHONES;
+    else if (state.device == DEVICE_EXT_AUTO && state.jack_present)
+        state.route = RG_AUDIO_ROUTE_HEADPHONES;
+    else
+        state.route = RG_AUDIO_ROUTE_SPEAKER;
+}
+
+#if RG_AUDIO_USE_HEADPHONE_JACK
+static bool read_jack(void)
+{
+    return gpio_get_level(RG_GPIO_SND_HP_DETECT) == RG_GPIO_SND_HP_DETECT_LEVEL;
+}
+
+// The detect line is a mechanical contact, it chatters for tens of milliseconds while a plug
+// slides in. Acting on the first edge would flap the amplifiers audibly, so a new state has to
+// hold for the full debounce window. Timestamps rather than sample counts because this is
+// called from the writer task, whose wake-up rate follows the audio load.
+static void poll_jack(void)
+{
+    bool inserted = read_jack();
+    int64_t now = rg_system_timer();
+
+    if (inserted != state.jack_candidate)
+    {
+        state.jack_candidate = inserted;
+        state.jack_changed_at = now;
+        return;
+    }
+
+    if (inserted == state.jack_present)
+        return;
+    if (now - state.jack_changed_at < RG_AUDIO_HP_DEBOUNCE_MS * 1000)
+        return;
+
+    state.jack_present = inserted;
+    RG_LOGI("Headphone jack %s\n", inserted ? "connected" : "disconnected");
+
+    if (state.device == DEVICE_EXT_AUTO)
+    {
+        resolve_route();
+        apply_route();
+    }
+}
+#endif
+
 static void audio_task(void *arg)
 {
     rg_audio_frame_t frames[DMA_BUFFER_LEN];
 
     while (true)
     {
+        // A timed wait so the jack is still sampled while nothing is being played, otherwise
+        // plugging in during a quiet moment wouldn't be noticed until audio resumed.
+        #if RG_AUDIO_USE_HEADPHONE_JACK
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(RG_AUDIO_HP_POLL_INTERVAL_MS));
+        poll_jack();
+        #else
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        #endif
 
         while (true)
         {
@@ -209,7 +316,33 @@ static bool driver_init(int device, int sample_rate)
     state.last_error = NULL;
     state.device = device;
 
-    if (state.device == 0)
+    // Bring the outputs up shut down: the I2S bus is silent until the writer task runs, and an
+    // enabled amplifier would turn that undefined state into a pop.
+    #ifdef RG_GPIO_SND_AMP_ENABLE
+    gpio_reset_pin(RG_GPIO_SND_AMP_ENABLE);
+    gpio_set_level(RG_GPIO_SND_AMP_ENABLE, AMP_OFF);
+    gpio_set_direction(RG_GPIO_SND_AMP_ENABLE, GPIO_MODE_OUTPUT);
+    #endif
+    #ifdef RG_GPIO_SND_HP_ENABLE
+    gpio_reset_pin(RG_GPIO_SND_HP_ENABLE);
+    gpio_set_level(RG_GPIO_SND_HP_ENABLE, HP_OFF);
+    gpio_set_direction(RG_GPIO_SND_HP_ENABLE, GPIO_MODE_OUTPUT);
+    #endif
+
+    #if RG_AUDIO_USE_HEADPHONE_JACK
+    // Pulled up and active low, so an unmodified board (nothing wired to the detect pin) reads
+    // "no headphones" and keeps using its speaker.
+    gpio_reset_pin(RG_GPIO_SND_HP_DETECT);
+    gpio_set_direction(RG_GPIO_SND_HP_DETECT, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(RG_GPIO_SND_HP_DETECT, GPIO_PULLUP_ONLY);
+    rg_task_delay(20); // Let the pull-up charge the line (and any debounce capacitor) before sampling
+    state.jack_present = state.jack_candidate = read_jack();
+    state.jack_changed_at = rg_system_timer();
+    #endif
+
+    resolve_route();
+
+    if (state.device == DEVICE_INT_DAC)
     {
     #if RG_AUDIO_USE_INT_DAC
         esp_err_t ret = i2s_driver_install(I2S_NUM_0, &(i2s_config_t){
@@ -231,7 +364,7 @@ static bool driver_init(int device, int sample_rate)
         state.last_error = "This device does not support internal DAC mode!";
     #endif
     }
-    else if (state.device == 1)
+    else if (DEVICE_IS_EXTERNAL(state.device))
     {
     #if RG_AUDIO_USE_EXT_DAC
         esp_err_t ret = i2s_driver_install(I2S_NUM_0, &(i2s_config_t){
@@ -268,11 +401,8 @@ static bool driver_init(int device, int sample_rate)
     if (!state.last_error && !start_audio_task())
         i2s_driver_uninstall(I2S_NUM_0);
 
-    #ifdef RG_GPIO_SND_AMP_ENABLE
-        gpio_reset_pin(RG_GPIO_SND_AMP_ENABLE);
-        gpio_set_level(RG_GPIO_SND_AMP_ENABLE, MUTE_ENABLE);
-        gpio_set_direction(RG_GPIO_SND_AMP_ENABLE, GPIO_MODE_OUTPUT);
-    #endif
+    // The outputs stay shut down until rg_audio_init() applies the unmute, which happens once
+    // the writer task is up and the DMA buffers hold real samples.
     return state.last_error == NULL;
 }
 
@@ -285,13 +415,13 @@ static bool driver_deinit(void)
 {
     stop_audio_task();
     i2s_driver_uninstall(I2S_NUM_0);
-    if (state.device == 0)
+    if (state.device == DEVICE_INT_DAC)
     {
     #if RG_AUDIO_USE_INT_DAC
         i2s_set_dac_mode(I2S_DAC_CHANNEL_DISABLE);
     #endif
     }
-    else if (state.device == 1)
+    else if (DEVICE_IS_EXTERNAL(state.device))
     {
     #if RG_AUDIO_USE_EXT_DAC
         gpio_reset_pin(RG_GPIO_SND_I2S_BCK);
@@ -302,7 +432,34 @@ static bool driver_deinit(void)
     #ifdef RG_GPIO_SND_AMP_ENABLE
     gpio_reset_pin(RG_GPIO_SND_AMP_ENABLE);
     #endif
+    #ifdef RG_GPIO_SND_HP_ENABLE
+    gpio_reset_pin(RG_GPIO_SND_HP_ENABLE);
+    #endif
+    #if RG_AUDIO_USE_HEADPHONE_JACK
+    gpio_reset_pin(RG_GPIO_SND_HP_DETECT);
+    #endif
+    state.route = RG_AUDIO_ROUTE_UNKNOWN;
     return true;
+}
+
+// Retarget the analog output without touching the I2S peripheral. Only valid between the
+// external-DAC devices, they share an identical bus configuration.
+static bool driver_set_device(int device)
+{
+    if (device == state.device)
+        return true;
+    if (!DEVICE_IS_EXTERNAL(device) || !DEVICE_IS_EXTERNAL(state.device))
+        return false;
+
+    state.device = device;
+    resolve_route();
+    apply_route();
+    return true;
+}
+
+static rg_audio_route_t driver_get_route(void)
+{
+    return state.route;
 }
 
 static bool write_frames(const rg_audio_frame_t *frames, size_t count)
@@ -312,7 +469,7 @@ static bool write_frames(const rg_audio_frame_t *frames, size_t count)
     size_t pos = 0;
 
     #if RG_AUDIO_USE_INT_DAC
-    bool use_internal_dac = state.device == 0;
+    bool use_internal_dac = state.device == DEVICE_INT_DAC;
     #endif
 
     for (size_t i = 0; i < count; ++i)
@@ -423,10 +580,8 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
 static bool driver_set_mute(bool mute)
 {
     i2s_zero_dma_buffer(I2S_NUM_0);
-    #ifdef RG_GPIO_SND_AMP_ENABLE
-    gpio_set_level(RG_GPIO_SND_AMP_ENABLE, mute ? MUTE_ENABLE : MUTE_DISABLE);
-    #endif
     state.muted = mute;
+    apply_route();
     return true;
 }
 
@@ -449,6 +604,8 @@ const rg_audio_driver_t rg_audio_driver_i2s = {
     .set_mute = driver_set_mute,
     .set_volume = driver_set_volume,
     .set_sample_rate = driver_set_sample_rates,
+    .set_device = driver_set_device,
+    .get_route = driver_get_route,
     .get_error = driver_get_error,
 };
 

@@ -91,6 +91,7 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
 - WS2812 addressable RGB status LED.
 - Haptic feedback (vibration motor) driver output.
 - External I2S DAC audio output (e.g. MAX98357A class-D amplifier module) — no onboard battery-voltage ADC on this target, so battery percentage isn't available.
+- Optional 3.5mm headphone jack with automatic switching: a stereo PCM5102A DAC shares the I2S bus with the speaker amp, and a detect pin mutes whichever one isn't in use. Volume is remembered separately per output. See [Headphone jack](#headphone-jack-optional).
 - Firmware updater support (downloads and flashes new images from `/sd/retro-go/firmware` via the factory app).
 
 ### Wiring diagram
@@ -121,8 +122,15 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
  │ GPIO5  ───────── BCLK       │                  │                │ GPIO48 ───────── DIN (WS2812)│
  │ GPIO4  ───────── LRC / WS   │                  │                │ GPIO38 ───────── Vibrator    │
  │ GPIO6  ───────── DIN        │                  │                │                  motor driver │
- └─────────────────────────────┘                  │                └─────────────────────────────┘
-   MAX98357A (or similar I2S DAC)                  │
+ │ GPIO9  ───────── SD_MODE    │                  │                └─────────────────────────────┘
+ └─────────────────────────────┘                  │
+   MAX98357A (or similar I2S DAC)                  │                Headphone jack (optional)
+                                                   │                ┌─────────────────────────────┐
+                                                   │                │ GPIO5/4/6 ───── shared I2S  │
+                                                   │                │ GPIO46 ───────── XSMT       │
+                                                   │                │ GPIO1  ───────── jack detect │
+                                                   │                └─────────────────────────────┘
+                                                   │                  PCM5102A + 3.5mm TRRS jack
                                                    │
                         Gamepad matrix — active-low buttons to GND, internal pull-ups enabled
       ┌──────────────────────────────────────────────────────────────────────────────────────┐
@@ -151,6 +159,9 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
   | I2S audio (ext. DAC)   | BCK           | GPIO5        |
   | I2S audio (ext. DAC)   | WS / LRC      | GPIO4        |
   | I2S audio (ext. DAC)   | DATA / DIN    | GPIO6        |
+  | I2S audio (speaker)    | MAX98357A SD_MODE | GPIO9    |
+  | I2S audio (headphones) | PCM5102A XSMT | GPIO46       |
+  | I2S audio (headphones) | Jack detect   | GPIO1        |
   | Status LED             | WS2812 DIN    | GPIO48       |
   | Haptics                | Vibrator      | GPIO38       |
   | Gamepad                | UP            | GPIO17       |
@@ -170,6 +181,116 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
 > **Note:** GPIO45 is a strapping pin (selects VDD_SPI voltage at reset) and GPIO3 is used by JTAG signal source selection. Both default to the correct state for this board already, but avoid holding the A or Down buttons while resetting/flashing if you experience boot issues. The display and SD card intentionally use two separate SPI buses (SPI2 and SPI3) so both peripherals can be active without bus contention.
 
 Source of truth for all pin assignments: [`config.h`](components/retro-go/targets/esp32-s3-n16r8-ili9341/config.h) (identical GPIO map across all 6 targets — only the display driver differs).
+
+### Headphone jack (optional)
+
+The MAX98357A is a filterless class-D amplifier. Its outputs are a bridge-tied PWM pair with **no common ground**,
+so you must never wire a headphone jack to them — there is no safe sleeve connection, and the ~300 kHz carrier
+would go straight into your ears. Headphones get their own DAC instead.
+
+The ESP32-S3's I2S transmitter is a broadcast bus: BCK, WS and DATA can drive several slaves in parallel, and each
+slave simply ignores the data when it is shut down. So the headphone DAC hangs off the *same three pins* as the
+speaker amplifier, and two enable GPIOs decide which one is allowed to make noise. No second I2S peripheral, no
+I2C, no change to the existing speaker wiring.
+
+#### Parts
+
+| Qty | Part | Notes |
+|-----|------|-------|
+| 1 | PCM5102A breakout ("GY-PCM5102" purple board) | Stereo I2S DAC. Its internal charge pump makes the output ground-centred, so **no output coupling capacitors are needed**. UDA1334A works too. |
+| 1 | 3.5mm 4-pole (TRRS) PCB jack, e.g. PJ-320A / PJ-327 | The 4th contact is what detects insertion. A 3-pole jack with a switched contact also works, see the note below. |
+| 2 | 220 Ω resistor, 1/8 W | Series output resistors. |
+| 1 | 470 kΩ resistor | Sets the MAX98357A channel mode when enabled. |
+| 1 | 100 nF ceramic capacitor | Hardware debounce on the detect line (optional but recommended). |
+| — | 22 AWG wire | Run the jack's ground back to the PCM5102A ground pin, not to the class-D amp's ground. |
+
+Optional, for full volume into over-ear headphones: a **PAM8908** or **NJM4556A** headphone amplifier between the
+PCM5102A and the jack. Wire its shutdown pin to GPIO46 instead of XSMT — the firmware treats the two identically.
+
+#### Wiring
+
+```
+                    ESP32-S3
+                       │
+   ┌───────────────────┼───────────────────┐          shared I2S bus, both slaves
+   │                   │                   │          receive the same samples
+ GPIO5 (BCK) ──────────┼───────────┐       │
+ GPIO4 (WS)  ──────────┼─────────┐ │       │
+ GPIO6 (DATA)──────────┼───────┐ │ │       │
+                       │       │ │ │       │
+        ┌──────────────▼──┐    │ │ │  ┌────▼─────────────┐
+        │   MAX98357A     │◄───┘ │ │  │    PCM5102A      │
+        │   (speaker)     │◄─────┘ │  │   (headphones)   │
+        │                 │◄───────┘  │                  │
+        │                 │           │  BCK / LCK / DIN │
+        │ SD_MODE ◄─470k──┼── GPIO9   │  SCK ── GND      │  ← tie SCK low: internal PLL
+        │                 │           │  XSMT ◄───────── │── GPIO46
+        │ OUT+ ── speaker │           │  LOUT ─┬─ 220R ──┼──► TIP
+        └─────────────────┘           │  ROUT ─┼─ 220R ──┼──► RING1
+                                      │  AGND ─┴─────────┼──► SLEEVE
+                                      └──────────────────┘
+                                                              RING2 ──► GPIO1
+```
+
+**Jack detect (GPIO1).** A stereo plug's barrel is long enough to bridge both the sleeve and ring2 contacts of a
+4-pole jack. So ring2 is grounded whenever a plug is in, and floating otherwise. GPIO1 runs with its internal
+pull-up enabled, which gives:
+
+| State | GPIO1 | Result |
+|-------|-------|--------|
+| Nothing plugged in | HIGH (pull-up) | Speaker |
+| Plug inserted | LOW (bridged to sleeve) | Headphones |
+| Nothing wired to GPIO1 at all | HIGH (pull-up) | Speaker |
+
+That last row is the point of this arrangement: **a board built without the headphone mod behaves exactly as
+before**, so the feature is safe to leave enabled in the shared target configs. Add the 100 nF capacitor from GPIO1
+to GND to soak up contact chatter; the firmware also requires the line to hold its new state for 200 ms
+(`RG_AUDIO_HP_DEBOUNCE_MS`) before it acts.
+
+If you use a 3-pole jack with a normally-closed switch contact instead, the polarity inverts (closed to ground when
+*empty*). Wire the switch contact to GPIO1 and set `RG_GPIO_SND_HP_DETECT_LEVEL 1` in your target's `config.h`.
+
+**Speaker enable (GPIO9).** The MAX98357A's SD_MODE pin is not a plain enable — the *voltage* on it selects the
+channel: below 0.16 V shuts the amp down, 0.16–0.77 V selects the (L+R)/2 mono mix. The common breakouts already
+have a 100 kΩ resistor from SD_MODE to GND, so feeding GPIO9 through **470 kΩ** gives 3.3 × 100/570 ≈ 0.58 V when
+high (mono mix, which is what you want for a single speaker) and 0 V when low (shutdown). If your board has no
+pulldown, add your own 100 kΩ from SD_MODE to GND.
+
+**Headphone enable (GPIO46).** Drives the PCM5102A's XSMT (soft mute) pin, high = unmuted. GPIO46 is a strapping
+pin, but it selects whether the ROM prints its boot log — harmless either way, and our idle state is low, which is
+the default. Remove the XSMT jumper/pull-up on the breakout if it has one. This pin is optional: without it the
+headphone DAC just runs continuously, which is inaudible when nothing is plugged in but does add a small amount of
+idle noise and current draw. Comment out `RG_GPIO_SND_HP_ENABLE` if you skip it.
+
+**Grounding.** Class-D amplifiers dump switching current into their ground return. Run the jack's sleeve back to
+the PCM5102A's own ground pin with a dedicated wire and join the grounds at a single point near the module, or you
+will hear the speaker amp's carrier in the headphones even when the speaker is off.
+
+**Output level.** The PCM5102A puts out 2.1 Vrms and is specified to drive 1 kΩ, so it cannot supply the current
+32 Ω headphones want at full swing. The 220 Ω series resistors keep it inside its comfort zone and are plenty loud
+for IEMs; add a headphone amplifier if you want to drive high-impedance over-ears properly.
+
+#### Firmware behaviour
+
+Enabled by `RG_AUDIO_USE_HEADPHONE_JACK 1`, already set in all 6 ESP32-S3 target configs. In the menu,
+`Audio out` gains three choices:
+
+| Setting | Behaviour |
+|---------|-----------|
+| `Auto (Speaker)` / `Auto (Headphones)` | Follows the jack. The parenthesised part is the live detected state. |
+| `Speaker` | Forces the speaker even with a plug inserted. |
+| `Headphones` | Forces the headphone DAC even with nothing plugged in. |
+
+`Auto` is the default and is what an existing saved `Ext DAC` setting upgrades to. Switching between these three
+retargets the output over GPIO without reinstalling the I2S driver, so it doesn't glitch the audio.
+
+**Volume is stored per route** (`Volume` and `VolumeHP` in the settings), because a speaker level applied to
+headphones is unpleasant at best. Headphones start at 25% on first use. Changing the volume while headphones are
+connected only affects the headphone level, and vice versa.
+
+Related knobs, all overridable in a target `config.h`: `RG_AUDIO_HP_DEBOUNCE_MS` (200),
+`RG_AUDIO_HP_POLL_INTERVAL_MS` (50), `RG_AUDIO_HP_DEFAULT_VOLUME` (25),
+`RG_GPIO_SND_HP_DETECT_LEVEL` (0), `RG_GPIO_SND_HP_ENABLE_INVERT`, `RG_GPIO_SND_AMP_ENABLE_INVERT`.
 
 
 # Usage
