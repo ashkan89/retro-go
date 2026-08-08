@@ -112,6 +112,7 @@ bool rg_gui_set_language_id(int index);
 void rg_gui_set_surface(rg_surface_t *surface);
 bool rg_gui_set_font(int index);
 bool rg_gui_set_theme(const char *name);
+int rg_gui_get_font_height(void);
 const char *rg_gui_get_theme_name(void);
 rg_image_t *rg_gui_get_theme_image(const char *name);
 rg_color_t rg_gui_get_theme_color(const char *section, const char *key, rg_color_t default_value);
