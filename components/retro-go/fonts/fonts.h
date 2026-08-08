@@ -10,7 +10,7 @@ extern const rg_font_t font_DejaVu12;
 extern const rg_font_t font_DejaVu15;
 extern const rg_font_t font_VeraBold11;
 extern const rg_font_t font_VeraBold14;
-extern const rg_font_t font_DejaVuMedia13;
+extern const rg_font_t font_MediaSans15;
 
 enum {
     RG_FONT_BASIC_8,
@@ -20,7 +20,7 @@ enum {
     RG_FONT_DEJAVU_15,
     RG_FONT_VERA_11,
     RG_FONT_VERA_14,
-    RG_FONT_MEDIA_13,
+    RG_FONT_MEDIA,
     RG_FONT_MAX,
 };
 
@@ -32,5 +32,5 @@ static const rg_font_t *fonts[RG_FONT_MAX] = {
     &font_DejaVu15,
     &font_VeraBold11,
     &font_VeraBold14,
-    &font_DejaVuMedia13,
+    &font_MediaSans15,
 };

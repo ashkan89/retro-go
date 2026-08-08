@@ -53,6 +53,12 @@ static wl_handle_t wl_handle = WL_INVALID_HANDLE;
     }
 
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
+#define SDCARD_MAX_RETRIES 4
+#define SDCARD_REPORT_INTERVAL 256
+// Floor for the automatic clock backoff below. Every card works at 4 MHz.
+#define SDCARD_MIN_FREQ_KHZ 4000
+static uint32_t sdcard_transient_errors;
+
 static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
 {
     rg_indicator_t indicator = RG_INDICATOR_ACTIVITY_DISK;
@@ -76,15 +82,54 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
     // glitchy block read/write here used to surface as silent, undiagnosable truncation
     // or corruption further up the stack (e.g. a directory listing that stops early with
     // no error, or a short file read/write).
+    //
+    // ESP_ERR_INVALID_RESPONSE (0x108) in particular means the card answered with an
+    // unexpected R1 byte, or sent something other than idle/zero while we waited for a
+    // data token. That is what a card does when it is still busy with internal
+    // housekeeping, and hammering it again in the same microsecond mostly reproduces it.
+    // Backing off a little before each retry is what actually clears it.
     if (ret == ESP_ERR_TIMEOUT || ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_INVALID_CRC)
     {
-        for (int attempt = 1; attempt <= 3 && ret != ESP_OK; ++attempt)
+        const esp_err_t first_error = ret;
+
+        for (int attempt = 1; attempt <= SDCARD_MAX_RETRIES && ret != ESP_OK; ++attempt)
         {
-            RG_LOGW("SD Card transaction failed (0x%x), retry %d/3...\n", ret, attempt);
+            rg_usleep(attempt * 250);
             ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
         }
-        if (ret != ESP_OK)
-            RG_LOGE("SD Card transaction failed after retries (0x%x)\n", ret);
+
+        if (ret == ESP_OK)
+        {
+            // Recovered, which is the normal outcome. Logging every hiccup floods the
+            // console during playback and is itself slow, so keep the detail at debug
+            // level and only surface a periodic summary. A card that is genuinely
+            // failing still shows up, just without drowning everything else.
+            sdcard_transient_errors++;
+            RG_LOGD("SD Card transaction recovered after a transient error (0x%x)\n", first_error);
+            if (sdcard_transient_errors % SDCARD_REPORT_INTERVAL == 0)
+                RG_LOGW("SD Card has recovered from %lu transient error(s), latest 0x%x\n",
+                        (unsigned long)sdcard_transient_errors, first_error);
+        }
+        else
+        {
+            RG_LOGE("SD Card transaction failed after %d retries (0x%x)\n", SDCARD_MAX_RETRIES, ret);
+
+            // Data CRC failures and bad response bytes that survive four spaced-out
+            // retries are a signalling problem, not a busy card: the bus is running
+            // faster than this particular card, wiring and supply can hold. Backing
+            // the clock down turns a corrupt read into a slower correct one, which
+            // matters a great deal when the caller is streaming audio and would
+            // otherwise mistake the failure for the end of the file.
+            if (card_handle && card_handle->host.set_card_clk && card_handle->max_freq_khz > SDCARD_MIN_FREQ_KHZ)
+            {
+                int reduced = RG_MAX(SDCARD_MIN_FREQ_KHZ, card_handle->max_freq_khz / 2);
+                if (card_handle->host.set_card_clk(card_handle->host.slot, reduced) == ESP_OK)
+                {
+                    card_handle->max_freq_khz = reduced;
+                    RG_LOGW("SD Card bus reduced to %d kHz after repeated errors\n", reduced);
+                }
+            }
+        }
     }
 
     rg_system_set_indicator(indicator, 0);

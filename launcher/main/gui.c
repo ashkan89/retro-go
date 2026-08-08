@@ -325,8 +325,18 @@ void gui_resize_list(tab_t *tab, int new_size)
     // Always grow but only shrink past a certain threshold
     if (new_size >= list->capacity || list->capacity - new_size >= 20)
     {
-        list->capacity = new_size + 10;
-        list->items = realloc(list->items, list->capacity * sizeof(listbox_item_t));
+        int capacity = new_size + 10;
+        listbox_item_t *items = realloc(list->items, capacity * sizeof(listbox_item_t));
+        if (!items)
+        {
+            // realloc leaves the original block valid on failure. Assigning the
+            // NULL straight into list->items (and keeping the grown capacity)
+            // leaked it and then crashed on the very next write.
+            RG_LOGE("Unable to resize list '%s' to %d items, keeping %d\n", tab->name, new_size, list->length);
+            return;
+        }
+        list->items = items;
+        list->capacity = capacity;
         RG_LOGI("Resized list '%s' from %d to %d items (new capacity: %d)\n",
             tab->name, list->length, new_size, list->capacity);
     }

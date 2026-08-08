@@ -516,8 +516,11 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
 
 bool rg_display_sync(bool block)
 {
+    // Spinning here without yielding pins a core at 100% for the whole time the
+    // display task needs, which starves anything else scheduled on it and burns
+    // power for nothing. Yielding costs nothing when the queue is already empty.
     while (block && rg_task_messages_waiting(display_task_queue))
-        continue; // We should probably yield?
+        rg_task_yield();
     return !rg_task_messages_waiting(display_task_queue);
 }
 

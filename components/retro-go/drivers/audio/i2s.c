@@ -76,6 +76,11 @@ static struct {
     TaskHandle_t task;
     SemaphoreHandle_t queue_space;
     SemaphoreHandle_t task_stopped;
+    // Reconfiguring the sample rate stops and restarts the I2S peripheral. Doing
+    // that underneath a concurrent i2s_write corrupts the transfer and can abort
+    // inside the driver, which is easy to hit when a music player switches from a
+    // 44.1 kHz track to a 48 kHz one while audio is still draining.
+    SemaphoreHandle_t config_lock;
     volatile bool running;
     uint32_t write_errors;
 } state;
@@ -138,7 +143,8 @@ static bool start_audio_task(void)
                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     state.queue_space = xSemaphoreCreateBinary();
     state.task_stopped = xSemaphoreCreateBinary();
-    if (!state.queue || !state.queue_space || !state.task_stopped)
+    state.config_lock = xSemaphoreCreateMutex();
+    if (!state.queue || !state.queue_space || !state.task_stopped || !state.config_lock)
     {
         state.last_error = "Unable to allocate the real-time audio queue";
         goto fail;
@@ -171,9 +177,12 @@ fail:
         vSemaphoreDelete(state.queue_space);
     if (state.task_stopped)
         vSemaphoreDelete(state.task_stopped);
+    if (state.config_lock)
+        vSemaphoreDelete(state.config_lock);
     state.queue = NULL;
     state.queue_space = NULL;
     state.task_stopped = NULL;
+    state.config_lock = NULL;
     state.task = NULL;
     return false;
 }
@@ -198,10 +207,12 @@ static void stop_audio_task(void)
     state.task = NULL;
     vSemaphoreDelete(state.queue_space);
     vSemaphoreDelete(state.task_stopped);
+    vSemaphoreDelete(state.config_lock);
     free(state.queue);
     state.queue = NULL;
     state.queue_space = NULL;
     state.task_stopped = NULL;
+    state.config_lock = NULL;
 }
 
 static bool driver_init(int device, int sample_rate)
@@ -278,7 +289,12 @@ static bool driver_init(int device, int sample_rate)
 
 static bool driver_set_sample_rates(int sampleRate)
 {
-    return i2s_set_sample_rates(I2S_NUM_0, sampleRate) == ESP_OK;
+    if (state.config_lock && !xSemaphoreTake(state.config_lock, pdMS_TO_TICKS(500)))
+        return false;
+    bool ok = i2s_set_sample_rates(I2S_NUM_0, sampleRate) == ESP_OK;
+    if (state.config_lock)
+        xSemaphoreGive(state.config_lock);
+    return ok;
 }
 
 static bool driver_deinit(void)
@@ -365,8 +381,12 @@ static bool write_frames(const rg_audio_frame_t *frames, size_t count)
         {
             const size_t requested = pos * sizeof(*buffer);
             size_t written = 0;
+            if (state.config_lock && !xSemaphoreTake(state.config_lock, pdMS_TO_TICKS(500)))
+                return false;
             esp_err_t result = i2s_write(I2S_NUM_0, buffer, requested, &written,
                                          pdMS_TO_TICKS(RG_AUDIO_I2S_WRITE_TIMEOUT_MS));
+            if (state.config_lock)
+                xSemaphoreGive(state.config_lock);
             if (result != ESP_OK || written != requested)
             {
                 RG_LOGW("I2S submission error: %s, written=%d/%d\n",

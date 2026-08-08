@@ -115,6 +115,9 @@ bool rg_gui_set_language_id(int index);
 void rg_gui_set_surface(rg_surface_t *surface);
 bool rg_gui_set_font(int index);
 int rg_gui_get_font(void);
+// Height of one line of the active font, so callers can lay out rows without
+// hardcoding pixel offsets that break when the font changes.
+int rg_gui_get_font_height(void);
 bool rg_gui_set_theme(const char *name);
 const char *rg_gui_get_theme_name(void);
 rg_image_t *rg_gui_get_theme_image(const char *name);

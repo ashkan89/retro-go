@@ -253,6 +253,11 @@ int rg_gui_get_font(void)
     return gui.font_index;
 }
 
+int rg_gui_get_font_height(void)
+{
+    return gui.font_height;
+}
+
 typedef struct { uint16_t base, isolated, final, initial, medial; bool join_left, join_right; } arabic_form_t;
 static const arabic_form_t arabic_forms[] = {
     {0x0621,0xFE80,0,0,0,0,0},{0x0622,0xFE81,0xFE82,0,0,1,0},{0x0623,0xFE83,0xFE84,0,0,1,0},

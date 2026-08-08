@@ -105,6 +105,25 @@ static int overclockLevel, overclockMhz;
 static int requestedOverclockLevel;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+/* The SD card driver raises a disk-activity indicator from whichever task
+ * issues the transaction. Once anything streams from the card in the
+ * background -- the launcher's music player, for instance -- that becomes two
+ * threads racing on the indicator bitmask and, far worse, on the single RMT
+ * channel that drives the status LED. rmt_transmit()/rmt_tx_wait_all_done()
+ * are not safe to call concurrently on one channel, so this used to abort.
+ * The bitmask is now updated atomically and the colour is latched for a single
+ * owner (the system monitor task) to push to the hardware. */
+#ifdef ESP_PLATFORM
+static portMUX_TYPE indicatorMux = portMUX_INITIALIZER_UNLOCKED;
+#define INDICATORS_ENTER() portENTER_CRITICAL_SAFE(&indicatorMux)
+#define INDICATORS_EXIT() portEXIT_CRITICAL_SAFE(&indicatorMux)
+#else
+#define INDICATORS_ENTER() ((void)0)
+#define INDICATORS_EXIT() ((void)0)
+#endif
+static rg_color_t pendingLedColor = -1;
+static bool pendingLedValid = false;
+static rg_mutex_t *ledLock;
 static bool hapticEnabled = true;
 static int hapticStrength = 100;
 static rg_stats_t statistics;
@@ -515,11 +534,19 @@ static void update_statistics(void)
     update_memory_statistics();
 }
 
+/* Works out the colour the indicator state calls for and latches it. It is
+ * safe to call from any task because it never talks to the hardware; only
+ * flush_indicators() does that, and only the system monitor task calls it. */
 static void update_indicators(bool reset_animation)
 {
-    uint32_t visibleIndicators = indicators & app.indicatorsMask;
-    bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     static int animation_step = 0;
+
+    INDICATORS_ENTER();
+    uint32_t active = indicators;
+    INDICATORS_EXIT();
+
+    uint32_t visibleIndicators = active & app.indicatorsMask;
+    bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
     rg_color_t newColor = 0; // C_GREEN
 
     if (reset_animation)
@@ -527,19 +554,34 @@ static void update_indicators(bool reset_animation)
     else
         animation_step++;
 
-    if (indicators & (3 << RG_INDICATOR_CRITICAL))
+    if (active & (3 << RG_INDICATOR_CRITICAL))
         newColor = C_RED; // Make it flash rapidly!
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
         newColor = (animation_step & 1) ? C_NONE : C_RED;
-    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
+    else if (disk_visible && (active & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
         newColor = C_RED;
-    else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
+    else if (disk_visible && (active & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
         newColor = C_GREEN;
     else if (visibleIndicators)
         newColor = C_BLUE;
 
-    if (newColor != ledColor)
-        rg_system_set_led_color(newColor);
+    INDICATORS_ENTER();
+    pendingLedColor = newColor;
+    pendingLedValid = true;
+    INDICATORS_EXIT();
+}
+
+/* Single owner of the LED hardware. Called from the system monitor task only. */
+static void flush_indicators(void)
+{
+    INDICATORS_ENTER();
+    bool valid = pendingLedValid;
+    rg_color_t color = pendingLedColor;
+    pendingLedValid = false;
+    INDICATORS_EXIT();
+
+    if (valid && color != ledColor)
+        rg_system_set_led_color(color);
 }
 
 static void system_monitor_task(void *arg)
@@ -559,6 +601,7 @@ static void system_monitor_task(void *arg)
         rg_battery_t battery = rg_input_read_battery();
         rg_system_set_indicator(RG_INDICATOR_POWER_LOW, (battery.present && battery.level <= 2.f));
         update_indicators(false);
+        flush_indicators();
 
         // Try to avoid complex conversions that could allocate, prefer rounding/ceiling if necessary.
         rg_system_log(RG_LOG_DEBUG, NULL, "STACK:%d, HEAP:%d+%d (%d+%d), BUSY:%d%%, FPS:%d (S:%d R:%d+%d), BATT:%d",
@@ -613,9 +656,14 @@ static void system_monitor_task(void *arg)
         }
         prevTime = rtcValue;
 
-        if (nextLoopTime > rg_system_timer())
+        /* Sleep in short slices so the activity LED still tracks disk access.
+         * This task is the only one allowed to touch the LED hardware, so the
+         * polling has to happen here rather than at the call sites. */
+        while (nextLoopTime > rg_system_timer() && !exitCalled)
         {
-            rg_task_delay((nextLoopTime - rg_system_timer()) / 1000 + 1);
+            int64_t remaining = (nextLoopTime - rg_system_timer()) / 1000;
+            rg_task_delay(RG_MIN(remaining, (int64_t)50) + 1);
+            flush_indicators();
         }
     }
 }
@@ -669,6 +717,9 @@ static void platform_init(void)
         gpio_set_level(RG_GPIO_SDSPI_CS, 1);
     #endif
     #if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
+        /* Created before any other task exists so the lock is always in place
+         * by the time a second thread can reach the LED. */
+        ledLock = rg_mutex_create();
         led_rmt_set_color(0);
     #elif defined(RG_GPIO_LED)
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
@@ -1522,10 +1573,17 @@ bool rg_system_save_trace(const char *filename, bool panic_trace)
 
 void rg_system_set_indicator(rg_indicator_t indicator, bool on)
 {
+    /* The SD driver calls this twice for every block transaction, so it has to
+     * stay cheap and it has to be safe from any task. It only ever touches the
+     * bitmask; the monitor task turns that into an LED colour. */
+    INDICATORS_ENTER();
     uint32_t old_indicators = indicators;
     indicators &= ~(1 << indicator);
-    indicators |= (on << indicator);
-    if (old_indicators != indicators)
+    indicators |= ((uint32_t)(on ? 1 : 0) << indicator);
+    bool changed = old_indicators != indicators;
+    INDICATORS_EXIT();
+
+    if (changed)
         update_indicators(true);
 }
 
@@ -1550,7 +1608,15 @@ bool rg_system_set_led_color(rg_color_t color)
 {
     ledColor = color;
 #if defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
-    return led_rmt_set_color(color);
+    /* One RMT channel with a single slot transmit queue: two tasks calling in
+     * at once aborts inside the driver. Serialize every caller, including the
+     * public API, not just our own indicator path. */
+    if (ledLock && !rg_mutex_take(ledLock, 200))
+        return false;
+    bool ok = led_rmt_set_color(color);
+    if (ledLock)
+        rg_mutex_give(ledLock);
+    return ok;
 #elif defined(RG_GPIO_LED)
     int value = color > 0; // GPIO LED doesn't support colors, so any color = on
     #if defined(RG_GPIO_LED_INVERT)
@@ -1696,7 +1762,13 @@ void rg_system_set_overclock(int level)
     requestedOverclockLevel = level;
 
     /* Never change the BBPLL in the launcher. Keep browsing, settings, SD
-     * discovery and app handoff on the supported 240 MHz clock. */
+     * discovery and app handoff on the supported 240 MHz clock.
+     *
+     * There is no opt-out. On the ESP32-S3 the BBPLL also derives APB, so
+     * raising it speeds up every peripheral that hangs off it: I2S plays back
+     * fast and out of tune, and SPI runs past what the SD card can hold,
+     * producing data CRC failures. An overclocked music player is not a
+     * trade-off, it is simply broken. */
     if (strcmp(app.name, "launcher") == 0 || app.isLauncher)
     {
         overclockLevel = 0;
