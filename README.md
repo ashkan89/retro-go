@@ -3,6 +3,7 @@
 - [Installation](#installation)
 - [ESP32-S3 N16R8 / N8R2 (DIY builds)](#esp32-s3-n16r8--n8r2-diy-builds)
 - [Usage](#usage)
+- [Media player](#media-player)
 - [Issues](#issues)
 - [Development](#development)
 - [Acknowledgements](#acknowledgements)
@@ -366,6 +367,32 @@ which allows high quality audio through headphones. You can switch to it in the 
 </details>
 
 
+# Media player
+
+The launcher has a **Media** tab that opens a full media player for music stored under
+`/media` on the SD card. It plays MP3, WAV and FLAC, reads ID3/Vorbis/MP4 tags, shows
+embedded and folder album art, follows synchronised `.lrc` lyrics, and provides a queue,
+playlists, favourites, a 7-band equaliser and several audio visualisers.
+
+```
+/media/
+    Albums/Pink Floyd/The Dark Side of the Moon/
+        01 - Speak to Me.flac
+        02 - Breathe.flac
+        02 - Breathe.lrc
+        cover.jpg
+    Playlists/Favorites.m3u8
+```
+
+The library is indexed in the background on first use; its cache lives in
+`/media/.retrogo-media/` and never touches your media files. Music keeps playing while you
+browse the launcher (configurable), and always stops before an emulator starts so the
+emulator gets exclusive use of the audio hardware.
+
+Controls, supported formats, the task/buffer architecture and the per-device memory
+profiles are documented in [components/media/README.md](components/media/README.md).
+
+
 # Issues
 
 ### Black screen / Boot loops
@@ -413,6 +440,9 @@ If you wish to build or modify Retro-Go, you can find help in the following docu
 - The Game & Watch emulator is a port of [lcd-game-emulator](https://github.com/bzhxx/lcd-game-emulator) by bzhxx.
 - The MSX emulator is a port of [fMSX](https://fms.komkon.org/fMSX/) by Marat Fayzullin.
 - PNG support is provided by [lodepng](https://github.com/lvandeve/lodepng/).
+- The media player's MP3 decoding uses [minimp3](https://github.com/lieff/minimp3) by lieff (CC0).
+- The media player's FLAC decoding uses [dr_flac](https://github.com/mackron/dr_libs) by David Reid (public domain).
+- JPEG album art is decoded with TJpgDec by ChaN, which is present in the ESP32-S3 ROM.
 - PCE cover art is from [Christian_Haitian](https://github.com/christianhaitian).
 - Some icons from [Rokey](https://iconarchive.com/show/seed-icons-by-rokey.html).
 - Background images from [es-theme-gbz35](https://github.com/rxbrad/es-theme-gbz35).
@@ -421,5 +451,7 @@ If you wish to build or modify Retro-Go, you can find help in the following docu
 
 # License
 Everything in this project is licensed under the [GPLv2 license](COPYING) with the exception of the following components:
+- components/media/codecs/minimp3.h (MP3 decoder, CC0/public domain)
+- components/media/codecs/dr_flac.h (FLAC decoder, public domain / MIT-0)
 - fmsx/components/fmsx (MSX Emulator, custom non-commercial license)
 - handy-go/components/handy (Lynx emulator, zlib)

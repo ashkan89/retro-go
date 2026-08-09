@@ -9,10 +9,13 @@
 #include <esp_heap_caps.h>
 #endif
 
+#include <media.h>
+
 #include "applications.h"
 #include "bookmarks.h"
 #include "browser.h"
 #include "gui.h"
+#include "media_tab.h"
 #include "webui.h"
 #include "updater.h"
 
@@ -266,6 +269,7 @@ static void retro_loop(void)
 
     gui_init(app->isColdBoot);
     applications_init();
+    media_tab_init();
     bookmarks_init();
     // browser_init();
 

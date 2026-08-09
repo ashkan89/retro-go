@@ -5,6 +5,8 @@
 #include <string.h>
 #include <errno.h>
 
+#include <media.h>
+
 #include "applications.h"
 #include "bookmarks.h"
 #include "gui.h"
@@ -143,6 +145,8 @@ static void application_start(retro_file_t *file, int load_state)
         flags |= (load_state << 4) & RG_BOOT_SLOT_MASK;
     }
     bookmark_add(BOOK_TYPE_RECENT, file); // This could relocate *file, but we no longer need it
+    // Emulator audio owns I2S exclusively, so hand the hardware back before switching apps.
+    media_suspend_for_app();
     rg_system_switch_app(part, name, path, flags);
 }
 

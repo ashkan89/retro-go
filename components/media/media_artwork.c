@@ -1,0 +1,446 @@
+#include <rg_system.h>
+
+#include <stdlib.h>
+#include <string.h>
+
+#include "media_artwork.h"
+#include "media_metadata.h"
+#include "media_util.h"
+
+#undef RG_LOG_TAG
+#define RG_LOG_TAG "MEDIA_ART"
+
+#define MAX_CACHE_ENTRIES 24
+#define REQUEST_SLOTS 4
+
+typedef struct
+{
+    uint32_t key;           // path hash mixed with the requested dimension
+    uint32_t path_hash;
+    rg_image_t *image;
+    media_palette_t palette;
+    size_t bytes;
+    uint32_t last_used;
+    bool negative;          // Looked and found nothing; do not look again
+} cache_entry_t;
+
+typedef struct
+{
+    char path[MEDIA_MAX_PATH + 1];
+    int max_dim;
+    bool background;
+    int width, height;
+} request_t;
+
+static struct
+{
+    cache_entry_t entries[MAX_CACHE_ENTRIES];
+    int entry_count;
+    size_t bytes_used;
+    uint32_t clock;
+
+    request_t requests[REQUEST_SLOTS];
+    int request_count;
+
+    rg_mutex_t *lock;
+    rg_task_t *task;
+    volatile bool running;
+    volatile bool stop;
+
+    rg_image_t *background;
+    uint32_t background_key;
+    int background_w, background_h;
+
+    int (*pressure_cb)(void);
+    void (*ready_cb)(void);
+} art;
+
+static uint32_t make_key(const char *path, int dim)
+{
+    return rg_hash(path, strlen(path)) ^ ((uint32_t)dim * 2654435761u);
+}
+
+static size_t image_bytes(const rg_image_t *image)
+{
+    if (!image)
+        return 0;
+    return (size_t)image->height * (size_t)image->stride + sizeof(rg_image_t);
+}
+
+static cache_entry_t *cache_find(uint32_t key)
+{
+    for (int i = 0; i < art.entry_count; ++i)
+    {
+        if (art.entries[i].key == key)
+            return &art.entries[i];
+    }
+    return NULL;
+}
+
+static void cache_drop(int index)
+{
+    cache_entry_t *entry = &art.entries[index];
+    art.bytes_used -= entry->bytes;
+    rg_surface_free(entry->image);
+    memmove(&art.entries[index], &art.entries[index + 1],
+            (size_t)(art.entry_count - index - 1) * sizeof(cache_entry_t));
+    art.entry_count--;
+}
+
+/** Evict least-recently-used entries until the new one fits within both budgets. */
+static void cache_make_room(size_t incoming)
+{
+    const media_profile_t *profile = media_profile();
+    int max_entries = media_clampi(profile->artwork_cache_entries, 2, MAX_CACHE_ENTRIES);
+
+    while (art.entry_count > 0 &&
+           (art.entry_count >= max_entries || art.bytes_used + incoming > profile->artwork_cache_bytes))
+    {
+        int oldest = 0;
+        for (int i = 1; i < art.entry_count; ++i)
+        {
+            if (art.entries[i].last_used < art.entries[oldest].last_used)
+                oldest = i;
+        }
+        cache_drop(oldest);
+    }
+}
+
+static cache_entry_t *cache_insert(uint32_t key, uint32_t path_hash, rg_image_t *image)
+{
+    size_t bytes = image_bytes(image);
+    cache_make_room(bytes);
+
+    if (art.entry_count >= MAX_CACHE_ENTRIES)
+    {
+        rg_surface_free(image);
+        return NULL;
+    }
+
+    cache_entry_t *entry = &art.entries[art.entry_count++];
+    memset(entry, 0, sizeof(*entry));
+    entry->key = key;
+    entry->path_hash = path_hash;
+    entry->image = image;
+    entry->bytes = bytes;
+    entry->last_used = ++art.clock;
+    entry->negative = image == NULL;
+
+    if (image)
+        entry->palette = media_image_palette(image);
+
+    art.bytes_used += bytes;
+    return entry;
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Worker                                                                                   */
+/* -------------------------------------------------------------------------------------- */
+
+/** Decode the artwork for one track, returning a new surface or NULL. */
+static rg_image_t *load_artwork(const char *path, int max_dim)
+{
+    media_metadata_t *meta = calloc(1, sizeof(media_metadata_t));
+    if (!meta)
+        return NULL;
+
+    rg_image_t *image = NULL;
+    char art_path[MEDIA_MAX_PATH + 1];
+
+    if (media_metadata_read(path, meta))
+    {
+        media_art_source_t source = media_metadata_find_artwork(path, meta, art_path, sizeof(art_path));
+
+        if (source == MEDIA_ART_EMBEDDED)
+        {
+            size_t len = 0;
+            uint8_t *data = media_metadata_read_artwork(path, meta, &len);
+            if (data)
+            {
+                image = media_image_decode(data, len, max_dim);
+                free(data);
+            }
+            // A broken embedded picture should still allow the folder cover to be used.
+            if (!image)
+                source = media_metadata_find_artwork(path, NULL, art_path, sizeof(art_path));
+        }
+
+        if (!image && art_path[0])
+            image = media_image_load_file(art_path, max_dim);
+    }
+
+    free(meta);
+    return image;
+}
+
+static void worker_task(void *arg)
+{
+    (void)arg;
+    art.running = true;
+
+    while (!art.stop)
+    {
+        request_t request;
+        bool have_request = false;
+
+        if (rg_mutex_take(art.lock, 100))
+        {
+            if (art.request_count > 0)
+            {
+                request = art.requests[0];
+                memmove(&art.requests[0], &art.requests[1],
+                        (size_t)(art.request_count - 1) * sizeof(request_t));
+                art.request_count--;
+                have_request = true;
+            }
+            rg_mutex_give(art.lock);
+        }
+
+        if (!have_request)
+        {
+            rg_task_delay(20);
+            continue;
+        }
+
+        // Decoding a JPEG is CPU and SD heavy. When the audio buffer is low it can wait:
+        // a missing cover is invisible next to a dropout.
+        int pressure = art.pressure_cb ? art.pressure_cb() : 0;
+        while (pressure >= 2 && !art.stop)
+        {
+            rg_task_delay(100);
+            pressure = art.pressure_cb ? art.pressure_cb() : 0;
+        }
+        if (art.stop)
+            break;
+
+        if (request.background)
+        {
+            const rg_image_t *source = NULL;
+            uint32_t key = make_key(request.path, media_profile()->artwork_max_dim);
+
+            if (rg_mutex_take(art.lock, 2000))
+            {
+                cache_entry_t *entry = cache_find(key);
+                source = entry ? entry->image : NULL;
+                rg_image_t *background =
+                    source ? media_image_make_background(source, request.width, request.height, 110)
+                           : NULL;
+
+                if (background)
+                {
+                    rg_surface_free(art.background);
+                    art.background = background;
+                    art.background_key = key;
+                    art.background_w = request.width;
+                    art.background_h = request.height;
+                }
+                rg_mutex_give(art.lock);
+
+                if (background && art.ready_cb)
+                    art.ready_cb();
+            }
+            continue;
+        }
+
+        rg_image_t *image = load_artwork(request.path, request.max_dim);
+        uint32_t key = make_key(request.path, request.max_dim);
+        uint32_t path_hash = rg_hash(request.path, strlen(request.path));
+
+        if (rg_mutex_take(art.lock, 5000))
+        {
+            if (!cache_find(key))
+                cache_insert(key, path_hash, image);
+            else
+                rg_surface_free(image); // Raced with another request; keep the resident copy
+            rg_mutex_give(art.lock);
+        }
+        else
+        {
+            rg_surface_free(image);
+        }
+
+        if (art.ready_cb)
+            art.ready_cb();
+
+        rg_task_delay(1);
+    }
+
+    art.running = false;
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Public API                                                                               */
+/* -------------------------------------------------------------------------------------- */
+
+void media_artwork_init(void)
+{
+    if (art.lock)
+        return;
+
+    art.lock = rg_mutex_create();
+    if (!art.lock)
+    {
+        RG_LOGE("Failed to create the artwork lock");
+        return;
+    }
+
+    art.stop = false;
+    // Priority 1 keeps it level with the UI: artwork should never outrank drawing.
+    art.task = rg_task_create("media_art", &worker_task, NULL, 5 * 1024, RG_TASK_PRIORITY_1,
+                              RG_TASK_AFFINITY_MAIN);
+    if (!art.task)
+        RG_LOGE("Failed to start the artwork worker");
+}
+
+void media_artwork_deinit(void)
+{
+    if (!art.lock)
+        return;
+
+    art.stop = true;
+    for (int i = 0; i < 400 && art.running; ++i)
+        rg_task_delay(10);
+
+    if (art.running)
+    {
+        RG_LOGE("Artwork worker did not stop; leaving the cache in place");
+        return;
+    }
+
+    media_artwork_flush();
+    rg_mutex_free(art.lock);
+    art.lock = NULL;
+    art.task = NULL;
+}
+
+void media_artwork_lock(void)
+{
+    if (art.lock)
+        rg_mutex_take(art.lock, 1000);
+}
+
+void media_artwork_unlock(void)
+{
+    if (art.lock)
+        rg_mutex_give(art.lock);
+}
+
+static bool queue_request(const char *path, int max_dim, bool background, int width, int height)
+{
+    if (art.request_count >= REQUEST_SLOTS)
+    {
+        // The queue is a work list, not a history: drop the oldest so the newest (which is
+        // almost always what the user is looking at) is serviced first.
+        memmove(&art.requests[0], &art.requests[1], (size_t)(REQUEST_SLOTS - 1) * sizeof(request_t));
+        art.request_count = REQUEST_SLOTS - 1;
+    }
+
+    for (int i = 0; i < art.request_count; ++i)
+    {
+        if (art.requests[i].background == background && art.requests[i].max_dim == max_dim &&
+            strcmp(art.requests[i].path, path) == 0)
+            return true; // Already queued
+    }
+
+    request_t *request = &art.requests[art.request_count++];
+    memset(request, 0, sizeof(*request));
+    media_utf8_copy(request->path, sizeof(request->path), path);
+    request->max_dim = max_dim;
+    request->background = background;
+    request->width = width;
+    request->height = height;
+    return true;
+}
+
+const rg_image_t *media_artwork_get(const char *track_path, int max_dim, bool request)
+{
+    if (!track_path || !*track_path || !art.lock)
+        return NULL;
+
+    uint32_t key = make_key(track_path, max_dim);
+    cache_entry_t *entry = cache_find(key);
+
+    if (entry)
+    {
+        entry->last_used = ++art.clock;
+        return entry->image;
+    }
+
+    if (request && strlen(track_path) <= MEDIA_MAX_PATH)
+        queue_request(track_path, max_dim, false, 0, 0);
+
+    return NULL;
+}
+
+media_palette_t media_artwork_palette(const char *track_path)
+{
+    media_palette_t palette = {0};
+
+    if (!track_path || !*track_path)
+        return palette;
+
+    uint32_t key = make_key(track_path, media_profile()->artwork_max_dim);
+    cache_entry_t *entry = cache_find(key);
+
+    if (entry && entry->image)
+    {
+        entry->last_used = ++art.clock;
+        return entry->palette;
+    }
+
+    // No artwork (yet): a hash-derived palette keeps the UI coloured and stable per track
+    // rather than flat grey.
+    return media_image_palette_from_hash(rg_hash(track_path, strlen(track_path)));
+}
+
+const rg_image_t *media_artwork_background(const char *track_path, int width, int height)
+{
+    if (!track_path || !*track_path || !art.lock || width < 8 || height < 8)
+        return NULL;
+
+    uint32_t key = make_key(track_path, media_profile()->artwork_max_dim);
+
+    if (art.background && art.background_key == key && art.background_w == width &&
+        art.background_h == height)
+        return art.background;
+
+    // The source cover has to be resident before a background can be derived from it.
+    if (cache_find(key))
+        queue_request(track_path, media_profile()->artwork_max_dim, true, width, height);
+    else
+        media_artwork_get(track_path, media_profile()->artwork_max_dim, true);
+
+    return NULL;
+}
+
+bool media_artwork_busy(void)
+{
+    return art.request_count > 0;
+}
+
+void media_artwork_flush(void)
+{
+    while (art.entry_count > 0)
+        cache_drop(art.entry_count - 1);
+
+    rg_surface_free(art.background);
+    art.background = NULL;
+    art.background_key = 0;
+    art.request_count = 0;
+    art.bytes_used = 0;
+}
+
+void media_artwork_set_pressure_source(int (*cb)(void))
+{
+    art.pressure_cb = cb;
+}
+
+void media_artwork_set_ready_callback(void (*cb)(void))
+{
+    art.ready_cb = cb;
+}
+
+size_t media_artwork_bytes_used(void)
+{
+    return art.bytes_used;
+}

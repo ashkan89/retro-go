@@ -9,7 +9,8 @@ FW_FORMAT = "none"
 DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx"
 
 # This target has 16 MB flash, so keep enough app-partition headroom for OTA images.
-PROJECT_APPS["launcher"][2] = 0x180000
+# The launcher now also carries the media player (decoders, DSP and UI).
+PROJECT_APPS["launcher"][2] = 0x1C0000
 PROJECT_APPS["retro-core"][2] = 0x140000
 PROJECT_APPS["prboom-go"][2] = 0x100000
 PROJECT_APPS["gwenesis"][2] = 0x140000
