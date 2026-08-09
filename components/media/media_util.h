@@ -46,6 +46,16 @@ bool media_str_contains_ci(const char *haystack, const char *needle);
 
 /** Single place that decides what a media file is. Case-insensitive. */
 media_codec_t media_codec_from_path(const char *path);
+
+/**
+ * Codec implied by an HTTP Content-Type. A stream URL usually has no extension and starts
+ * mid-file, so the server's own answer is the only reliable identification.
+ * Any parameters after a ';' are ignored.
+ */
+media_codec_t media_codec_from_mime(const char *mime);
+
+/** True for the playlist types stations hand out instead of a stream (m3u, m3u8, pls). */
+bool media_mime_is_playlist(const char *mime);
 bool media_path_is_audio(const char *path);
 bool media_path_is_playlist(const char *path);
 bool media_path_is_image(const char *path);

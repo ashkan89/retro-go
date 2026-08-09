@@ -402,8 +402,10 @@ try_again:
     req->status_code = esp_http_client_get_status_code(req->client);
     req->content_length = esp_http_client_get_content_length(req->client);
 
-    // We must handle redirections manually because we're not using esp_http_client_perform
-    if (req->status_code == 301 || req->status_code == 302)
+    // We must handle redirections manually because we're not using esp_http_client_perform.
+    // 303/307/308 matter for streaming: CDNs hand out signed per-session URLs that way.
+    if (req->status_code == 301 || req->status_code == 302 || req->status_code == 303 ||
+        req->status_code == 307 || req->status_code == 308)
     {
         if (req->redirections < req->config.max_redirections)
         {

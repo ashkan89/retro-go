@@ -519,6 +519,115 @@ int media_net_list(const char *url, media_net_entry_t *out, int max)
 }
 
 /* -------------------------------------------------------------------------------------- */
+/* Remote playlists                                                                         */
+/* -------------------------------------------------------------------------------------- */
+
+bool media_net_url_is_playlist(const char *url)
+{
+    if (!media_net_is_url(url))
+        return false;
+
+    // Strip the query before looking at the extension: ".../stream.m3u?token=x" is still a
+    // playlist, and ".../hot108?aw_0_req.gdpr=true" is still not one.
+    char path[MEDIA_MAX_PATH + 1];
+    media_utf8_copy(path, sizeof(path), url);
+
+    char *cut = strpbrk(path, "?#");
+    if (cut)
+        *cut = 0;
+
+    const char *ext = strrchr(path, '.');
+    if (!ext || strchr(ext, '/'))
+        return false;
+
+    return strcasecmp(ext, ".m3u") == 0 || strcasecmp(ext, ".m3u8") == 0 ||
+           strcasecmp(ext, ".pls") == 0;
+}
+
+int media_net_fetch_playlist(const char *url, char (*out)[MEDIA_MAX_PATH + 1], int max)
+{
+#ifdef RG_ENABLE_NETWORKING
+    if (!url || !out || max <= 0 || !media_net_is_url(url))
+        return -1;
+    if (!media_net_available())
+        return -1;
+
+    size_t len = 0;
+    char *document = fetch_document(url, "GET", &len);
+    if (!document)
+        return -1;
+
+    // An HLS manifest looks like an M3U but describes segments and codecs we do not
+    // implement; playing its first line would produce noise rather than music.
+    if (strstr(document, "#EXT-X-"))
+    {
+        RG_LOGW("'%s' is an HLS manifest, which is not supported", url);
+        free(document);
+        return 0;
+    }
+
+    int count = 0;
+    char *cursor = document;
+
+    while (count < max && cursor && *cursor)
+    {
+        char *line = cursor;
+        char *newline = strpbrk(cursor, "\r\n");
+
+        if (newline)
+        {
+            *newline = 0;
+            cursor = newline + 1;
+            while (*cursor == '\r' || *cursor == '\n')
+                cursor++;
+        }
+        else
+        {
+            cursor = NULL;
+        }
+
+        media_str_trim(line);
+        if (!line[0])
+            continue;
+
+        // PLS puts the address after "FileN="; M3U comments start with '#'.
+        if (line[0] == '#')
+            continue;
+
+        char *value = line;
+        if (strncasecmp(line, "File", 4) == 0)
+        {
+            char *equals = strchr(line, '=');
+            if (!equals)
+                continue;
+            value = media_str_trim(equals + 1);
+        }
+        else if (strchr(line, '=') && !media_net_is_url(line))
+        {
+            continue; // Some other PLS key (Title1, Length1, NumberOfEntries, ...)
+        }
+
+        if (!media_net_is_url(value) || strlen(value) > MEDIA_MAX_PATH)
+            continue;
+
+        // A playlist that lists itself would loop forever.
+        if (strcmp(value, url) == 0)
+            continue;
+
+        strcpy(out[count++], value);
+    }
+
+    free(document);
+
+    RG_LOGI("Playlist '%s' resolved to %d stream(s)", url, count);
+    return count;
+#else
+    (void)url, (void)out, (void)max;
+    return -1;
+#endif
+}
+
+/* -------------------------------------------------------------------------------------- */
 /* Bookmarks                                                                                */
 /* -------------------------------------------------------------------------------------- */
 

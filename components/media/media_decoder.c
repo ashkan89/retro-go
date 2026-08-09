@@ -6,6 +6,10 @@
 #include "media_decoder.h"
 #include "media_util.h"
 
+// Enough to step over a partial frame and still find two consecutive MPEG sync words when a
+// stream drops us into the middle of one.
+#define MEDIA_PROBE_BYTES 1024
+
 #undef RG_LOG_TAG
 #define RG_LOG_TAG "MEDIA_DEC"
 
@@ -81,22 +85,53 @@ media_decoder_t *media_decoder_open(const char *path, size_t buffer_bytes, media
         return NULL;
     }
 
-    // Trust the content over the extension: a mislabelled file is common and cheap to detect,
-    // and a stream URL often has no extension at all. Peeked rather than read, because a live
-    // broadcast cannot be rewound afterwards.
-    uint8_t header[16] = {0};
-    size_t header_len = media_source_peek(dec->source, header, sizeof(header), 5000);
+    // The server's Content-Type outranks everything: a stream URL usually has no usable
+    // extension, and an Icecast connection drops you into the middle of a frame so the first
+    // bytes are not a recognisable header either.
+    const char *mime = media_source_content_type(dec->source);
+    media_codec_t mime_codec = media_codec_from_mime(mime);
 
-    if (header_len >= 4)
+    if (mime_codec != MEDIA_CODEC_NONE)
     {
-        for (size_t i = 0; i < RG_COUNT(registry); ++i)
+        const media_decoder_ops_t *by_mime = find_ops(mime_codec);
+        if (by_mime)
+        {
+            ops = by_mime;
+            codec = mime_codec;
+        }
+        else
+        {
+            // Recognised, but this build has no decoder for it. Saying which format it is
+            // beats a bare "unsupported".
+            RG_LOGW("'%s' is %s, which is not compiled in", rg_basename(path),
+                    media_codec_name(mime_codec));
+            media_source_close(dec->source);
+            free(dec);
+            if (err)
+                *err = MEDIA_ERR_UNSUPPORTED;
+            return NULL;
+        }
+    }
+
+    // With a Content-Type in hand there is nothing to sniff: the server is more authoritative
+    // than the first few bytes of a broadcast, and skipping the probe means playback starts
+    // without first waiting for a probe window to arrive.
+    if (!ops || mime_codec == MEDIA_CODEC_NONE)
+    {
+        // Peeked rather than read, because a live broadcast cannot be rewound afterwards. The
+        // window is generous so a stream that drops us mid-frame can still be recognised.
+        uint8_t header[MEDIA_PROBE_BYTES] = {0};
+        size_t header_len = media_source_peek(dec->source, header, sizeof(header), 5000);
+
+        for (size_t i = 0; header_len >= 4 && i < RG_COUNT(registry); ++i)
         {
             if (!registry[i]->probe(header, header_len))
                 continue;
-            // An ID3 tag matches both MP3 and FLAC probes, so keep the extension's choice
-            // when it is also a candidate.
-            if (ops && registry[i] != ops && ops->probe(header, header_len))
-                continue;
+
+            // The extension's guess only loses to the bytes when it is outright wrong.
+            if (ops && registry[i] != ops)
+                RG_LOGW("'%s' is not %s, using %s instead", rg_basename(path), ops->name,
+                        registry[i]->name);
             ops = registry[i];
             break;
         }

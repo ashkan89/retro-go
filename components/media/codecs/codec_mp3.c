@@ -46,15 +46,70 @@ typedef struct
     bool has_toc;
 } mp3_state_t;
 
+/** Frame sync: 11 set bits, plus a valid version, layer, bitrate and sample rate. */
+static bool mp3_frame_sync(const uint8_t *h)
+{
+    return h[0] == 0xFF && (h[1] & 0xE0) == 0xE0 && (h[1] & 0x18) != 0x08 &&
+           (h[1] & 0x06) != 0x00 && (h[2] & 0xF0) != 0xF0 && (h[2] & 0x0C) != 0x0C;
+}
+
 static bool mp3_probe(const uint8_t *header, size_t len)
 {
     if (len < 4)
         return false;
     if (memcmp(header, "ID3", 3) == 0)
         return true;
-    // Frame sync: 11 set bits, a valid layer and a valid bitrate index
-    return header[0] == 0xFF && (header[1] & 0xE0) == 0xE0 && (header[1] & 0x18) != 0x08 &&
-           (header[1] & 0x06) != 0x00 && (header[2] & 0xF0) != 0xF0 && (header[2] & 0x0C) != 0x0C;
+
+    // An Icecast connection starts wherever the encoder happens to be, so the first byte is
+    // almost never a frame header. Scan instead, and require a second sync at the distance
+    // the first frame's own header predicts, so random 0xFF bytes do not match.
+    for (size_t i = 0; i + 4 <= len; ++i)
+    {
+        if (!mp3_frame_sync(header + i))
+            continue;
+
+        int version = (header[i + 1] >> 3) & 3;
+        int layer = (header[i + 1] >> 1) & 3;
+        int bitrate_index = (header[i + 2] >> 4) & 0x0F;
+        int rate_index = (header[i + 2] >> 2) & 3;
+
+        if (bitrate_index == 0 || bitrate_index == 15 || rate_index == 3 || version == 1)
+            continue;
+
+        static const int rates[4] = {44100, 48000, 32000, 0};
+        static const int v1l3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+        static const int v2l3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+
+        int rate = rates[rate_index];
+        if (version == 2)
+            rate /= 2;
+        else if (version == 0)
+            rate /= 4;
+
+        int kbps = (version == 3) ? v1l3[bitrate_index] : v2l3[bitrate_index];
+        int samples = (version == 3) ? 1152 : 576;
+        if (!rate || !kbps)
+            continue;
+
+        size_t frame_len = (size_t)(samples / 8 * kbps * 1000 / rate) + ((header[i + 2] >> 1) & 1);
+
+        // Layer 1 uses a different frame formula; we only decode layer 3 anyway.
+        if (layer != 1)
+            continue;
+
+        if (i + frame_len + 4 <= len)
+        {
+            if (mp3_frame_sync(header + i + frame_len))
+                return true;
+            continue;
+        }
+
+        // Not enough data to confirm the follow-up frame; a lone valid header is still a
+        // better answer than rejecting the stream outright.
+        return true;
+    }
+
+    return false;
 }
 
 /** Top up `buf`, moving any unconsumed bytes to the front. Returns bytes available. */

@@ -173,6 +173,34 @@ Remote folders are deliberately **not** added to `library.idx`: indexing them wo
 HTTP request per file for tags. They browse live instead, so what you see is always current.
 That also means albums/artists/genres cover the card only.
 
+### How a stream is identified
+
+A station URL rarely looks like a file, so three things are tried in order:
+
+1. **The server's `Content-Type`.** `audio/mpeg` → MP3, `audio/flac` → FLAC, `audio/aac` →
+   AAC, and so on. This is decisive: `http://live.powerhitz.com/hot108` has no extension at
+   all, and `…/hot108?aw_0_req.gdpr=true` would otherwise look like it ended in `.gdpr=true`.
+2. **The extension**, with any query string stripped first.
+3. **The bytes.** An Icecast connection starts wherever the encoder happens to be, so the MP3
+   probe scans a 1 KB window for a frame sync and confirms it by checking that a second sync
+   appears exactly where the first frame's header says it should — a lone `0xFF` is not
+   enough.
+
+When the type is recognised but not compiled in, the error names it (`… is AAC, which is not
+compiled in`) rather than just saying unsupported.
+
+### Playlist URLs
+
+Stations usually publish a `.m3u`/`.pls` that merely *contains* the stream address — for
+example `https://stream.zeno.fm/…​.m3u` holds one line pointing at the real endpoint. Those
+are fetched and parsed automatically, and when the file lists several mirrors each is tried
+in turn until one connects. Plain M3U, `#EXTM3U` and PLS (`File1=…`) are understood; an HLS
+manifest is detected by its `#EXT-X-` tags and rejected with a clear message instead of being
+half-played.
+
+Redirects are followed, including the 303/307/308 that CDNs use to hand out signed
+per-session URLs.
+
 ### Live streams
 
 A response with no `Content-Length` is treated as a broadcast: duration and seeking are
@@ -390,6 +418,9 @@ detection and dual-DAC routing that need hardware to validate.
 * **Remote listings block the UI while they load.** A "Connecting..." message is shown, but a
   slow or unreachable server stalls the browser for up to the 8 second timeout.
 * **No SMB/CIFS, FTP or UPnP/DLNA.** HTTP and WebDAV only.
+* **AAC/HE-AAC stations will not play.** A good share of internet radio is AAC+; the format is
+  identified and named in the error, but no decoder is vendored. See the AAC row in §3.
+* **HLS (`#EXT-X-`) is not supported** — it is a segmented protocol, not a container.
 * **Search** is not implemented — the input hardware has no usable text entry, so the browser
   offers category, folder, album, artist and genre navigation instead.
 * **Bookmarks** for long recordings are not implemented; the resume-position mechanism

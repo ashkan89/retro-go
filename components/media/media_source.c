@@ -48,6 +48,7 @@ struct media_source_s
     uint32_t icy_remaining; // Audio bytes still to come before the next metadata block
     char icy_title[160];
     char icy_station[96];
+    char content_type[64];
     volatile bool icy_updated;
 
     char path[MEDIA_MAX_PATH + 1];
@@ -76,7 +77,9 @@ static void on_response_header(const char *name, const char *value, void *arg)
 {
     media_source_t *src = arg;
 
-    if (strcasecmp(name, "Accept-Ranges") == 0)
+    if (strcasecmp(name, "Content-Type") == 0)
+        media_utf8_copy(src->content_type, sizeof(src->content_type), value);
+    else if (strcasecmp(name, "Accept-Ranges") == 0)
         src->accept_ranges = strcasestr(value, "bytes") != NULL;
     else if (strcasecmp(name, "icy-metaint") == 0)
         src->icy_metaint = (uint32_t)media_clampi(atoi(value), 0, 1024 * 1024);
@@ -126,6 +129,7 @@ static bool net_open(media_source_t *src, uint64_t offset)
     // These are re-learned from the response each time.
     src->accept_ranges = false;
     src->icy_metaint = 0;
+    src->content_type[0] = 0;
 
     src->req = rg_network_http_open(src->url, &cfg);
     if (!src->req)
@@ -691,4 +695,9 @@ bool media_source_take_stream_title(media_source_t *source, char *out, size_t ou
 const char *media_source_station_name(const media_source_t *source)
 {
     return (source && source->icy_station[0]) ? source->icy_station : NULL;
+}
+
+const char *media_source_content_type(const media_source_t *source)
+{
+    return (source && source->content_type[0]) ? source->content_type : NULL;
 }

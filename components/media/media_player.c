@@ -262,7 +262,30 @@ static bool open_current(void)
     load_track_metadata(path, queue_track_id);
 
     media_err_t err = MEDIA_OK;
-    player.decoder = media_decoder_open(path, media_profile()->source_buffer, &err);
+    player.decoder = NULL;
+
+    // A station URL is very often a .m3u/.pls holding the real address (sometimes a handful
+    // of mirrors). Resolve it here so every entry point -- typed URL, bookmark, playlist
+    // line, remote folder -- benefits, and try the mirrors in turn.
+    if (media_net_is_url(path) && media_net_url_is_playlist(path))
+    {
+        char (*streams)[MEDIA_MAX_PATH + 1] = calloc(4, MEDIA_MAX_PATH + 1);
+        int found = streams ? media_net_fetch_playlist(path, streams, 4) : -1;
+
+        for (int i = 0; i < found && !player.decoder; ++i)
+            player.decoder = media_decoder_open(streams[i], media_profile()->source_buffer, &err);
+
+        free(streams);
+
+        if (!player.decoder && found == 0)
+            err = MEDIA_ERR_UNSUPPORTED;
+        else if (!player.decoder && found < 0)
+            err = MEDIA_ERR_IO;
+    }
+    else
+    {
+        player.decoder = media_decoder_open(path, media_profile()->source_buffer, &err);
+    }
 
     if (!player.decoder)
     {

@@ -56,6 +56,21 @@ bool media_net_resolve(char *out, size_t out_size, const char *base_url, const c
  */
 int media_net_list(const char *url, media_net_entry_t *out, int max);
 
+/**
+ * Fetch a remote playlist and return the stream URLs inside it.
+ *
+ * Stations routinely publish a `.m3u`/`.pls` that contains nothing but the real stream
+ * address (sometimes several mirrors of it), so a URL the user pastes is very often one of
+ * these rather than audio. Understands plain M3U, #EXTM3U and PLS.
+ *
+ * Returns the number of URLs written, 0 when the document holds none, or -1 when it could
+ * not be fetched. HLS playlists are rejected explicitly rather than half-parsed.
+ */
+int media_net_fetch_playlist(const char *url, char (*out)[MEDIA_MAX_PATH + 1], int max);
+
+/** True when the URL's own extension says playlist (before any request is made). */
+bool media_net_url_is_playlist(const char *url);
+
 /* ---- Bookmarks ---------------------------------------------------------------------- */
 
 /**

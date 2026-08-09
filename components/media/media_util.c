@@ -325,12 +325,94 @@ media_codec_t media_codec_from_path(const char *path)
     if (!ext)
         return MEDIA_CODEC_NONE;
 
+    // "…/hot108?aw_0_req.gdpr=true" would otherwise yield an extension of "gdpr=true".
+    char trimmed[16];
+    if (strchr(ext, '?') || strchr(ext, '#'))
+    {
+        size_t len = 0;
+        while (ext[len] && ext[len] != '?' && ext[len] != '#' && len < sizeof(trimmed) - 1)
+            len++;
+        memcpy(trimmed, ext, len);
+        trimmed[len] = 0;
+        ext = trimmed;
+    }
+
     for (size_t i = 0; i < RG_COUNT(audio_extensions); ++i)
     {
         if (ext_equals(ext, audio_extensions[i].ext))
             return audio_extensions[i].codec;
     }
     return MEDIA_CODEC_NONE;
+}
+
+typedef struct
+{
+    const char *mime;
+    media_codec_t codec;
+} media_mime_map_t;
+
+// Matched as a prefix, so "audio/mpeg;charset=utf-8" resolves the same as "audio/mpeg".
+static const media_mime_map_t mime_types[] = {
+    {"audio/mpeg",       MEDIA_CODEC_TYPE_MP3},
+    {"audio/mp3",        MEDIA_CODEC_TYPE_MP3},
+    {"audio/mpeg3",      MEDIA_CODEC_TYPE_MP3},
+    {"audio/x-mpeg",     MEDIA_CODEC_TYPE_MP3},
+    {"audio/wav",        MEDIA_CODEC_TYPE_WAV},
+    {"audio/wave",       MEDIA_CODEC_TYPE_WAV},
+    {"audio/x-wav",      MEDIA_CODEC_TYPE_WAV},
+    {"audio/flac",       MEDIA_CODEC_TYPE_FLAC},
+    {"audio/x-flac",     MEDIA_CODEC_TYPE_FLAC},
+    {"audio/aac",        MEDIA_CODEC_TYPE_AAC},
+    {"audio/aacp",       MEDIA_CODEC_TYPE_AAC},
+    {"audio/x-aac",      MEDIA_CODEC_TYPE_AAC},
+    {"audio/mp4",        MEDIA_CODEC_TYPE_AAC},
+    {"audio/m4a",        MEDIA_CODEC_TYPE_AAC},
+    {"audio/opus",       MEDIA_CODEC_TYPE_OPUS},
+    {"audio/ogg",        MEDIA_CODEC_TYPE_OGG},
+    {"application/ogg",  MEDIA_CODEC_TYPE_OGG},
+    {"audio/vorbis",     MEDIA_CODEC_TYPE_OGG},
+};
+
+static const char *playlist_mime_types[] = {
+    "audio/x-mpegurl",
+    "audio/mpegurl",
+    "application/x-mpegurl",
+    "application/vnd.apple.mpegurl",
+    "audio/x-scpls",
+    "application/pls+xml",
+    "audio/scpls",
+};
+
+media_codec_t media_codec_from_mime(const char *mime)
+{
+    if (!mime || !*mime)
+        return MEDIA_CODEC_NONE;
+
+    for (size_t i = 0; i < RG_COUNT(mime_types); ++i)
+    {
+        size_t len = strlen(mime_types[i].mime);
+        if (strncasecmp(mime, mime_types[i].mime, len) == 0 &&
+            (mime[len] == 0 || mime[len] == ';' || mime[len] == ' '))
+            return mime_types[i].codec;
+    }
+
+    return MEDIA_CODEC_NONE;
+}
+
+bool media_mime_is_playlist(const char *mime)
+{
+    if (!mime || !*mime)
+        return false;
+
+    for (size_t i = 0; i < RG_COUNT(playlist_mime_types); ++i)
+    {
+        size_t len = strlen(playlist_mime_types[i]);
+        if (strncasecmp(mime, playlist_mime_types[i], len) == 0 &&
+            (mime[len] == 0 || mime[len] == ';' || mime[len] == ' '))
+            return true;
+    }
+
+    return false;
 }
 
 bool media_path_is_audio(const char *path)

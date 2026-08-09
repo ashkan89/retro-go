@@ -72,6 +72,9 @@ bool media_source_take_stream_title(media_source_t *source, char *out, size_t ou
 /** Station name from the icy-name header, or NULL. */
 const char *media_source_station_name(const media_source_t *source);
 
+/** Content-Type the server reported, or NULL for a local file. */
+const char *media_source_content_type(const media_source_t *source);
+
 /** True once the file has been fully read AND the ring has been drained. */
 bool media_source_eof(const media_source_t *source);
 
