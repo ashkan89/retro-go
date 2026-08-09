@@ -345,13 +345,24 @@ concurrently. It is now pinned to the task that called `rg_system_init()`.
 **The launcher no longer repaints over the player.** `event_handler()` checks
 `media_is_foreground()` before calling `gui_redraw()`.
 
-**LED updates are coalesced.** The SD transaction hook toggles the disk-activity indicator
-around *every* block transfer, and each toggle was a blocking RMT transmit plus a 300 µs
-latch delay held under the LED mutex. Streaming audio from the card turned that into a
-constant stream of WS2812 frames on the same lock the IO task needs. Updates are now rate
-limited to one per 15 ms, and a channel that fails to drain is disabled/re-enabled rather
-than left wedged. The wait was also cut from 100 ms to 5 ms — a 24-bit frame takes ~30 µs,
-so a longer wait only stalls the caller.
+**The WS2812 status LED had two bugs.**
+
+`rmt_tx_wait_all_done()` takes **milliseconds** and applies `pdMS_TO_TICKS()` internally, but
+it was being passed `pdMS_TO_TICKS(100)` — a double conversion. At this firmware's 100 Hz
+tick rate that became a 10 ms wait, short enough to expire occasionally; and the value is now
+passed in milliseconds.
+
+Worse, a single expiry wedges the channel forever: `esp_driver_rmt` returns from a timed-out
+wait *before* decrementing `num_trans_inflight`, so every later wait needs one more
+completion than will ever arrive. That counter lives inside the channel object, which is why
+disabling and re-enabling cannot clear it — the channel is now destroyed and rebuilt, and
+after eight consecutive failures the LED is switched off rather than rebuilt once a second
+forever.
+
+Separately, LED updates are coalesced to one per 15 ms. The SD transaction hook toggles the
+disk-activity indicator around *every* block transfer, and each toggle is a blocking RMT
+transmit plus a 300 µs latch delay held under the LED mutex; streaming audio from the card
+turned that into a constant stream of WS2812 frames on the same lock the IO task needs.
 
 **`rg_task_t tasks[]` grew from 8 to 16.** See the note in §4.
 

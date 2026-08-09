@@ -205,6 +205,9 @@ static rmt_encoder_handle_t led_rmt_encoder;
 static rmt_channel_t led_rmt_channel = RG_GPIO_LED_RMT_CHANNEL;
 #endif
 static bool led_rmt_initialized;
+// Consecutive transmit failures, and the latch that stops us retrying a dead LED forever.
+static int led_rmt_failures;
+static bool led_rmt_disabled;
 static uint8_t brightness = 150;
 
 static inline uint8_t scale(uint8_t v, uint8_t amount)
@@ -243,8 +246,38 @@ static void led_rgb565_to_pixel(rg_color_t color, uint8_t data[3])
 #endif
 }
 
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+/** Destroy the channel so its internal transaction bookkeeping starts clean. */
+static void led_rmt_teardown(void)
+{
+    if (led_rmt_channel)
+    {
+        rmt_disable(led_rmt_channel);
+        if (rmt_del_channel(led_rmt_channel) != ESP_OK)
+        {
+            // Dropping the handle would leak the channel and its RMT memory blocks for good.
+            // Keep it and stop using the LED instead.
+            RG_LOGE("Could not release the RMT channel, disabling the status LED");
+            led_rmt_disabled = true;
+            return;
+        }
+        led_rmt_channel = NULL;
+    }
+
+    if (led_rmt_encoder)
+    {
+        rmt_del_encoder(led_rmt_encoder);
+        led_rmt_encoder = NULL;
+    }
+
+    led_rmt_initialized = false;
+}
+#endif
+
 static bool led_rmt_init(void)
 {
+    if (led_rmt_disabled)
+        return false;
     if (led_rmt_initialized || RG_GPIO_LED == GPIO_NUM_NC)
         return led_rmt_initialized;
 
@@ -312,24 +345,36 @@ static bool led_rmt_set_color(rg_color_t color)
     if (rmt_transmit(led_rmt_channel, led_rmt_encoder, data, sizeof(data), &tx_config) != ESP_OK)
         return false;
 
-    // A 24-bit WS2812 frame takes about 30 us on the wire, so anything beyond a couple of
-    // milliseconds means the channel is not making progress. Waiting 100 ms for it just
-    // stalls whichever task is driving the LED (often one doing SD I/O). Recycle the channel
-    // instead: a wedged RMT channel otherwise stays wedged for the rest of the session.
-    if (rmt_tx_wait_all_done(led_rmt_channel, pdMS_TO_TICKS(5)) != ESP_OK)
+    // rmt_tx_wait_all_done() takes milliseconds and applies pdMS_TO_TICKS() itself. Passing
+    // pdMS_TO_TICKS() in was a double conversion: with the 100 Hz tick rate this firmware
+    // uses, pdMS_TO_TICKS(5) is 0, so the wait expired before the transfer could possibly
+    // finish -- every single time. A 24-bit frame needs about 30 us; 50 ms is only ever
+    // reached when something has genuinely gone wrong.
+    if (rmt_tx_wait_all_done(led_rmt_channel, 50) != ESP_OK)
     {
-        RG_LOGD("RMT did not drain, resetting the LED channel");
-        rmt_disable(led_rmt_channel);
-        if (rmt_enable(led_rmt_channel) != ESP_OK)
+        // esp_driver_rmt returns from a timed-out wait *before* decrementing its
+        // num_trans_inflight counter, so from then on every wait needs one more completion
+        // than will ever arrive: a single timeout wedges the channel permanently. That
+        // counter lives inside the channel object, so disabling and re-enabling cannot clear
+        // it -- the channel has to be destroyed and rebuilt.
+        led_rmt_failures++;
+        if (led_rmt_failures <= 3)
+            RG_LOGW("RMT transmit did not complete, rebuilding the LED channel (%d)",
+                    led_rmt_failures);
+
+        led_rmt_teardown();
+
+        if (led_rmt_failures >= 8)
         {
-            rmt_del_channel(led_rmt_channel);
-            rmt_del_encoder(led_rmt_encoder);
-            led_rmt_channel = NULL;
-            led_rmt_encoder = NULL;
-            led_rmt_initialized = false;
+            // Something is wrong with the pin or the part. Rebuilding the channel once a
+            // second forever is just noise, so stop driving it.
+            RG_LOGE("Giving up on the status LED after %d failures", led_rmt_failures);
+            led_rmt_disabled = true;
         }
         return false;
     }
+
+    led_rmt_failures = 0;
 #else
     rmt_item32_t items[24];
     int item = 0;
