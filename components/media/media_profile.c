@@ -13,12 +13,14 @@
 
 // Tuned against the two reference boards. LOW must stay comfortably inside the ~2 MB of an
 // N8R2 while still leaving room for the launcher's own allocations and the SD driver.
+// media_ring_create() rounds its capacity up to a power of two, so these are already
+// powers of two: a "384 KB" request would silently become 512 KB of PSRAM.
 static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
     [MEDIA_MEMORY_LOW] = {
         .profile = MEDIA_MEMORY_LOW,
         .name = "Low",
-        .source_buffer = 48 * 1024,
-        .pcm_buffer_frames = 6 * 1024,      // 24 KB, ~136 ms at 44.1 kHz
+        .source_buffer = 64 * 1024,
+        .pcm_buffer_frames = 8 * 1024,      // 32 KB, ~186 ms at 44.1 kHz
         .prebuffer_frames = 2 * 1024,
         .artwork_cache_bytes = 192 * 1024,
         .artwork_cache_entries = 4,
@@ -37,7 +39,7 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .profile = MEDIA_MEMORY_NORMAL,
         .name = "Normal",
         .source_buffer = 128 * 1024,
-        .pcm_buffer_frames = 12 * 1024,     // 48 KB, ~272 ms
+        .pcm_buffer_frames = 16 * 1024,     // 64 KB, ~372 ms
         .prebuffer_frames = 4 * 1024,
         .artwork_cache_bytes = 512 * 1024,
         .artwork_cache_entries = 8,
@@ -55,8 +57,8 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
     [MEDIA_MEMORY_HIGH] = {
         .profile = MEDIA_MEMORY_HIGH,
         .name = "High",
-        .source_buffer = 384 * 1024,
-        .pcm_buffer_frames = 24 * 1024,     // 96 KB, ~545 ms
+        .source_buffer = 256 * 1024,
+        .pcm_buffer_frames = 32 * 1024,     // 128 KB, ~743 ms
         .prebuffer_frames = 8 * 1024,
         .artwork_cache_bytes = 1536 * 1024,
         .artwork_cache_entries = 16,

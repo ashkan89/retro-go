@@ -21,6 +21,13 @@ typedef struct
     uint64_t size;
 } mfile_t;
 
+/**
+ * Scratch shared by the parsers. It lives on the heap because media_metadata_read() is
+ * called from the artwork worker and the library scanner, whose stacks are a few KB; a
+ * 2 KB frame buffer plus a 1 KB tag frame buffer on the stack overflowed both.
+ */
+#define META_SCRATCH_SIZE 2048
+
 static bool mf_open(mfile_t *mf, const char *path)
 {
     mf->fp = fopen(path, "rb");
@@ -258,8 +265,8 @@ static void id3_handle_txxx(media_metadata_t *meta, const uint8_t *data, size_t 
         meta->replaygain_album = parse_replaygain(value);
 }
 
-static void id3_handle_frame(mfile_t *mf, media_metadata_t *meta, const char *id,
-                             uint64_t frame_offset, uint32_t frame_size)
+static void id3_handle_frame(mfile_t *mf, uint8_t *scratch, media_metadata_t *meta,
+                             const char *id, uint64_t frame_offset, uint32_t frame_size)
 {
     // APIC and USLT can be large; record where they live and read them on demand instead.
     if (strcmp(id, "APIC") == 0 || strcmp(id, "PIC") == 0)
@@ -282,10 +289,10 @@ static void id3_handle_frame(mfile_t *mf, media_metadata_t *meta, const char *id
         return;
     }
 
-    if (frame_size < 2 || frame_size > 1024)
+    if (frame_size < 2 || frame_size > META_SCRATCH_SIZE - 1)
         return; // Text frames are never legitimately this large
 
-    uint8_t buffer[1025];
+    uint8_t *buffer = scratch;
     if (!mf_seek(mf, frame_offset) || mf_read(mf, buffer, frame_size) != frame_size)
         return;
     buffer[frame_size] = 0;
@@ -378,7 +385,7 @@ static void id3_handle_frame(mfile_t *mf, media_metadata_t *meta, const char *id
 }
 
 /** Returns the total size of the ID3v2 container (0 if absent) and fills `meta`. */
-static uint32_t id3v2_parse(mfile_t *mf, media_metadata_t *meta)
+static uint32_t id3v2_parse(mfile_t *mf, uint8_t *scratch, media_metadata_t *meta)
 {
     uint8_t header[10];
     if (!mf_seek(mf, 0) || mf_read(mf, header, 10) != 10)
@@ -455,7 +462,7 @@ static uint32_t id3v2_parse(mfile_t *mf, media_metadata_t *meta)
         // Compressed or encrypted frames are skipped rather than mis-parsed
         bool skip = (version == 3 && (frame_flags & 0x00C0)) || (version >= 4 && (frame_flags & 0x000C));
         if (!skip)
-            id3_handle_frame(mf, meta, id, frame_data, frame_size);
+            id3_handle_frame(mf, scratch, meta, id, frame_data, frame_size);
 
         pos = frame_data + frame_size;
     }
@@ -497,12 +504,13 @@ static const int mp3_bitrates_v1l3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 12
 static const int mp3_bitrates_v2l3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
 static const int mp3_rates[4] = {44100, 48000, 32000, 0};
 
-static void mp3_parse_stream(mfile_t *mf, media_metadata_t *meta, uint32_t tag_size)
+static void mp3_parse_stream(mfile_t *mf, uint8_t *scratch, media_metadata_t *meta,
+                             uint32_t tag_size)
 {
-    uint8_t buf[2048];
+    uint8_t *buf = scratch;
     if (!mf_seek(mf, tag_size))
         return;
-    size_t got = mf_read(mf, buf, sizeof(buf));
+    size_t got = mf_read(mf, buf, META_SCRATCH_SIZE);
     if (got < 4)
         return;
 
@@ -1093,12 +1101,19 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
         return false;
     }
 
-    uint32_t id3_size = id3v2_parse(&mf, out);
+    uint8_t *scratch = malloc(META_SCRATCH_SIZE);
+    if (!scratch)
+    {
+        mf_close(&mf);
+        return false;
+    }
+
+    uint32_t id3_size = id3v2_parse(&mf, scratch, out);
 
     switch (out->codec)
     {
     case MEDIA_CODEC_TYPE_MP3:
-        mp3_parse_stream(&mf, out, id3_size);
+        mp3_parse_stream(&mf, scratch, out, id3_size);
         id3v1_parse(&mf, out);
         break;
 
@@ -1153,6 +1168,7 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
         break;
     }
 
+    free(scratch);
     mf_close(&mf);
 
     // Sanity: a duration longer than a day means we mis-parsed something.

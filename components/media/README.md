@@ -154,16 +154,26 @@ speaker / headphones
 main task     UI render + input       (reads a snapshot, never the decoder)
 ```
 
-| Task | Priority | Core | Purpose |
-| --- | --- | --- | --- |
-| `media_audio` | 6 | `RG_TASK_AFFINITY_AUDIO` | Drain PCM into I2S |
-| `media_dec` | 5 | `RG_TASK_AFFINITY_AUDIO` | Decode + DSP block production |
-| `media_io` | 4 | `RG_TASK_AFFINITY_IO` | SD prefetch |
-| `media_scan` | 1 | `RG_TASK_AFFINITY_MAIN` | Library indexing |
-| `media_art` | 1 | `RG_TASK_AFFINITY_MAIN` | JPEG/PNG decode |
+| Task | Priority | Core | Stack | Purpose |
+| --- | --- | --- | --- | --- |
+| `media_audio` | 6 | `RG_TASK_AFFINITY_AUDIO` | 4 KB | Drain PCM into I2S |
+| `media_dec` | 5 | `RG_TASK_AFFINITY_AUDIO` | 22 KB | Decode + DSP block production |
+| `media_io` | 4 | `RG_TASK_AFFINITY_IO` | 4 KB | SD prefetch |
+| `media_scan` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | Library indexing |
+| `media_art` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | JPEG/PNG decode |
 
 Affinities come from the target's `config.h`; nothing is pinned by hand. Priorities sit
 below `rg_audio`'s own I2S writer (9) and above the launcher's main loop (1).
+
+`media_dec` needs an unusually large stack because minimp3 places a ~16 KB
+`mp3dec_scratch_t` (bit reservoir, granule buffers, synthesis state) on the stack inside
+`mp3dec_decode_frame`. Each task logs its remaining stack headroom when it exits, so the
+sizes can be checked against real material rather than guessed at.
+
+Because the player runs up to five tasks at once, `rg_task_t tasks[]` in `rg_system.c` was
+raised from 8 to 16 slots; with `rg_display`, `rg_input` and `rg_sysmon` already resident the
+old table had exactly one free slot left and a rescan-while-playing would have hit
+`RG_ASSERT(task, "Out of task slots")`.
 
 **SD I/O, decoding and rendering never block one another.** The UI reads a
 `media_snapshot_t` captured once per frame and posts commands; it never holds a decoder
@@ -189,8 +199,8 @@ Selected at runtime from the detected PSRAM size (`media_profile.c`).
 
 | | LOW (≤2 MB, N8R2) | NORMAL (2–6 MB) | HIGH (>6 MB, N16R8) |
 | --- | --- | --- | --- |
-| Compressed reserve | 48 KB | 128 KB | 384 KB |
-| PCM ring | 6 K frames (24 KB) | 12 K frames | 24 K frames (96 KB) |
+| Compressed reserve | 64 KB | 128 KB | 256 KB |
+| PCM ring | 8 K frames (32 KB) | 16 K frames (64 KB) | 32 K frames (128 KB) |
 | Prebuffer | 2 K frames | 4 K frames | 8 K frames |
 | Artwork cache | 192 KB / 4 entries | 512 KB / 8 | 1.5 MB / 16 |
 | Cover size | 160 px | 200 px | 260 px |
@@ -257,7 +267,41 @@ to carry the decoders, DSP and UI (see each target's `env.py`).
 
 ---
 
-## 9. Known limitations
+## 9. Changes made to Retro-Go core
+
+Adding a long-running foreground app to the launcher exposed a few things in
+`components/retro-go` that only misbehave once several tasks are busy at the same time.
+
+**`screen_timeout_tick()` now only runs on the UI task.** It hangs off `rg_task_delay()`,
+which every task in the firmware calls, and waking the screen dispatches `RG_EVENT_REDRAW` —
+making the application repaint its entire UI on whatever stack happened to call
+`rg_task_delay()` first. With the player's five tasks running, `rg_sysmon` (3 KB) won that
+race and overflowed. The tick also polled input and read settings from arbitrary tasks
+concurrently. It is now pinned to the task that called `rg_system_init()`.
+
+**The launcher no longer repaints over the player.** `event_handler()` checks
+`media_is_foreground()` before calling `gui_redraw()`.
+
+**LED updates are coalesced.** The SD transaction hook toggles the disk-activity indicator
+around *every* block transfer, and each toggle was a blocking RMT transmit plus a 300 µs
+latch delay held under the LED mutex. Streaming audio from the card turned that into a
+constant stream of WS2812 frames on the same lock the IO task needs. Updates are now rate
+limited to one per 15 ms, and a channel that fails to drain is disabled/re-enabled rather
+than left wedged. The wait was also cut from 100 ms to 5 ms — a 24-bit frame takes ~30 µs,
+so a longer wait only stalls the caller.
+
+**`rg_task_t tasks[]` grew from 8 to 16.** See the note in §4.
+
+**`CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y`** on the six ESP32-S3 targets removes the
+`legacy i2s driver is deprecated` notice printed on every boot. Note this also disables
+IDF's abort when both I2S drivers are linked; if a component using `driver/i2s_std.h` is
+ever added, turn it back on to get that diagnostic. Actually migrating
+`drivers/audio/i2s.c` to `i2s_std` is the real fix, but that driver carries headphone-jack
+detection and dual-DAC routing that need hardware to validate.
+
+---
+
+## 10. Known limitations
 
 * **AAC/M4A, Ogg Vorbis and Opus have no decoder.** Their tags, duration and artwork parse
   correctly and the codec registry already knows about them, so adding a `codec_*.c` is the

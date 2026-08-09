@@ -207,28 +207,55 @@ void media_ui_draw_marquee(int x, int y, int w, const char *text, rg_color_t col
         return;
     }
 
+    // The renderer has no clip rectangle, so scrolling by pixels (drawing the string wider
+    // than its box and letting it hang off the edge) painted over neighbouring widgets and
+    // made rg_gui_draw_text log a truncation warning on every frame. Advancing by whole
+    // codepoints instead keeps every draw inside `w`, and is UTF-8 safe by construction.
+    int steps = 0;
+    size_t offsets[64];
+    offsets[0] = 0;
+
+    for (const char *p = text; *p && steps < (int)RG_COUNT(offsets) - 1;)
+    {
+        const char *next = p;
+        rg_utf8_decode(&next);
+        if (next == p)
+            break;
+        if (TEXT_RECT(next, 0).width <= w)
+        {
+            offsets[++steps] = (size_t)(next - text);
+            break; // The remainder now fits; this is the last useful position
+        }
+        offsets[++steps] = (size_t)(next - text);
+        p = next;
+    }
+
+    if (steps <= 0)
+    {
+        rg_gui_draw_text(x, y, w, text, color, C_TRANSPARENT, flags | RG_TEXT_ALIGN_LEFT);
+        return;
+    }
+
     // Time-based, so the scroll speed is identical at 30 and 60 fps.
-    int64_t elapsed_ms = (mui.frame_us - mui.marquee_reset_at) / 1000;
     const int64_t hold_ms = 1200;
-    const int speed_px_s = 30;
-
-    int overflow = size.width - w + 16;
-    int64_t travel_ms = ((int64_t)overflow * 1000) / speed_px_s;
+    const int64_t step_ms = 110;
+    int64_t elapsed_ms = (mui.frame_us - mui.marquee_reset_at) / 1000;
+    int64_t travel_ms = (int64_t)steps * step_ms;
     int64_t cycle = hold_ms * 2 + travel_ms * 2;
-    int64_t phase = travel_ms > 0 ? (elapsed_ms % cycle) : 0;
+    int64_t phase = cycle > 0 ? (elapsed_ms % cycle) : 0;
 
-    int offset = 0;
+    int step;
     if (phase < hold_ms)
-        offset = 0;
+        step = 0;
     else if (phase < hold_ms + travel_ms)
-        offset = (int)(((phase - hold_ms) * overflow) / travel_ms);
+        step = (int)((phase - hold_ms) / step_ms);
     else if (phase < hold_ms * 2 + travel_ms)
-        offset = overflow;
+        step = steps;
     else
-        offset = overflow - (int)(((phase - hold_ms * 2 - travel_ms) * overflow) / travel_ms);
+        step = steps - (int)((phase - hold_ms * 2 - travel_ms) / step_ms);
 
-    // Clip by drawing into the band and letting the caller's panel cover the overspill.
-    rg_gui_draw_text(x - offset, y, size.width + 8, text, color, C_TRANSPARENT,
+    step = media_clampi(step, 0, steps);
+    rg_gui_draw_text(x, y, w, text + offsets[step], color, C_TRANSPARENT,
                      flags | RG_TEXT_ALIGN_LEFT);
 }
 
@@ -931,7 +958,9 @@ void media_ui_run(void)
         mui.frame_us = rg_system_timer();
 
         /* --- Input ------------------------------------------------------------------- */
-        uint32_t keys = rg_input_read_gamepad();
+        // Through the system filter so a press that wakes a dimmed screen only wakes it,
+        // rather than also triggering whatever that button normally does.
+        uint32_t keys = rg_system_filter_screen_timeout_input(rg_input_read_gamepad());
         uint32_t pressed = 0;
 
         if (keys)
@@ -989,10 +1018,19 @@ void media_ui_run(void)
         }
 
         /* --- Render ------------------------------------------------------------------ */
-        bool animating = media_anim_running(&mui.progress_anim) ||
-                         mui.frame_us < mui.overlay_until_us ||
-                         mui.snapshot.state == MEDIA_STATE_PLAYING ||
-                         mui.snapshot.state == MEDIA_STATE_BUFFERING;
+        // Nothing to see while the backlight is dimmed or off, so stop drawing entirely:
+        // rendering a 480x320 frame and pushing it over SPI 30 times a second into a dark
+        // panel is pure waste, and the cycles are better spent on decoding. Playback itself
+        // runs on its own tasks and is unaffected.
+        bool screen_visible = !rg_system_screen_is_dimmed();
+        bool animating = screen_visible &&
+                         (media_anim_running(&mui.progress_anim) ||
+                          mui.frame_us < mui.overlay_until_us ||
+                          mui.snapshot.state == MEDIA_STATE_PLAYING ||
+                          mui.snapshot.state == MEDIA_STATE_BUFFERING);
+
+        if (!screen_visible)
+            mui.needs_redraw = false;
 
         if ((mui.needs_redraw || animating) && mui.frame_us >= next_frame)
         {

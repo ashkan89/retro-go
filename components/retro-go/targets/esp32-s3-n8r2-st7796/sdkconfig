@@ -177,3 +177,10 @@ CONFIG_PARTITION_TABLE_FILENAME="../partitions.csv"
 # USB Host
 #
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
+
+# retro-go drives I2S through components/retro-go/drivers/audio/i2s.c, which still uses the
+# legacy driver. That driver is fully functional; this only removes the deprecation notice
+# it prints on every boot. It also disables IDF's "both I2S drivers linked" abort, so if a
+# component using driver/i2s_std.h is ever added here, re-enable this to get the diagnostic
+# back (the real fix is migrating i2s.c, which needs to be validated on hardware).
+CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y

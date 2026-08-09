@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include "media_audio.h"
 #include "media_config.h"
 #include "media_eq.h"
@@ -159,6 +164,11 @@ static void audio_task(void *arg)
         audio.frames_played += frames;
     }
 
+#ifdef ESP_PLATFORM
+    RG_LOGI("Audio task exiting, stack headroom was %u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+#endif
+
     audio.running = false;
     audio.alive = false;
 }
@@ -205,7 +215,7 @@ bool media_audio_start(void)
     audio.underruns = 0;
     audio.running = true;
 
-    audio.task = rg_task_create("media_audio", &audio_task, NULL, 3 * 1024, RG_TASK_PRIORITY_6,
+    audio.task = rg_task_create("media_audio", &audio_task, NULL, 4 * 1024, RG_TASK_PRIORITY_6,
                                 RG_TASK_AFFINITY_AUDIO);
     if (!audio.task)
     {

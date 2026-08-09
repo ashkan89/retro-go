@@ -5,6 +5,11 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include "media_library.h"
 #include "media_metadata.h"
 #include "media_util.h"
@@ -1110,6 +1115,11 @@ finish:
     free(track);
     free(meta);
 
+#ifdef ESP_PLATFORM
+    RG_LOGI("Scan task exiting, stack headroom was %u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+#endif
+
     lib.status.scanning = false;
     lib.status.complete = true;
     lib.scan_task = NULL;
@@ -1208,7 +1218,9 @@ bool media_library_scan_start(bool full)
 
     // Priority 1 is the same as the launcher's main task, so scanning shares time with the
     // UI instead of starving it.
-    lib.scan_task = rg_task_create("media_scan", &scan_task, NULL, 6 * 1024, RG_TASK_PRIORITY_1,
+    // The scanner walks the same tag parsers as the artwork worker, so it needs the same
+    // headroom; the directory work list itself lives on the heap.
+    lib.scan_task = rg_task_create("media_scan", &scan_task, NULL, 8 * 1024, RG_TASK_PRIORITY_1,
                                    RG_TASK_AFFINITY_MAIN);
     if (!lib.scan_task)
     {

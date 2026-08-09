@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include "media_artwork.h"
 #include "media_audio.h"
 #include "media_decoder.h"
@@ -440,10 +445,7 @@ static void decode_task(void *arg)
             {
                 size_t buffered = media_audio_buffered_frames();
                 if (buffered >= media_profile()->prebuffer_frames || player.decoder->eos)
-                {
-                    media_audio_set_paused(media_audio_get_paused());
                     set_state(media_audio_get_paused() ? MEDIA_STATE_PAUSED : MEDIA_STATE_PLAYING);
-                }
                 else
                 {
                     emit(MEDIA_EVENT_BUFFERING, (intptr_t)media_audio_fill_percent());
@@ -475,6 +477,12 @@ static void decode_task(void *arg)
     }
 
     release_track_resources();
+
+#ifdef ESP_PLATFORM
+    RG_LOGI("Decode task exiting, stack headroom was %u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+#endif
+
     player.running = false;
 }
 
@@ -542,7 +550,11 @@ bool media_player_init(void)
     player.state = MEDIA_STATE_STOPPED;
     player.stop = false;
 
-    player.task = rg_task_create("media_dec", &decode_task, NULL, 8 * 1024, RG_TASK_PRIORITY_5,
+    // minimp3 puts a mp3dec_scratch_t on the stack inside mp3dec_decode_frame: 2.8 KB of
+    // bit reservoir, 4.6 KB of granule buffers and 8.4 KB of synthesis state, ~16 KB in
+    // total. Everything else in this task's tree is small by comparison, so the stack is
+    // sized around that one frame plus room for logging.
+    player.task = rg_task_create("media_dec", &decode_task, NULL, 22 * 1024, RG_TASK_PRIORITY_5,
                                  RG_TASK_AFFINITY_AUDIO);
     if (!player.task)
     {

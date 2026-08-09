@@ -110,7 +110,10 @@ static bool hapticEnabled = true;
 static int hapticStrength = 100;
 static rg_stats_t statistics;
 static rg_app_t app;
-static rg_task_t tasks[8];
+// Slot 0 is reserved, so this is one more than the number of concurrent rg_task_create()
+// tasks. The media player alone runs up to five (audio, decode, IO, artwork, scanning) on
+// top of rg_display/rg_input/rg_sysmon, which overflowed the previous size of 8.
+static rg_task_t tasks[16];
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
 static esp_timer_handle_t hapticTimer;
 #endif
@@ -135,6 +138,15 @@ typedef enum
 
 static screen_timeout_state_t screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
 static int screen_saved_backlight = -1;
+// rg_task_delay() is called from every task in the firmware, and screen_timeout_tick()
+// hangs off it. Waking the screen dispatches RG_EVENT_REDRAW, which makes the application
+// redraw its entire UI -- on whichever stack happened to call rg_task_delay() first. That
+// overflowed rg_sysmon's 3 KB stack. The tick also polls input and reads settings, neither
+// of which is safe to do from several tasks at once. Both problems go away by pinning the
+// whole thing to the task that called rg_system_init(), which is the task that owns the UI.
+#if defined(ESP_PLATFORM)
+static TaskHandle_t screen_timeout_owner;
+#endif
 static int64_t screen_last_activity = 0;
 static bool screen_timeout_wait_release = false;
 
@@ -299,8 +311,25 @@ static bool led_rmt_set_color(rg_color_t color)
 
     if (rmt_transmit(led_rmt_channel, led_rmt_encoder, data, sizeof(data), &tx_config) != ESP_OK)
         return false;
-    if (rmt_tx_wait_all_done(led_rmt_channel, pdMS_TO_TICKS(100)) != ESP_OK)
+
+    // A 24-bit WS2812 frame takes about 30 us on the wire, so anything beyond a couple of
+    // milliseconds means the channel is not making progress. Waiting 100 ms for it just
+    // stalls whichever task is driving the LED (often one doing SD I/O). Recycle the channel
+    // instead: a wedged RMT channel otherwise stays wedged for the rest of the session.
+    if (rmt_tx_wait_all_done(led_rmt_channel, pdMS_TO_TICKS(5)) != ESP_OK)
+    {
+        RG_LOGD("RMT did not drain, resetting the LED channel");
+        rmt_disable(led_rmt_channel);
+        if (rmt_enable(led_rmt_channel) != ESP_OK)
+        {
+            rmt_del_channel(led_rmt_channel);
+            rmt_del_encoder(led_rmt_encoder);
+            led_rmt_channel = NULL;
+            led_rmt_encoder = NULL;
+            led_rmt_initialized = false;
+        }
         return false;
+    }
 #else
     rmt_item32_t items[24];
     int item = 0;
@@ -891,6 +920,12 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
 
     // Keep housekeeping away from the emulation/APU core. The I/O core runs it
     // only when the higher-priority audio, USB and display work is idle.
+#if defined(ESP_PLATFORM)
+    // Captured before app.initialized so no other task can start ticking the screen timeout
+    // in the window between the two.
+    screen_timeout_owner = xTaskGetCurrentTaskHandle();
+#endif
+
     rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, RG_TASK_AFFINITY_IO);
     app.initialized = true;
 
@@ -1215,7 +1250,14 @@ void rg_system_tick(int busyTime)
 
 static bool screen_timeout_enabled(void)
 {
-    return app.initialized && app.isLauncher;
+    if (!app.initialized || !app.isLauncher)
+        return false;
+#if defined(ESP_PLATFORM)
+    // Only the UI task drives the timeout; see the note next to screen_timeout_owner.
+    if (screen_timeout_owner && xTaskGetCurrentTaskHandle() != screen_timeout_owner)
+        return false;
+#endif
+    return true;
 }
 
 static bool screen_timeout_is_active(void)
@@ -1238,6 +1280,11 @@ static void screen_timeout_wake(void)
     screen_saved_backlight = -1;
     screen_timeout_state = SCREEN_TIMEOUT_STATE_AWAKE;
     rg_display_force_redraw();
+}
+
+bool rg_system_screen_is_dimmed(void)
+{
+    return screen_timeout_is_active();
 }
 
 uint32_t rg_system_filter_screen_timeout_input(uint32_t joystick)
@@ -1566,6 +1613,26 @@ bool rg_system_set_led_color(rg_color_t color)
     // two frames can reach the wire out of order and leave the LED lit in a color that no longer
     // matches ledColor, which then makes update_indicators() skip the correction.
     bool success = true;
+
+    // The SD transaction hook toggles the disk-activity indicator around every single block
+    // transfer. With a media player streaming from the card that is thousands of LED frames
+    // per second, each one a blocking RMT transmit plus a 300 us latch delay held under this
+    // lock -- enough to throttle the SD bus on its own. Colour changes are coalesced so the
+    // LED still reflects activity without the driver becoming the bottleneck.
+    static int64_t led_last_update;
+    const int64_t now = rg_system_timer();
+
+    if (color == ledColor)
+        return true;
+
+    // Rate limited uniformly, including turning the LED off: exempting "off" would still
+    // leave one frame per SD transaction. A suppressed change is not forgotten -- ledColor
+    // is left stale, so update_indicators() re-drives it, and the once-a-second sweep in
+    // system_monitor_task() guarantees the LED converges within a second at worst.
+    if ((now - led_last_update) < 15000)
+        return true;
+
+    led_last_update = now;
 
     if (ledLock)
         rg_mutex_take(ledLock, 1000);

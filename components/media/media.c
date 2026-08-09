@@ -18,6 +18,7 @@
 
 static bool initialized;
 static bool player_started;
+static bool foreground;
 
 void media_init(void)
 {
@@ -89,7 +90,9 @@ void media_run_at(int browse_mode)
     if (browse_mode >= 0 && browse_mode < MEDIA_BROWSE_COUNT)
         media_ui_set_pending_view((media_browse_mode_t)browse_mode);
 
+    foreground = true;
     media_ui_run();
+    foreground = false;
 
     media_settings_t *cfg = media_settings();
 
@@ -119,6 +122,11 @@ bool media_is_playing(void)
 bool media_has_library(void)
 {
     return media_library_ready();
+}
+
+bool media_is_foreground(void)
+{
+    return foreground;
 }
 
 void media_status_line(char *out, size_t size)

@@ -476,7 +476,10 @@ static void try_migrate(void)
 
 void event_handler(int event, void *arg)
 {
-    if (event == RG_EVENT_REDRAW)
+    // The media player owns the whole screen while it is up, and it repaints itself. Letting
+    // the launcher draw here (a screen-timeout wake, for instance) would paint the carousel
+    // over the player.
+    if (event == RG_EVENT_REDRAW && !media_is_foreground())
         gui_redraw();
 }
 

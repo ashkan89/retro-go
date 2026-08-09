@@ -4,6 +4,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include "media_ring.h"
 #include "media_source.h"
 #include "media_util.h"
@@ -85,6 +90,11 @@ static void io_task(void *arg)
             rg_task_delay(src->eof ? 20 : 4);
     }
 
+#ifdef ESP_PLATFORM
+    RG_LOGD("IO task exiting, stack headroom was %u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+#endif
+
     src->stopped = true;
     src->running = false;
 }
@@ -135,7 +145,8 @@ media_source_t *media_source_open(const char *path, size_t buffer_bytes)
     }
 
     src->running = true;
-    src->task = rg_task_create("media_io", &io_task, src, 3 * 1024, RG_TASK_PRIORITY_4,
+    // FatFs read paths can nest a few levels; 4 KB leaves room for that plus logging.
+    src->task = rg_task_create("media_io", &io_task, src, 4 * 1024, RG_TASK_PRIORITY_4,
                                RG_TASK_AFFINITY_IO);
     if (!src->task)
     {

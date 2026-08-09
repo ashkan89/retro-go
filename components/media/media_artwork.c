@@ -3,6 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#endif
+
 #include "media_artwork.h"
 #include "media_metadata.h"
 #include "media_util.h"
@@ -265,6 +270,11 @@ static void worker_task(void *arg)
         rg_task_delay(1);
     }
 
+#ifdef ESP_PLATFORM
+    RG_LOGI("Artwork worker exiting, stack headroom was %u bytes",
+            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+#endif
+
     art.running = false;
 }
 
@@ -286,7 +296,10 @@ void media_artwork_init(void)
 
     art.stop = false;
     // Priority 1 keeps it level with the UI: artwork should never outrank drawing.
-    art.task = rg_task_create("media_art", &worker_task, NULL, 5 * 1024, RG_TASK_PRIORITY_1,
+    // 5 KB was not enough: the tag parsers plus the path buffers in load_artwork() and
+    // media_metadata_find_artwork() overflowed it. The large parser buffers now live on the
+    // heap, and this has headroom for the JPEG decoder on top.
+    art.task = rg_task_create("media_art", &worker_task, NULL, 8 * 1024, RG_TASK_PRIORITY_1,
                               RG_TASK_AFFINITY_MAIN);
     if (!art.task)
         RG_LOGE("Failed to start the artwork worker");

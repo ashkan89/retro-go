@@ -52,6 +52,9 @@ void media_run_at(int browse_mode);
 bool media_is_playing(void);
 bool media_has_library(void);
 
+/** True while the media player owns the display (between entering and leaving it). */
+bool media_is_foreground(void);
+
 /** One-line playback state for the launcher tab, e.g. "Breathe - Pink Floyd". */
 void media_status_line(char *out, size_t size);
 
