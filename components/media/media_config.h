@@ -120,9 +120,11 @@ typedef struct
     media_memory_profile_t profile;
     const char *name;
 
-    size_t source_buffer;       // Compressed prefetch ring, bytes
+    size_t source_buffer;       // Compressed prefetch ring for a file on the card, bytes
+    size_t network_buffer;      // Compressed prefetch ring for a URL, bytes
     size_t pcm_buffer_frames;   // Decoded PCM ring, frames
     size_t prebuffer_frames;    // PCM frames required before leaving BUFFERING
+    uint32_t prebuffer_ms;      // Compressed audio to bank before starting a network stream
 
     size_t artwork_cache_bytes; // Total budget for decoded artwork surfaces
     int artwork_cache_entries;

@@ -201,6 +201,39 @@ half-played.
 Redirects are followed, including the 303/307/308 that CDNs use to hand out signed
 per-session URLs.
 
+### Buffering a stream
+
+Streaming servers front-load. Measured against `live.powerhitz.com/hot108`:
+
+| window | received | average rate |
+| --- | --- | --- |
+| first 0.5 s | 12 KB | — |
+| first 2 s | **560 KB** | 2239 kbps |
+| first 11 s | 681 KB | 495 kbps, settling to 128 kbps |
+
+Roughly 35 seconds of audio arrives in the first two seconds, then the server throttles to
+real time. That matters twice over. A reserve smaller than the burst forces the reader to
+stall, and a stalled client is what Icecast drops off its send queue — which is how a stream
+that seems to be buffering fine ends up reconnecting every minute.
+
+So a URL gets a much larger reserve than a file on the card, sized to swallow the burst:
+
+| | LOW | NORMAL | HIGH |
+| --- | --- | --- | --- |
+| Card reserve | 64 KB | 128 KB | 256 KB |
+| **Network reserve** | **256 KB** | **512 KB** | **1 MB** |
+| ≈ at 128 kbps | 16 s | 32 s | 64 s |
+
+Reads are issued in 4 KB pieces rather than 16 KB, because
+`esp_http_client_read_response()` blocks until the requested length is satisfied — at a
+stream's real-time rate a 16 KB read is a full second per ring update, and a stall takes that
+long to notice.
+
+Playback starts once the compressed stage holds a few seconds (`prebuffer_ms`, 2.5–4 s by
+profile) rather than on the PCM stage alone, and the *Buffering* state is only re-entered
+when **both** stages are dry. Watching the PCM level by itself made the state flap between
+Buffering and Playing on every dip.
+
 ### Live streams
 
 A response with no `Content-Length` is treated as a broadcast: duration and seeking are
@@ -290,7 +323,8 @@ Selected at runtime from the detected PSRAM size (`media_profile.c`).
 
 | | LOW (≤2 MB, N8R2) | NORMAL (2–6 MB) | HIGH (>6 MB, N16R8) |
 | --- | --- | --- | --- |
-| Compressed reserve | 64 KB | 128 KB | 256 KB |
+| Compressed reserve (card) | 64 KB | 128 KB | 256 KB |
+| Compressed reserve (network) | 256 KB | 512 KB | 1 MB |
 | PCM ring | 8 K frames (32 KB) | 16 K frames (64 KB) | 32 K frames (128 KB) |
 | Prebuffer | 2 K frames | 4 K frames | 8 K frames |
 | Artwork cache | 192 KB / 4 entries | 512 KB / 8 | 1.5 MB / 16 |

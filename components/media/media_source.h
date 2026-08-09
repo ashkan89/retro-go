@@ -81,6 +81,12 @@ bool media_source_eof(const media_source_t *source);
 /** Ring occupancy 0..100, used by the buffering state machine and the resource manager. */
 int media_source_fill_percent(const media_source_t *source);
 
+/** Compressed bytes currently banked. The buffering gate works in seconds, not percent. */
+size_t media_source_buffered(const media_source_t *source);
+
+/** Size of the prefetch ring, so callers can express a target as a fraction of it. */
+size_t media_ring_capacity_of(const media_source_t *source);
+
 /** Unblock a consumer parked in media_source_read(). Used during teardown. */
 void media_source_abort(media_source_t *source);
 

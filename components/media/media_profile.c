@@ -20,8 +20,10 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .profile = MEDIA_MEMORY_LOW,
         .name = "Low",
         .source_buffer = 64 * 1024,
+        .network_buffer = 256 * 1024,       // ~16 s of a 128 kbps stream
         .pcm_buffer_frames = 8 * 1024,      // 32 KB, ~186 ms at 44.1 kHz
         .prebuffer_frames = 2 * 1024,
+        .prebuffer_ms = 2500,
         .artwork_cache_bytes = 192 * 1024,
         .artwork_cache_entries = 4,
         .artwork_max_dim = 160,
@@ -39,8 +41,10 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .profile = MEDIA_MEMORY_NORMAL,
         .name = "Normal",
         .source_buffer = 128 * 1024,
+        .network_buffer = 512 * 1024,       // ~32 s
         .pcm_buffer_frames = 16 * 1024,     // 64 KB, ~372 ms
         .prebuffer_frames = 4 * 1024,
+        .prebuffer_ms = 3000,
         .artwork_cache_bytes = 512 * 1024,
         .artwork_cache_entries = 8,
         .artwork_max_dim = 200,
@@ -58,8 +62,14 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .profile = MEDIA_MEMORY_HIGH,
         .name = "High",
         .source_buffer = 256 * 1024,
+        // Icecast servers front-load: live.powerhitz.com pushes ~560 KB in the first two
+        // seconds before settling to real time. A ring smaller than that burst forces the
+        // reader to stall, and a stalled client is exactly what Icecast drops off its queue
+        // and disconnects. Taking the whole burst turns it into ~64 s of reserve instead.
+        .network_buffer = 1024 * 1024,
         .pcm_buffer_frames = 32 * 1024,     // 128 KB, ~743 ms
         .prebuffer_frames = 8 * 1024,
+        .prebuffer_ms = 4000,
         .artwork_cache_bytes = 1536 * 1024,
         .artwork_cache_entries = 16,
         .artwork_max_dim = 260,
@@ -103,9 +113,9 @@ const media_profile_t *media_profile(void)
         if (chosen >= MEDIA_MEMORY_COUNT)
             chosen = MEDIA_MEMORY_LOW;
         active = &profiles[chosen];
-        RG_LOGI("Media memory profile: %s (src=%uKB pcm=%u frames fft=%d)", active->name,
-                (unsigned)(active->source_buffer / 1024), (unsigned)active->pcm_buffer_frames,
-                active->fft_size);
+        RG_LOGI("Media memory profile: %s (src=%uKB net=%uKB pcm=%u frames fft=%d)", active->name,
+                (unsigned)(active->source_buffer / 1024), (unsigned)(active->network_buffer / 1024),
+                (unsigned)active->pcm_buffer_frames, active->fft_size);
     }
     return active;
 }

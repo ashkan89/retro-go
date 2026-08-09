@@ -273,7 +273,7 @@ static bool open_current(void)
         int found = streams ? media_net_fetch_playlist(path, streams, 4) : -1;
 
         for (int i = 0; i < found && !player.decoder; ++i)
-            player.decoder = media_decoder_open(streams[i], media_profile()->source_buffer, &err);
+            player.decoder = media_decoder_open(streams[i], media_profile()->network_buffer, &err);
 
         free(streams);
 
@@ -284,7 +284,11 @@ static bool open_current(void)
     }
     else
     {
-        player.decoder = media_decoder_open(path, media_profile()->source_buffer, &err);
+        // A stream gets the much larger reserve: unlike the card, the far end decides when
+        // the bytes arrive, and servers front-load a burst that is worth catching.
+        size_t reserve = media_net_is_url(path) ? media_profile()->network_buffer
+                                                : media_profile()->source_buffer;
+        player.decoder = media_decoder_open(path, reserve, &err);
     }
 
     if (!player.decoder)
@@ -397,6 +401,54 @@ static void advance_track(bool manual)
     }
 }
 
+/** Compressed bytes that represent `ms` of audio at the current bitrate. */
+static size_t bytes_for_ms(uint32_t ms)
+{
+    uint32_t bitrate = player.decoder ? player.decoder->bitrate : 0;
+
+    // Before the first frame is decoded the bitrate is unknown; 128 kbps is the commonest
+    // stream rate and only sets the initial target.
+    if (bitrate < 8000 || bitrate > 3000000)
+        bitrate = 128000;
+
+    return (size_t)(((uint64_t)bitrate / 8) * ms / 1000);
+}
+
+/** The level below which the compressed stage counts as starved rather than merely dipping. */
+static size_t low_water_bytes(void)
+{
+    return bytes_for_ms(750);
+}
+
+/**
+ * Playback may start once there is enough banked to ride out a hiccup. For a file that is
+ * just PCM; for a stream it is mostly the compressed reserve, because that is the only stage
+ * a burst can actually fill.
+ */
+static bool prebuffer_satisfied(void)
+{
+    if (!player.decoder)
+        return false;
+    if (player.decoder->eos)
+        return true;
+
+    if (media_audio_buffered_frames() < media_profile()->prebuffer_frames)
+        return false;
+
+    if (!media_net_is_url(player.path))
+        return true;
+
+    size_t target = bytes_for_ms(media_profile()->prebuffer_ms);
+    size_t capacity = media_ring_capacity_of(player.decoder->source);
+
+    // Never wait for more than half the ring: a low-bitrate stream would otherwise have to
+    // fill an unreasonable fraction of it before a note came out.
+    if (capacity && target > capacity / 2)
+        target = capacity / 2;
+
+    return media_source_buffered(player.decoder->source) >= target;
+}
+
 static void decode_task(void *arg)
 {
     (void)arg;
@@ -472,30 +524,34 @@ static void decode_task(void *arg)
 
         if (frames > 0)
         {
+            // Every decoded frame must reach the ring. Breaking out on a full ring used to
+            // drop the remainder of the block on the floor, which is audible as a skip
+            // rather than a gap. A pause or a stop is the only reason to abandon it.
             size_t written = 0;
             while (written < (size_t)frames && !player.stop && player.command == CMD_NONE)
             {
                 size_t n = media_audio_write(player.block + written * MEDIA_PCM_CHANNELS,
                                              (size_t)frames - written, 200);
-                if (n == 0)
-                    break; // Ring full and the consumer is paused; retry next iteration
                 written += n;
             }
 
             if (player.state == MEDIA_STATE_BUFFERING)
             {
-                size_t buffered = media_audio_buffered_frames();
-                if (buffered >= media_profile()->prebuffer_frames || player.decoder->eos)
+                if (prebuffer_satisfied())
                     set_state(media_audio_get_paused() ? MEDIA_STATE_PAUSED : MEDIA_STATE_PLAYING);
                 else
-                {
                     emit(MEDIA_EVENT_BUFFERING, (intptr_t)media_audio_fill_percent());
-                }
             }
-            else if (player.state == MEDIA_STATE_PLAYING && media_audio_fill_percent() < 5 &&
-                     !player.decoder->eos)
+            else if (player.state == MEDIA_STATE_PLAYING && !player.decoder->eos &&
+                     !media_source_eof(player.decoder->source) &&
+                     media_audio_fill_percent() < 10 &&
+                     media_source_buffered(player.decoder->source) < low_water_bytes())
             {
-                // Ran dry: go back to buffering rather than stuttering along the floor.
+                // Both stages are running dry, so this is a real starvation rather than the
+                // decoder simply being ahead of the consumer. Re-entering on the PCM level
+                // alone made the state flap between Buffering and Playing on every dip.
+                RG_LOGW("Buffer starved (pcm %d%%, source %u KB)", media_audio_fill_percent(),
+                        (unsigned)(media_source_buffered(player.decoder->source) / 1024));
                 set_state(MEDIA_STATE_BUFFERING);
             }
         }

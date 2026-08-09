@@ -23,9 +23,12 @@
 // Don't bother issuing a read for a sliver of free space, it wastes a full SD transaction.
 #define IO_MIN_CHUNK 4096
 
-// Network reads come back in whatever size the socket has ready, so there is no equivalent
-// alignment win; a smaller floor just keeps the ring topped up more smoothly.
-#define NET_MIN_CHUNK 1024
+// esp_http_client_read_response() blocks until the requested length is satisfied, so the
+// read size sets how coarsely the ring updates. 16 KB at a stream's real-time rate is a full
+// second per update; 4 KB keeps the socket drained continuously and lets a stall be noticed
+// four times sooner.
+#define NET_CHUNK 4096
+#define NET_MIN_CHUNK 512
 #define NET_TIMEOUT_MS 6000
 #define NET_MAX_RECONNECTS 4
 // Shoutcast metadata blocks are a length byte times 16, so 255 * 16 is the hard maximum.
@@ -304,7 +307,8 @@ static void io_task(void *arg)
             if (!src->stop && !src->eof)
             {
                 size_t space = media_ring_free_space(src->ring);
-                size_t chunk = space < IO_CHUNK ? space : IO_CHUNK;
+                size_t limit = src->is_url ? NET_CHUNK : IO_CHUNK;
+                size_t chunk = space < limit ? space : limit;
                 size_t floor = src->is_url ? NET_MIN_CHUNK : IO_MIN_CHUNK;
 
                 // Only read a partial chunk when we're close to the end, otherwise wait for
@@ -654,6 +658,16 @@ bool media_source_seek(media_source_t *source, uint64_t offset)
 bool media_source_eof(const media_source_t *source)
 {
     return !source || (source->eof && media_ring_used(source->ring) == 0);
+}
+
+size_t media_source_buffered(const media_source_t *source)
+{
+    return source ? media_ring_used(source->ring) : 0;
+}
+
+size_t media_ring_capacity_of(const media_source_t *source)
+{
+    return source ? media_ring_capacity(source->ring) : 0;
 }
 
 int media_source_fill_percent(const media_source_t *source)
