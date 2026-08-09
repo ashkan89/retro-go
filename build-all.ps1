@@ -14,7 +14,7 @@ foreach ($Target in $Targets) {
     Write-Host "----------------------------------------" -ForegroundColor Cyan
     
     # Run the python build tool
-    python rg_tool.py --target $Target build all
+    python rg_tool.py --target $Target release all
 
     # Check if the build failed ($LASTEXITCODE is not 0)
     if ($LASTEXITCODE -ne 0) {
