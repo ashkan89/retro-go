@@ -64,6 +64,8 @@ static struct
 
     media_lyrics_t *lyrics;
     bool lyrics_loaded;
+    bool net_tags_requested;    // Remote tags are read by the artwork worker, not at open
+    bool net_tags_applied;
 
     uint32_t consecutive_failures;
 
@@ -253,6 +255,8 @@ static bool open_current(void)
 
     media_utf8_copy(player.path, sizeof(player.path), path);
     player.generation++;
+    player.net_tags_requested = false;
+    player.net_tags_applied = false;
     player.play_counted = false;
     player.last_position_save_us = rg_system_timer();
 
@@ -998,6 +1002,68 @@ const char *media_player_last_error(void)
 /* Periodic work                                                                            */
 /* -------------------------------------------------------------------------------------- */
 
+/**
+ * Remote files carry the same tags as local ones, but reading them costs an HTTP range
+ * request, so it is done by the artwork worker and collected here. A live broadcast is
+ * skipped entirely: it has no tags, and fetching its head would just pull audio and compete
+ * with the stream for bandwidth.
+ */
+static void ensure_network_tags(void)
+{
+    if (!player.decoder || player.net_tags_applied || !media_net_is_url(player.path))
+        return;
+    if (media_source_is_live(player.decoder->source))
+        return;
+
+    if (!player.net_tags_requested)
+    {
+        media_artwork_request(player.path, media_profile()->artwork_max_dim);
+        player.net_tags_requested = true;
+        return;
+    }
+
+    media_metadata_t meta;
+    if (!media_artwork_take_tags(player.path, &meta))
+        return;
+
+    player.net_tags_applied = true;
+
+    // Keep whatever the URL gave us if the file turned out to be untagged.
+    if (meta.title[0])
+        media_utf8_copy(player.track.title, sizeof(player.track.title), meta.title);
+    if (meta.artist[0])
+        media_utf8_copy(player.track.artist, sizeof(player.track.artist), meta.artist);
+    if (meta.album[0])
+        media_utf8_copy(player.track.album, sizeof(player.track.album), meta.album);
+    if (meta.album_artist[0])
+        media_utf8_copy(player.track.album_artist, sizeof(player.track.album_artist),
+                        meta.album_artist);
+    if (meta.genre[0])
+        media_utf8_copy(player.track.genre, sizeof(player.track.genre), meta.genre);
+
+    if (meta.year)
+        player.track.year = meta.year;
+    if (meta.track_number)
+        player.track.track_number = meta.track_number;
+    if (meta.disc_number)
+        player.track.disc_number = meta.disc_number;
+
+    // The decoder's own numbers are authoritative for anything it reports.
+    if (!player.track.duration_ms && meta.duration_ms)
+        player.track.duration_ms = meta.duration_ms;
+
+    player.track.replaygain_track = meta.replaygain_track;
+    player.track.replaygain_album = meta.replaygain_album;
+    player.track.has_embedded_art = meta.has_embedded_art;
+    player.track.has_lyrics = meta.has_embedded_lyrics;
+
+    media_audio_set_gain(compute_gain(&player.track));
+
+    RG_LOGI("Tags for '%s': %s / %s", rg_basename(player.path), player.track.title,
+            player.track.artist);
+    emit(MEDIA_EVENT_METADATA_READY, 0);
+}
+
 /** Load lyrics for the current track. Runs on the UI task, off the critical path. */
 static void ensure_lyrics(void)
 {
@@ -1049,6 +1115,7 @@ void media_player_tick(void)
     }
 
     ensure_lyrics();
+    ensure_network_tags();
 
     /* Play count: credited once the listener is a third of the way in (or 60 seconds). */
     if (!player.play_counted && player.track.id && player.state == MEDIA_STATE_PLAYING)

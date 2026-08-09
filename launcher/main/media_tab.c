@@ -156,7 +156,10 @@ static void event_handler(gui_event_t event, tab_t *tab)
 
 void media_tab_init(void)
 {
-    media_tab = gui_add_tab("Media", "Media Player", NULL, event_handler);
+    // The tab name doubles as the key for its theme images (logo_mediaplayer.png,
+    // banner_mediaplayer.png, background_mediaplayer.png) and for its hide-tab setting, so
+    // it follows the short lowercase form the emulator tabs use.
+    media_tab = gui_add_tab("mediaplayer", "Media Player", NULL, event_handler);
 }
 
 void gui_invalidate_media_tab(void)

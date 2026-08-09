@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "media_metadata.h"
+#include "media_net.h"
 #include "media_util.h"
 
 #undef RG_LOG_TAG
@@ -15,11 +16,26 @@
 /* Small file reader                                                                        */
 /* -------------------------------------------------------------------------------------- */
 
+/**
+ * A tiny reader over either a local file or a block of bytes already in memory.
+ *
+ * The memory mode is what makes remote tagging practical: one range request pulls the head
+ * of the file, and the existing parsers walk it unchanged. `size` is the resource's real
+ * length so offset checks stay meaningful, while `data_len` is how much was actually
+ * fetched -- a read past that returns short, which every parser already treats as "stop".
+ */
 typedef struct
 {
     FILE *fp;
+    const uint8_t *data;
+    size_t data_len;
+    uint64_t pos;
     uint64_t size;
 } mfile_t;
+
+/* One range request for the head of a remote file. Big enough for an ID3v2 tag with a
+ * typical embedded cover, small enough not to be a download. */
+#define META_NET_PREFIX (128 * 1024)
 
 /**
  * Scratch shared by the parsers. It lives on the heap because media_metadata_read() is
@@ -28,8 +44,19 @@ typedef struct
  */
 #define META_SCRATCH_SIZE 2048
 
+/** Wrap a block of memory that holds the first `len` bytes of a `total` byte resource. */
+static void mf_open_memory(mfile_t *mf, const uint8_t *data, size_t len, uint64_t total)
+{
+    memset(mf, 0, sizeof(*mf));
+    mf->data = data;
+    mf->data_len = len;
+    mf->size = total > len ? total : len;
+}
+
 static bool mf_open(mfile_t *mf, const char *path)
 {
+    memset(mf, 0, sizeof(*mf));
+
     mf->fp = fopen(path, "rb");
     if (!mf->fp)
         return false;
@@ -51,24 +78,39 @@ static void mf_close(mfile_t *mf)
     if (mf->fp)
         fclose(mf->fp);
     mf->fp = NULL;
+    mf->data = NULL;
 }
 
 static bool mf_seek(mfile_t *mf, uint64_t offset)
 {
     if (offset > mf->size)
         return false;
+
+    if (mf->data)
+    {
+        mf->pos = offset;
+        return true;
+    }
+
     return fseek(mf->fp, (long)offset, SEEK_SET) == 0;
 }
 
 static size_t mf_read(mfile_t *mf, void *buf, size_t len)
 {
-    return fread(buf, 1, len, mf->fp);
-}
+    if (mf->data)
+    {
+        // Past what was fetched: a short read, which the parsers already handle.
+        if (mf->pos >= mf->data_len)
+            return 0;
+        size_t available = mf->data_len - (size_t)mf->pos;
+        if (len > available)
+            len = available;
+        memcpy(buf, mf->data + mf->pos, len);
+        mf->pos += len;
+        return len;
+    }
 
-static uint64_t mf_tell(mfile_t *mf)
-{
-    long p = ftell(mf->fp);
-    return p > 0 ? (uint64_t)p : 0;
+    return fread(buf, 1, len, mf->fp);
 }
 
 static inline uint32_t be32(const uint8_t *p)
@@ -1092,12 +1134,35 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
     out->codec = media_codec_from_path(path);
 
     mfile_t mf = {0};
-    if (!mf_open(&mf, path))
+    uint8_t *prefix = NULL;
+
+    if (media_net_is_url(path))
+    {
+        // Tags live at the head of every format we read, so one range request is enough.
+        prefix = rg_alloc(META_NET_PREFIX, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+        if (!prefix)
+            return false;
+
+        uint64_t total = 0;
+        int got = media_net_fetch_range(path, 0, META_NET_PREFIX, prefix, &total);
+        if (got < 16)
+        {
+            RG_LOGD("Could not read the head of '%s'", path);
+            free(prefix);
+            return false;
+        }
+
+        mf_open_memory(&mf, prefix, (size_t)got, total);
+    }
+    else if (!mf_open(&mf, path))
+    {
         return false;
+    }
 
     if (mf.size < 16)
     {
         mf_close(&mf);
+        free(prefix);
         return false;
     }
 
@@ -1105,6 +1170,7 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
     if (!scratch)
     {
         mf_close(&mf);
+        free(prefix);
         return false;
     }
 
@@ -1114,7 +1180,10 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
     {
     case MEDIA_CODEC_TYPE_MP3:
         mp3_parse_stream(&mf, scratch, out, id3_size);
-        id3v1_parse(&mf, out);
+        // ID3v1 sits in the last 128 bytes; over the network that would be a second request
+        // for a tag that ID3v2 has almost always already provided.
+        if (!prefix)
+            id3v1_parse(&mf, out);
         break;
 
     case MEDIA_CODEC_TYPE_FLAC:
@@ -1170,6 +1239,7 @@ bool media_metadata_read(const char *path, media_metadata_t *out)
 
     free(scratch);
     mf_close(&mf);
+    free(prefix);
 
     // Sanity: a duration longer than a day means we mis-parsed something.
     if (out->duration_ms > 24u * 3600u * 1000u)
@@ -1233,6 +1303,77 @@ void media_metadata_apply(media_track_t *track, const media_metadata_t *meta)
     track->album_hash = (n > 0) ? rg_hash(key, (size_t)n) : 0;
 }
 
+/** Number of bytes of ID3 APIC frame header preceding the image data. */
+static size_t id3_apic_header_len(const uint8_t *head, size_t got)
+{
+    if (got < 5)
+        return 0;
+
+    uint8_t encoding = head[0];
+    size_t i = 1;
+
+    // MIME type (Latin-1, NUL terminated) or a 3-byte image format in ID3v2.2
+    while (i < got && head[i])
+        i++;
+    i++; // NUL
+    if (i < got)
+        i++; // picture type
+
+    // Description, in the frame's text encoding
+    size_t step = (encoding == 1 || encoding == 2) ? 2 : 1;
+    while (i + step <= got)
+    {
+        bool zero = true;
+        for (size_t k = 0; k < step; ++k)
+            zero = zero && head[i + k] == 0;
+        i += step;
+        if (zero)
+            break;
+    }
+
+    return i;
+}
+
+/** Pull an embedded picture out of a remote file with a single range request. */
+static uint8_t *net_read_artwork(const char *path, const media_metadata_t *meta, size_t *len_out)
+{
+    uint32_t length = meta->art_length;
+    uint64_t offset = meta->art_offset;
+    size_t skip = 0;
+
+    // The ID3 APIC frame starts with a variable-length header that is not part of the image.
+    if (meta->codec == MEDIA_CODEC_TYPE_MP3)
+    {
+        uint8_t head[256];
+        size_t want = length < sizeof(head) ? length : sizeof(head);
+        int got = media_net_fetch_range(path, offset, want, head, NULL);
+        if (got < 8)
+            return NULL;
+
+        skip = id3_apic_header_len(head, (size_t)got);
+        if (skip >= length)
+            return NULL;
+    }
+
+    offset += skip;
+    length -= (uint32_t)skip;
+
+    uint8_t *data = rg_alloc(length, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    if (!data)
+        return NULL;
+
+    int got = media_net_fetch_range(path, offset, length, data, NULL);
+    if (got < 8)
+    {
+        free(data);
+        return NULL;
+    }
+
+    if (len_out)
+        *len_out = (size_t)got;
+    return data;
+}
+
 uint8_t *media_metadata_read_artwork(const char *path, const media_metadata_t *meta, size_t *len_out)
 {
     if (len_out)
@@ -1241,6 +1382,11 @@ uint8_t *media_metadata_read_artwork(const char *path, const media_metadata_t *m
         return NULL;
     if (meta->art_length == 0 || meta->art_length > MEDIA_MAX_ARTWORK_BYTES)
         return NULL;
+
+    // A remote picture is fetched by range: the offset and length came from the tag we
+    // already parsed, so exactly the image bytes are pulled and nothing else.
+    if (media_net_is_url(path))
+        return net_read_artwork(path, meta, len_out);
 
     mfile_t mf = {0};
     if (!mf_open(&mf, path))
@@ -1406,6 +1552,31 @@ media_art_source_t media_metadata_find_artwork(const char *track_path, const med
 
     if (!track_path || !out_path || !out_size)
         return MEDIA_ART_NONE;
+
+    // A remote track has no filesystem to probe. Rather than issuing a request per candidate
+    // name and extension, only the two conventional covers are offered, and the caller finds
+    // out whether they exist by trying to fetch them.
+    if (media_net_is_url(track_path))
+    {
+        char folder[MEDIA_MAX_PATH + 1];
+        media_utf8_copy(folder, sizeof(folder), track_path);
+
+        char *cut = strpbrk(folder, "?#");
+        if (cut)
+            *cut = 0;
+
+        char *slash = strrchr(folder, '/');
+        if (!slash || slash < folder + 8)
+            return MEDIA_ART_NONE;
+        slash[1] = 0;
+
+        if (snprintf(out_path, out_size, "%scover.jpg", folder) >= (int)out_size)
+        {
+            out_path[0] = 0;
+            return MEDIA_ART_NONE;
+        }
+        return MEDIA_ART_FOLDER;
+    }
 
     static const char *extensions[] = {"jpg", "jpeg", "png"};
 

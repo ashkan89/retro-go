@@ -10,6 +10,7 @@
 
 #include "media_artwork.h"
 #include "media_metadata.h"
+#include "media_net.h"
 #include "media_util.h"
 
 #undef RG_LOG_TAG
@@ -58,6 +59,11 @@ static struct
 
     int (*pressure_cb)(void);
     void (*ready_cb)(void);
+
+    /* Tags parsed on the way to finding the artwork, waiting to be collected. */
+    char tags_path[MEDIA_MAX_PATH + 1];
+    media_metadata_t tags;
+    bool tags_ready;
 } art;
 
 static uint32_t make_key(const char *path, int dim)
@@ -142,6 +148,22 @@ static cache_entry_t *cache_insert(uint32_t key, uint32_t path_hash, rg_image_t 
 /* Worker                                                                                   */
 /* -------------------------------------------------------------------------------------- */
 
+/** Load a cover that lives beside the track, locally or on a server. */
+static rg_image_t *load_cover_file(const char *art_path, int max_dim)
+{
+    if (!media_net_is_url(art_path))
+        return media_image_load_file(art_path, max_dim);
+
+    size_t len = 0;
+    uint8_t *data = media_net_fetch_file(art_path, MEDIA_MAX_ARTWORK_BYTES, &len);
+    if (!data)
+        return NULL;
+
+    rg_image_t *image = media_image_decode(data, len, max_dim);
+    free(data);
+    return image;
+}
+
 /** Decode the artwork for one track, returning a new surface or NULL. */
 static rg_image_t *load_artwork(const char *path, int max_dim)
 {
@@ -154,6 +176,16 @@ static rg_image_t *load_artwork(const char *path, int max_dim)
 
     if (media_metadata_read(path, meta))
     {
+        // Parsing the tags is the expensive part -- for a remote file it is a range request.
+        // Publish them so the player can show a real title and album rather than a filename.
+        if (rg_mutex_take(art.lock, 2000))
+        {
+            media_utf8_copy(art.tags_path, sizeof(art.tags_path), path);
+            art.tags = *meta;
+            art.tags_ready = true;
+            rg_mutex_give(art.lock);
+        }
+
         media_art_source_t source = media_metadata_find_artwork(path, meta, art_path, sizeof(art_path));
 
         if (source == MEDIA_ART_EMBEDDED)
@@ -171,7 +203,7 @@ static rg_image_t *load_artwork(const char *path, int max_dim)
         }
 
         if (!image && art_path[0])
-            image = media_image_load_file(art_path, max_dim);
+            image = load_cover_file(art_path, max_dim);
     }
 
     free(meta);
@@ -426,6 +458,43 @@ const rg_image_t *media_artwork_background(const char *track_path, int width, in
     return NULL;
 }
 
+void media_artwork_request(const char *track_path, int max_dim)
+{
+    if (!track_path || !*track_path || !art.lock)
+        return;
+    if (strlen(track_path) > MEDIA_MAX_PATH)
+        return;
+
+    if (!rg_mutex_take(art.lock, 1000))
+        return;
+
+    if (!cache_find(make_key(track_path, max_dim)))
+        queue_request(track_path, max_dim, false, 0, 0);
+
+    rg_mutex_give(art.lock);
+}
+
+bool media_artwork_take_tags(const char *track_path, media_metadata_t *out)
+{
+    if (!track_path || !out || !art.lock)
+        return false;
+
+    bool taken = false;
+
+    if (rg_mutex_take(art.lock, 100))
+    {
+        if (art.tags_ready && strcmp(art.tags_path, track_path) == 0)
+        {
+            *out = art.tags;
+            art.tags_ready = false;
+            taken = true;
+        }
+        rg_mutex_give(art.lock);
+    }
+
+    return taken;
+}
+
 bool media_artwork_busy(void)
 {
     return art.request_count > 0;
@@ -433,6 +502,9 @@ bool media_artwork_busy(void)
 
 void media_artwork_flush(void)
 {
+    art.tags_ready = false;
+    art.tags_path[0] = 0;
+
     while (art.entry_count > 0)
         cache_drop(art.entry_count - 1);
 

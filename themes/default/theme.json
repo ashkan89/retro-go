@@ -41,6 +41,17 @@
         "list_selected_bg": "0xFFFF",
         "list_selected_fg": "0x0000"
     },
+    "media": {
+        "__comment": "This section contains media player colors. Accents follow the album art when Dynamic theme is on.",
+        "background": "0x0000",
+        "surface": "0x10A3",
+        "text": "0xEF5E",
+        "text_dim": "0x8C51",
+        "divider": "0x31C6",
+        "accent": "0x5D5F",
+        "accent_dim": "0x3314",
+        "highlight": "0xA65F"
+    },
     "launcher_4": {
         "__comment": "This section contains launcher colors variant 4",
         "background": "0x0000",

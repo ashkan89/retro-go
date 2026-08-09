@@ -90,7 +90,8 @@ typedef struct
 {
     rg_surface_t *surface;
     media_layout_t layout;
-    media_theme_t theme;
+    media_theme_t theme;      // In use this frame, artwork accents applied
+    media_theme_t base;       // Straight from the theme file, before any artwork tinting
 
     media_page_t page;
     media_browse_mode_t browse;
@@ -137,6 +138,10 @@ extern media_ui_t mui;
 
 /* ---- Core helpers (media_ui.c) ------------------------------------------------------- */
 
+/** Read the `media` section of the active theme into `mui.base`. */
+void media_ui_load_theme(void);
+
+/** Derive this frame's colours: the theme's, tinted by the artwork when enabled. */
 void media_ui_update_theme(void);
 void media_ui_clear(void);
 void media_ui_draw_header(const char *title, const char *right);
@@ -152,6 +157,12 @@ void media_ui_draw_mini_player(void);
 void media_ui_draw_message(const char *title, const char *body);
 void media_ui_draw_art(int x, int y, int size, const char *path, const media_palette_t *palette,
                        const char *fallback_text);
+
+/**
+ * Path to look artwork up by, or NULL for a live broadcast. A stream has no cover to find,
+ * and asking would make the worker download its head over and over.
+ */
+const char *media_ui_art_path(void);
 
 void media_list_reset(media_list_t *list);
 media_list_item_t *media_list_add(media_list_t *list);

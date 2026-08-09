@@ -519,6 +519,149 @@ int media_net_list(const char *url, media_net_entry_t *out, int max)
 }
 
 /* -------------------------------------------------------------------------------------- */
+/* Byte ranges                                                                              */
+/* -------------------------------------------------------------------------------------- */
+
+int media_net_fetch_range(const char *url, uint64_t offset, size_t length, void *buffer,
+                          uint64_t *total_size_out)
+{
+#ifdef RG_ENABLE_NETWORKING
+    if (total_size_out)
+        *total_size_out = 0;
+    if (!url || !buffer || !length || !media_net_is_url(url))
+        return -1;
+    if (!media_net_available())
+        return -1;
+
+    char range[64];
+    snprintf(range, sizeof(range), "bytes=%llu-%llu", (unsigned long long)offset,
+             (unsigned long long)(offset + length - 1));
+
+    const rg_http_header_t headers[] = {
+        {"Range", range},
+        {NULL, NULL},
+    };
+
+    rg_http_cfg_t cfg = RG_HTTP_DEFAULT_CONFIG();
+    cfg.timeout_ms = 8000;
+    cfg.headers = headers;
+
+    rg_http_req_t *req = rg_network_http_open(url, &cfg);
+    if (!req)
+        return -1;
+
+    if (req->status_code < 200 || req->status_code >= 300)
+    {
+        rg_network_http_close(req);
+        return -1;
+    }
+
+    // A 200 means the server ignored the range and is sending from the start. That is usable
+    // when we wanted the start anyway, and useless otherwise.
+    if (offset > 0 && req->status_code != 206)
+    {
+        RG_LOGD("Server ignored the range for '%s'", url);
+        rg_network_http_close(req);
+        return -1;
+    }
+
+    if (total_size_out && req->content_length > 0)
+        *total_size_out = (req->status_code == 206) ? offset + (uint64_t)req->content_length
+                                                    : (uint64_t)req->content_length;
+
+    size_t got = 0;
+    while (got < length)
+    {
+        int n = rg_network_http_read(req, (uint8_t *)buffer + got, length - got);
+        if (n <= 0)
+            break;
+        got += (size_t)n;
+    }
+
+    rg_network_http_close(req);
+    return (int)got;
+#else
+    (void)url, (void)offset, (void)length, (void)buffer, (void)total_size_out;
+    return -1;
+#endif
+}
+
+uint8_t *media_net_fetch_file(const char *url, size_t max_bytes, size_t *len_out)
+{
+#ifdef RG_ENABLE_NETWORKING
+    if (len_out)
+        *len_out = 0;
+    if (!url || !max_bytes || !media_net_is_url(url) || !media_net_available())
+        return NULL;
+
+    rg_http_cfg_t cfg = RG_HTTP_DEFAULT_CONFIG();
+    cfg.timeout_ms = 8000;
+
+    rg_http_req_t *req = rg_network_http_open(url, &cfg);
+    if (!req)
+        return NULL;
+
+    if (req->status_code < 200 || req->status_code >= 300)
+    {
+        rg_network_http_close(req);
+        return NULL;
+    }
+
+    if (req->content_length > 0 && (size_t)req->content_length > max_bytes)
+    {
+        RG_LOGD("'%s' is %d bytes, over the %u limit", url, req->content_length,
+                (unsigned)max_bytes);
+        rg_network_http_close(req);
+        return NULL;
+    }
+
+    size_t capacity = req->content_length > 0 ? (size_t)req->content_length : 16384;
+    uint8_t *buffer = rg_alloc(capacity, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    size_t used = 0;
+
+    while (buffer)
+    {
+        if (used >= capacity)
+        {
+            if (capacity >= max_bytes)
+                break;
+            size_t grown = capacity * 2 > max_bytes ? max_bytes : capacity * 2;
+            uint8_t *bigger = rg_alloc(grown, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+            if (!bigger)
+                break;
+            memcpy(bigger, buffer, used);
+            free(buffer);
+            buffer = bigger;
+            capacity = grown;
+        }
+
+        int n = rg_network_http_read(req, buffer + used, capacity - used);
+        if (n <= 0)
+            break;
+        used += (size_t)n;
+    }
+
+    rg_network_http_close(req);
+
+    if (!buffer)
+        return NULL;
+
+    if (used < 16)
+    {
+        free(buffer);
+        return NULL;
+    }
+
+    if (len_out)
+        *len_out = used;
+    return buffer;
+#else
+    (void)url, (void)max_bytes, (void)len_out;
+    return NULL;
+#endif
+}
+
+/* -------------------------------------------------------------------------------------- */
 /* Remote playlists                                                                         */
 /* -------------------------------------------------------------------------------------- */
 

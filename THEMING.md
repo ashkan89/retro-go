@@ -29,6 +29,9 @@ A theme is a folder placed in `sd:/retro-go/themes` containing the following fil
 | `banner_<tab_name>.png` | PNG 272x24 | Launcher's per-tab banners | No |
 | `logo_<tab_name>.png` | PNG 46x50 | Launcher's per-tab logos | No |
 
+The media player's tab is named `mediaplayer`, so its images are `background_mediaplayer.png`,
+`banner_mediaplayer.png` and `logo_mediaplayer.png`.
+
 
 ### theme.json
 
@@ -85,6 +88,17 @@ Colors are RGB565 and can be represented as integers or hex strings. The special
         "list_selected_bg": "0xFFFF",
         "list_selected_fg": "0x0000"
     },
+    "media": {
+        "__comment": "This section contains media player colors",
+        "background": "0x0000",
+        "surface": "0x10A3",
+        "text": "0xEF5E",
+        "text_dim": "0x8C51",
+        "divider": "0x31C6",
+        "accent": "0x5D5F",
+        "accent_dim": "0x3314",
+        "highlight": "0xA65F"
+    },
     "launcher_4": {
         "__comment": "This section contains launcher colors variant 4",
         "background": "0x0000",
@@ -98,6 +112,26 @@ Colors are RGB565 and can be represented as integers or hex strings. The special
 ````
 </details>
 
+
+### The `media` section
+
+The media player draws its own chrome rather than reusing the launcher's list colors:
+
+| Key | Used for |
+|--|--|
+| `background` | Page background, when no album art background is shown |
+| `surface` | Cards, panels, the header and footer bands |
+| `text` | Primary text |
+| `text_dim` | Secondary text, times, hints |
+| `divider` | Rules, empty progress track, scrollbar trough |
+| `accent` | Progress fill, selection, transport, spectrum bars |
+| `accent_dim` | Muted accent (equalizer band rules, folder glyphs) |
+| `highlight` | Peak markers, favourites, the brighter end of the spectrum ramp |
+
+When *Dynamic theme* is enabled in the player's settings, `accent`, `accent_dim`,
+`highlight` and `surface` are replaced by colors extracted from the current album art;
+the rest of the section always applies. Turn *Dynamic theme* off to keep your palette
+exactly as written.
 
 ### Images
 

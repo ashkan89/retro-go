@@ -43,6 +43,13 @@
 - Media: A dropped stream reconnects, resuming mid-file when the server supports ranges
 - Media: Saved locations live in `/media/.retrogo-media/network.txt`, editable on a PC
 
+## Media Player - theming
+
+- Media: The tab is themeable as `mediaplayer`, with `logo_mediaplayer.png`,
+  `banner_mediaplayer.png` and `background_mediaplayer.png`; all three ship built in
+- Media: `theme.json` gains a `media` section for the player's own colours. With Dynamic
+  theme on, the accents still follow the album art and the rest of the section applies
+
 ## Fixes and core changes
 
 - All: The screen-timeout tick now runs only on the UI task. It hangs off `rg_task_delay()`,
@@ -59,6 +66,10 @@
   follows 303/307/308 redirects as well as 301/302
 - All: The legacy I2S deprecation notice is suppressed on ESP32-S3 targets
 - All: ESP32-S3 launcher partition grown from 1.5 MB to 1.75 MB to hold the media player
+- Media: Remote files now show their real title, artist, album and cover art. Tags are read
+  with an HTTP range request on the artwork worker, so playback still starts immediately
+- Launcher: Regenerated `images.c`, which had gone out of sync with
+  `themes/default/background_msx.png`
 
 Not yet supported: AAC/HE-AAC, Ogg Vorbis and Opus decoding (the formats are identified and
 named, but no decoder is bundled), HLS, and SMB/CIFS shares.

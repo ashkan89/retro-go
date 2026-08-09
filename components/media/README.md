@@ -169,6 +169,13 @@ off-site cannot walk the scanner around the server.
 more surface area than a listing needs. If your files are on a Windows share, the practical
 route is to expose the same folder over HTTP or WebDAV.
 
+Tags and cover art work on remote files too. Reading them costs an HTTP range request for
+the head of the file, so it is done by the artwork worker rather than at open time: the track
+starts playing immediately under a name taken from its URL, and the real title, artist, album
+and cover replace it a moment later. If the file has no embedded picture, `cover.jpg` beside
+it on the server is tried once. Live streams are skipped entirely -- they have no tags, and
+fetching their head would only compete with the audio for bandwidth.
+
 Remote folders are deliberately **not** added to `library.idx`: indexing them would mean an
 HTTP request per file for tags. They browse live instead, so what you see is always current.
 That also means albums/artists/genres cover the card only.
@@ -256,7 +263,38 @@ it — decoders, ring buffers, EQ, visualiser, queue, playlists — is unchanged
 
 ---
 
-## 5. Architecture
+## 5. Theming
+
+The Media tab is named `mediaplayer`, so a theme can supply:
+
+```
+/retro-go/themes/<name>/
+    logo_mediaplayer.png         46 x 50    magenta = transparent
+    banner_mediaplayer.png       272 x 24   magenta = transparent
+    background_mediaplayer.png   320 x 240
+```
+
+All three are also built in, so the tab looks right with no theme installed.
+
+The player's own chrome reads a `media` section from `theme.json`:
+
+| Key | Used for |
+| --- | --- |
+| `background` | Page background when no album-art background is shown |
+| `surface` | Cards, panels, header and footer bands |
+| `text` / `text_dim` | Primary and secondary text |
+| `divider` | Rules, empty progress track, scrollbar trough |
+| `accent` | Progress fill, selection, transport, spectrum bars |
+| `accent_dim` | Muted accent |
+| `highlight` | Peak markers, favourites, the bright end of the spectrum ramp |
+
+With **Dynamic theme** on (the default), `accent`, `accent_dim`, `highlight` and `surface`
+are replaced per track by colours extracted from the album art; everything else in the
+section still applies. Turn it off to keep a palette exactly as written.
+
+---
+
+## 6. Architecture
 
 ```
 SD card
@@ -317,7 +355,7 @@ of work and back off at level 2. Audio continuity always wins.
 
 ---
 
-## 6. Memory profiles
+## 7. Memory profiles
 
 Selected at runtime from the detected PSRAM size (`media_profile.c`).
 
@@ -346,7 +384,7 @@ keeps a library far larger than PSRAM usable on an N8R2.
 
 ---
 
-## 7. Settings
+## 8. Settings
 
 All under the `launcher` namespace with a `Media.` prefix, stored via
 `rg_settings_*` (NVS-backed). Nothing large is ever written to NVS.
@@ -361,7 +399,7 @@ immediately because they are an explicit user action.
 
 ---
 
-## 8. Audio focus and emulators
+## 9. Audio focus and emulators
 
 `media_audio_acquire()`/`release()` model ownership of the shared I2S device
 (`NONE`/`PLAYER`/`EMULATOR`/`SYSTEM`). Two subsystems can never drive I2S at once.
@@ -375,7 +413,7 @@ launcher, and is dropped the moment an emulator is launched.
 
 ---
 
-## 9. Build configuration
+## 10. Build configuration
 
 Feature flags live in `media_config.h` and can be overridden from the build system or a
 target `config.h`:
@@ -392,7 +430,7 @@ to carry the decoders, DSP and UI (see each target's `env.py`).
 
 ---
 
-## 10. Changes made to Retro-Go core
+## 11. Changes made to Retro-Go core
 
 Adding a long-running foreground app to the launcher exposed a few things in
 `components/retro-go` that only misbehave once several tasks are busy at the same time.
@@ -437,7 +475,7 @@ detection and dual-DAC routing that need hardware to validate.
 
 ---
 
-## 11. Known limitations
+## 12. Known limitations
 
 * **AAC/M4A, Ogg Vorbis and Opus have no decoder.** Their tags, duration and artwork parse
   correctly and the codec registry already knows about them, so adding a `codec_*.c` is the

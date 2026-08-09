@@ -150,7 +150,7 @@ void media_ui_nowplaying_draw(void)
     if (wide)
     {
         art_size = media_clampi(l->content_h - l->pad * 4, 48, l->height / 2 + l->height / 6);
-        media_ui_draw_art(l->pad * 2, l->content_top + l->pad * 2, art_size, media_player_path(),
+        media_ui_draw_art(l->pad * 2, l->content_top + l->pad * 2, art_size, media_ui_art_path(),
                           &palette, NULL);
         text_x = l->pad * 3 + art_size;
         text_w = l->width - text_x - l->pad * 2;
@@ -542,7 +542,7 @@ void media_ui_visualizer_draw(void)
         int size = base - (int)((1.0f - level) * base / 8);
         size = media_clampi(size, 16, base);
 
-        media_ui_draw_art(l->width / 2 - size / 2, y + (h - size) / 2, size, media_player_path(),
+        media_ui_draw_art(l->width / 2 - size / 2, y + (h - size) / 2, size, media_ui_art_path(),
                           &palette, NULL);
 
         if (cfg->visualizer == MEDIA_VIZ_VINYL)
@@ -575,7 +575,7 @@ void media_ui_visualizer_draw(void)
     case MEDIA_VIZ_MINIMAL:
     {
         int size = media_clampi(RG_MIN(w, h) - l->line_h * 2, 32, RG_MIN(w, h));
-        media_ui_draw_art(l->width / 2 - size / 2, y, size, media_player_path(), &palette, NULL);
+        media_ui_draw_art(l->width / 2 - size / 2, y, size, media_ui_art_path(), &palette, NULL);
         viz_bars(x, y + size + 2, w, RG_MAX(h - size - 4, 6), false);
         break;
     }

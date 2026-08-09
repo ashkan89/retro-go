@@ -31,6 +31,20 @@ void media_ui_set_pending_view(media_browse_mode_t mode)
 /* Theme and layout                                                                         */
 /* -------------------------------------------------------------------------------------- */
 
+void media_ui_load_theme(void)
+{
+    // Read once per session rather than per frame: it is a JSON lookup, and a theme cannot
+    // change while the player owns the screen.
+    mui.base.background = rg_gui_get_theme_color("media", "background", C_BLACK);
+    mui.base.surface = rg_gui_get_theme_color("media", "surface", C_RGB(22, 22, 26));
+    mui.base.text = rg_gui_get_theme_color("media", "text", C_RGB(240, 240, 244));
+    mui.base.text_dim = rg_gui_get_theme_color("media", "text_dim", C_RGB(140, 140, 150));
+    mui.base.divider = rg_gui_get_theme_color("media", "divider", C_RGB(48, 48, 54));
+    mui.base.accent = rg_gui_get_theme_color("media", "accent", C_RGB(90, 170, 255));
+    mui.base.accent_dim = rg_gui_get_theme_color("media", "accent_dim", C_RGB(50, 100, 160));
+    mui.base.highlight = rg_gui_get_theme_color("media", "highlight", C_RGB(160, 205, 255));
+}
+
 void media_ui_update_theme(void)
 {
     const media_settings_t *cfg = media_settings();
@@ -43,26 +57,17 @@ void media_ui_update_theme(void)
             palette = media_artwork_palette(path);
     }
 
-    // A dark base is the constant; only the accents follow the artwork. That keeps contrast
-    // predictable no matter what a cover happens to look like.
-    mui.theme.background = C_BLACK;
-    mui.theme.surface = C_RGB(22, 22, 26);
-    mui.theme.text = C_RGB(240, 240, 244);
-    mui.theme.text_dim = C_RGB(140, 140, 150);
-    mui.theme.divider = C_RGB(48, 48, 54);
+    // The theme sets the base; only the accents follow the artwork. That keeps contrast
+    // predictable no matter what a cover happens to look like, and leaves a theme author in
+    // control of the parts that are not derived from the album.
+    mui.theme = mui.base;
 
     if (palette.valid)
     {
         mui.theme.accent = palette.primary;
         mui.theme.accent_dim = media_color_scale(palette.primary, 110);
         mui.theme.highlight = palette.highlight;
-        mui.theme.surface = media_color_blend(mui.theme.surface, palette.background, 120);
-    }
-    else
-    {
-        mui.theme.accent = C_RGB(90, 170, 255);
-        mui.theme.accent_dim = C_RGB(50, 100, 160);
-        mui.theme.highlight = C_RGB(160, 205, 255);
+        mui.theme.surface = media_color_blend(mui.base.surface, palette.background, 120);
     }
 
     // Guarantee the accent is legible on the surface colour whatever the artwork did.
@@ -313,6 +318,11 @@ void media_ui_draw_message(const char *title, const char *body)
  * Album art with a graceful placeholder. The placeholder is derived from the track's own
  * hash, so a coverless album still gets a stable, distinctive colour instead of grey.
  */
+const char *media_ui_art_path(void)
+{
+    return mui.snapshot.live ? NULL : media_player_path();
+}
+
 void media_ui_draw_art(int x, int y, int size, const char *path, const media_palette_t *palette,
                        const char *fallback_text)
 {
@@ -372,7 +382,7 @@ void media_ui_draw_mini_player(void)
                         mui.theme.divider);
 
     media_palette_t palette = media_artwork_palette(media_player_path());
-    media_ui_draw_art(l->pad, y + l->pad, art, media_player_path(), &palette, NULL);
+    media_ui_draw_art(l->pad, y + l->pad, art, media_ui_art_path(), &palette, NULL);
 
     int text_x = l->pad * 2 + art;
     int text_w = l->width - text_x - l->pad * 8;
@@ -914,6 +924,8 @@ void media_ui_run(void)
         rg_gui_alert("Media Player", "Not enough memory to start.");
         return;
     }
+
+    media_ui_load_theme();
 
     mui.running = true;
     mui.needs_redraw = true;

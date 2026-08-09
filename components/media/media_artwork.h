@@ -17,6 +17,7 @@
 #include <rg_surface.h>
 
 #include "media_image.h"
+#include "media_metadata.h"
 #include "media_types.h"
 
 void media_artwork_init(void);
@@ -40,6 +41,21 @@ media_palette_t media_artwork_palette(const char *track_path);
  * Generated once per track and cached; returns NULL until it is ready.
  */
 const rg_image_t *media_artwork_background(const char *track_path, int width, int height);
+
+/**
+ * Queue an artwork load without needing the result now. Used by the playback controller for
+ * network tracks, whose tags are parsed by the worker rather than at open time.
+ */
+void media_artwork_request(const char *track_path, int max_dim);
+
+/**
+ * Collect the tags the worker parsed while loading artwork for `track_path`, if they have
+ * not been collected yet. Returns false when there is nothing new for that path.
+ *
+ * Reading tags off a remote file means an HTTP range request, so it happens on the worker
+ * and the result is picked up here rather than blocking playback or the UI.
+ */
+bool media_artwork_take_tags(const char *track_path, media_metadata_t *out);
 
 /** True when the worker still has queued work. */
 bool media_artwork_busy(void);

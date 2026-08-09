@@ -71,6 +71,24 @@ int media_net_fetch_playlist(const char *url, char (*out)[MEDIA_MAX_PATH + 1], i
 /** True when the URL's own extension says playlist (before any request is made). */
 bool media_net_url_is_playlist(const char *url);
 
+/**
+ * Read `length` bytes starting at `offset` into `buffer` using a Range request.
+ *
+ * This is what lets a remote file be tagged: the whole point of a byte range is that an ID3
+ * or FLAC header can be read without pulling down the entire track. `total_size_out`, when
+ * given, receives the resource's full length (0 when the server does not say).
+ *
+ * Returns bytes read, or -1 when the request failed or the server refused the range.
+ */
+int media_net_fetch_range(const char *url, uint64_t offset, size_t length, void *buffer,
+                          uint64_t *total_size_out);
+
+/**
+ * Download a whole small file (a cover image) into a PSRAM buffer the caller must free().
+ * Refuses anything larger than `max_bytes`. Returns NULL when absent or too large.
+ */
+uint8_t *media_net_fetch_file(const char *url, size_t max_bytes, size_t *len_out);
+
 /* ---- Bookmarks ---------------------------------------------------------------------- */
 
 /**
