@@ -81,10 +81,11 @@ media_decoder_t *media_decoder_open(const char *path, size_t buffer_bytes, media
         return NULL;
     }
 
-    // Trust the content over the extension: a mislabelled file is common and cheap to detect.
+    // Trust the content over the extension: a mislabelled file is common and cheap to detect,
+    // and a stream URL often has no extension at all. Peeked rather than read, because a live
+    // broadcast cannot be rewound afterwards.
     uint8_t header[16] = {0};
-    size_t header_len = media_source_read(dec->source, header, sizeof(header), 3000);
-    media_source_seek(dec->source, 0);
+    size_t header_len = media_source_peek(dec->source, header, sizeof(header), 5000);
 
     if (header_len >= 4)
     {
@@ -140,9 +141,18 @@ media_decoder_t *media_decoder_open(const char *path, size_t buffer_bytes, media
         return NULL;
     }
 
-    RG_LOGI("Decoding '%s' with %s: %u Hz, %u ch, %u bit, %u ms", rg_basename(path), ops->name,
+    // A codec may advertise seeking, but it can only actually seek if the source can. A live
+    // broadcast, or a server that refuses Range, is forward-only.
+    if (!media_source_seekable(dec->source))
+    {
+        dec->seekable = false;
+        dec->duration_ms = 0;
+        dec->total_frames = 0;
+    }
+
+    RG_LOGI("Decoding '%s' with %s: %u Hz, %u ch, %u bit, %u ms%s", rg_basename(path), ops->name,
             (unsigned)dec->sample_rate, dec->channels, dec->bits_per_sample,
-            (unsigned)dec->duration_ms);
+            (unsigned)dec->duration_ms, dec->seekable ? "" : ", forward-only");
 
     if (err)
         *err = MEDIA_OK;

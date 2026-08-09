@@ -50,12 +50,29 @@ typedef struct
 #define MEDIA_LIST_TEXT 96
 #define MEDIA_UI_MAX_PLAYLISTS 32
 
+/**
+ * What a browser row represents. `arg` means something different per kind: a library track
+ * id for ROW_TRACK, a group hash for ROW_GROUP, and an index into the cached remote listing
+ * for the ROW_NET_* kinds (a URL does not come close to fitting in a row).
+ */
+typedef enum
+{
+    ROW_ACTION = 0,     // Home category / navigation
+    ROW_FOLDER,         // Folder on the card
+    ROW_TRACK,          // Track in the library
+    ROW_GROUP,          // Album / artist / genre
+    ROW_PLAYLIST,
+    ROW_NET_ADD,        // "Add a network location..."
+    ROW_NET_FOLDER,     // Remote folder
+    ROW_NET_TRACK,      // Remote file or radio stream
+} media_row_kind_t;
+
 typedef struct
 {
     char text[MEDIA_LIST_TEXT];
     char subtext[MEDIA_LIST_TEXT / 2];
-    uint32_t arg;       // Track id, group hash or list index depending on the mode
-    uint8_t kind;       // 0 = action, 1 = folder, 2 = track, 3 = group, 4 = playlist
+    uint32_t arg;
+    uint8_t kind;       // media_row_kind_t
     uint8_t flags;
 } media_list_item_t;
 
@@ -167,3 +184,9 @@ void media_ui_visualizer_menu(void);
 void media_ui_player_menu(void);
 void media_ui_settings_menu(void);
 void media_ui_context_menu(const media_list_item_t *item, const char *path, uint32_t track_id);
+
+/** Prompt for a URL and either browse it, save it as a station, or play it right away. */
+void media_ui_network_add(void);
+
+/** Release the cached remote listing (on leaving the player). */
+void media_ui_library_release(void);

@@ -17,6 +17,7 @@
 #include "media_library.h"
 #include "media_lyrics.h"
 #include "media_metadata.h"
+#include "media_net.h"
 #include "media_player.h"
 #include "media_queue.h"
 #include "media_settings.h"
@@ -164,6 +165,23 @@ static void load_track_metadata(const char *path, uint32_t track_id)
 {
     memset(&player.track, 0, sizeof(player.track));
     player.track_valid = false;
+
+    if (media_net_is_url(path))
+    {
+        // Nothing to parse yet: the tag readers work on files, and a stream has no tags at
+        // all. The URL gives a usable name straight away and Icecast titles replace it once
+        // the connection is up (see media_player_tick).
+        media_utf8_copy(player.track.path, sizeof(player.track.path), path);
+        player.track.path_hash = rg_hash(path, strlen(path));
+        media_net_display_name(player.track.title, sizeof(player.track.title), path);
+        media_utf8_copy(player.track.album, sizeof(player.track.album), "Network stream");
+        player.track.codec = (uint8_t)media_codec_from_path(path);
+        player.track_valid = true;
+        player.track.id = 0;
+        player.track.favorite = false;
+        emit(MEDIA_EVENT_METADATA_READY, 0);
+        return;
+    }
 
     if (track_id && media_library_get_track(track_id, &player.track))
     {
@@ -846,6 +864,8 @@ media_snapshot_t media_player_snapshot(void)
     snapshot.shuffle = media_queue_get_shuffle();
     snapshot.repeat = media_queue_get_repeat();
     snapshot.favorite = player.track.favorite;
+    snapshot.live = player.decoder && media_source_is_live(player.decoder->source);
+    snapshot.network = media_net_is_url(player.path);
     snapshot.pcm_fill_pct = (uint8_t)media_clampi(media_audio_fill_percent(), 0, 100);
     snapshot.src_fill_pct = (uint8_t)media_clampi(
         player.decoder ? media_source_fill_percent(player.decoder->source) : 0, 0, 100);
@@ -975,6 +995,36 @@ void media_player_tick(void)
     }
 
     media_library_commit();
+
+    /* Live stream titles. Polled rather than pushed so nothing from the IO task reaches
+     * player state directly. */
+    if (player.decoder && player.decoder->source)
+    {
+        char title[160];
+        if (media_source_take_stream_title(player.decoder->source, title, sizeof(title)))
+        {
+            // Stations almost always send "Artist - Title"; split it so the Now Playing
+            // screen lays out the same as it does for a file.
+            char *separator = strstr(title, " - ");
+            if (separator)
+            {
+                *separator = 0;
+                media_utf8_copy(player.track.artist, sizeof(player.track.artist), title);
+                media_utf8_copy(player.track.title, sizeof(player.track.title), separator + 3);
+            }
+            else
+            {
+                media_utf8_copy(player.track.title, sizeof(player.track.title), title);
+                player.track.artist[0] = 0;
+            }
+
+            const char *station = media_source_station_name(player.decoder->source);
+            if (station)
+                media_utf8_copy(player.track.album, sizeof(player.track.album), station);
+
+            emit(MEDIA_EVENT_METADATA_READY, 0);
+        }
+    }
 
     /* Sleep timer */
     if (player.sleep_deadline_us && rg_system_timer() >= player.sleep_deadline_us)

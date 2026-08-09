@@ -1059,6 +1059,7 @@ void media_ui_run(void)
         media_settings()->default_page = mui.page;
 
     media_player_set_event_callback(NULL, NULL);
+    media_ui_library_release();
     media_list_free(&mui.list);
     rg_surface_free(mui.surface);
     mui.surface = NULL;

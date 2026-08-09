@@ -31,6 +31,8 @@ typedef enum
     MEDIA_BROWSE_FAVORITES,
     MEDIA_BROWSE_RECENT,
     MEDIA_BROWSE_ALL_TRACKS,
+    MEDIA_BROWSE_NETWORK,           // Saved servers and radio stations
+    MEDIA_BROWSE_NETWORK_FOLDER,    // A remote folder listing
     MEDIA_BROWSE_COUNT,
 } media_browse_mode_t;
 

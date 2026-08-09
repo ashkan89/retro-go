@@ -384,6 +384,12 @@ playlists, favourites, a 7-band equaliser and several audio visualisers.
     Playlists/Favorites.m3u8
 ```
 
+It also plays from the network: point it at an internet radio stream, or browse a shared
+folder served over HTTP or WebDAV (nginx/Apache autoindex, `python3 -m http.server`,
+Nextcloud, a NAS) and play from it just like the card. Saved locations live in a plain text
+file at `/media/.retrogo-media/network.txt` so they can be edited on a PC instead of typed in
+on an on-screen keyboard.
+
 The library is indexed in the background on first use; its cache lives in
 `/media/.retrogo-media/` and never touches your media files. Music keeps playing while you
 browse the launcher (configurable), and always stops before an emulator starts so the

@@ -93,6 +93,9 @@ MENU/OPTION for its own menus. The player only rebinds them while it owns the sc
 
 ## 3. Supported formats
 
+Sources are interchangeable: a queue entry, a playlist line or a "play this" action can be
+a path on the card or an `http(s)://` URL, and every decoder below works over either.
+
 | Format | Decoder | Seek | Gapless | Notes |
 | --- | --- | --- | --- | --- |
 | MP3 | minimp3 (CC0) | yes | no | CBR, VBR (Xing/Info, VBRI) and free-format. Encoder delay is not compensated. |
@@ -132,7 +135,67 @@ search, not a scan.
 
 ---
 
-## 4. Architecture
+## 4. Network media
+
+### Playing a URL
+
+**Network → Add a network location...** takes an `http(s)://` address and offers to browse it
+as a folder, save it as a radio station, or play it immediately. Saved entries live in a
+plain tab-separated file at `/media/.retrogo-media/network.txt`:
+
+```
+# type<TAB>name<TAB>url   (type: dir, radio or url)
+dir	NAS Music	http://192.168.1.10/music/
+radio	BBC Radio 1	http://stream.example/radio1
+```
+
+Editing that file on a PC is far less painful than typing URLs on an on-screen keyboard, and
+`.m3u`/`.m3u8` playlists dropped into `/media` may contain URLs too — they are queued exactly
+like local tracks.
+
+### Browsing a shared folder
+
+`Network → <a saved folder>` lists a remote directory and lets you walk into it, queue it and
+play from it just like `/media`. Two listing dialects are understood:
+
+* **WebDAV** — Nextcloud, Synology/QNAP, `rclone serve webdav`, Windows "Web Sharing".
+* **HTML directory index** — nginx `autoindex`, Apache `Options +Indexes`,
+  `python3 -m http.server`.
+
+Only links that stay under the folder being listed are followed, so an index page that links
+off-site cannot walk the scanner around the server.
+
+**There is no SMB/CIFS client.** ESP-IDF does not ship one, and vendoring an SMB stack is far
+more surface area than a listing needs. If your files are on a Windows share, the practical
+route is to expose the same folder over HTTP or WebDAV.
+
+Remote folders are deliberately **not** added to `library.idx`: indexing them would mean an
+HTTP request per file for tags. They browse live instead, so what you see is always current.
+That also means albums/artists/genres cover the card only.
+
+### Live streams
+
+A response with no `Content-Length` is treated as a broadcast: duration and seeking are
+disabled, and Now Playing shows `LIVE` with a flat bar rather than a fake playhead.
+
+`Icy-MetaData: 1` is always requested, so Icecast/Shoutcast stations that send inline
+`StreamTitle` updates drive the Now Playing text. `Artist - Title` is split so the layout
+matches a local file, and `icy-name` becomes the album line. The metadata blocks are stripped
+inside the source layer, which is why the decoders need no knowledge of any of this.
+
+A dropped connection is retried up to four times with a widening delay. For a seekable HTTP
+*file* the retry resumes mid-file with a `Range` header; a broadcast simply reconnects.
+
+### What this reuses
+
+Network support added no new HTTP stack: `rg_network_http_*` gained request headers and a
+response-header callback, and `media_source` gained a second backend behind the same
+`read`/`seek`/`tell`/`eof` interface the file backend already implemented. Everything above
+it — decoders, ring buffers, EQ, visualiser, queue, playlists — is unchanged.
+
+---
+
+## 5. Architecture
 
 ```
 SD card
@@ -193,7 +256,7 @@ of work and back off at level 2. Audio continuity always wins.
 
 ---
 
-## 5. Memory profiles
+## 6. Memory profiles
 
 Selected at runtime from the detected PSRAM size (`media_profile.c`).
 
@@ -221,7 +284,7 @@ keeps a library far larger than PSRAM usable on an N8R2.
 
 ---
 
-## 6. Settings
+## 7. Settings
 
 All under the `launcher` namespace with a `Media.` prefix, stored via
 `rg_settings_*` (NVS-backed). Nothing large is ever written to NVS.
@@ -236,7 +299,7 @@ immediately because they are an explicit user action.
 
 ---
 
-## 7. Audio focus and emulators
+## 8. Audio focus and emulators
 
 `media_audio_acquire()`/`release()` model ownership of the shared I2S device
 (`NONE`/`PLAYER`/`EMULATOR`/`SYSTEM`). Two subsystems can never drive I2S at once.
@@ -250,7 +313,7 @@ launcher, and is dropped the moment an emulator is launched.
 
 ---
 
-## 8. Build configuration
+## 9. Build configuration
 
 Feature flags live in `media_config.h` and can be overridden from the build system or a
 target `config.h`:
@@ -267,7 +330,7 @@ to carry the decoders, DSP and UI (see each target's `env.py`).
 
 ---
 
-## 9. Changes made to Retro-Go core
+## 10. Changes made to Retro-Go core
 
 Adding a long-running foreground app to the launcher exposed a few things in
 `components/retro-go` that only misbehave once several tasks are busy at the same time.
@@ -301,7 +364,7 @@ detection and dual-DAC routing that need hardware to validate.
 
 ---
 
-## 10. Known limitations
+## 11. Known limitations
 
 * **AAC/M4A, Ogg Vorbis and Opus have no decoder.** Their tags, duration and artwork parse
   correctly and the codec registry already knows about them, so adding a `codec_*.c` is the
@@ -313,6 +376,9 @@ detection and dual-DAC routing that need hardware to validate.
   "off" at playback time.
 * **Waveform overview** (`waveform_overview` in the profile) is reserved but not generated;
   the seek bar is linear.
+* **Remote listings block the UI while they load.** A "Connecting..." message is shown, but a
+  slow or unreachable server stalls the browser for up to the 8 second timeout.
+* **No SMB/CIFS, FTP or UPnP/DLNA.** HTTP and WebDAV only.
 * **Search** is not implemented — the input hardware has no usable text entry, so the browser
   offers category, folder, album, artist and genre navigation instead.
 * **Bookmarks** for long recordings are not implemented; the resume-position mechanism

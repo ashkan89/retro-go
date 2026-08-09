@@ -8,6 +8,7 @@
 #include "media_audio.h"
 #include "media_fft.h"
 #include "media_metadata.h"
+#include "media_net.h"
 #include "media_playlist.h"
 #include "media_ui_internal.h"
 
@@ -492,6 +493,80 @@ void media_ui_settings_menu(void)
 }
 
 /* -------------------------------------------------------------------------------------- */
+/* Network                                                                                  */
+/* -------------------------------------------------------------------------------------- */
+
+/** Ask for a display name, defaulting to whatever the URL suggests. */
+static void ask_bookmark_name(const char *url, bool is_dir, bool is_stream)
+{
+    char suggestion[MEDIA_NET_NAME_LEN];
+    media_net_display_name(suggestion, sizeof(suggestion), url);
+
+    char *name = rg_gui_input_str("Name", "Shown in the list", suggestion);
+    bool ok = media_net_bookmark_add(name && name[0] ? name : suggestion, url, is_dir, is_stream);
+    free(name);
+
+    if (!ok)
+        rg_gui_alert("Network", "Could not save the bookmark.\nIs the SD card present?");
+}
+
+void media_ui_network_add(void)
+{
+    const char *unavailable = media_net_status();
+    if (unavailable)
+    {
+        rg_gui_alert("Network", unavailable);
+        return;
+    }
+
+    char *url = rg_gui_input_str("Network location", "Stream URL or folder URL", "http://");
+    if (!url)
+        return;
+
+    media_str_trim(url);
+
+    if (!media_net_is_url(url) || strlen(url) > MEDIA_MAX_PATH)
+    {
+        rg_gui_alert("Network", "That is not an http:// or https:// address.");
+        free(url);
+        return;
+    }
+
+    rg_gui_option_t options[] = {
+        {0, "Browse as folder",      NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        {1, "Save as radio station", NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        {2, "Play now",              NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        RG_DIALOG_END,
+    };
+
+    // A trailing slash almost always means a directory listing, so start there.
+    size_t len = strlen(url);
+    int preselect = (len && url[len - 1] == '/') ? 0 : 1;
+
+    switch (rg_gui_dialog("Add Location", options, preselect))
+    {
+    case 0:
+        ask_bookmark_name(url, true, false);
+        break;
+
+    case 1:
+        ask_bookmark_name(url, false, true);
+        break;
+
+    case 2:
+        media_player_play_path(url, 0);
+        mui.page = MEDIA_PAGE_NOW_PLAYING;
+        mui.in_library = false;
+        break;
+
+    default:
+        break;
+    }
+
+    free(url);
+}
+
+/* -------------------------------------------------------------------------------------- */
 /* Context menu                                                                             */
 /* -------------------------------------------------------------------------------------- */
 
@@ -565,11 +640,59 @@ static int folder_queue_cb(const rg_scandir_t *file, void *arg)
 
 void media_ui_context_menu(const media_list_item_t *item, const char *path, uint32_t track_id)
 {
-    if (!item)
+    if (!item || !path)
         return;
 
-    bool is_track = item->kind == 2 && path;
-    bool is_folder = item->kind == 1 && path;
+    // Network rows get their own menu: favourites and track info need a library record, and
+    // a remote folder cannot be walked with rg_storage_scandir.
+    if (media_net_is_url(path))
+    {
+        bool bookmarked = mui.browse == MEDIA_BROWSE_NETWORK;
+
+        rg_gui_option_t net_options[] = {
+            {0, "Play",                NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+            {1, "Play next",           NULL, item->kind == ROW_NET_FOLDER
+                                                 ? RG_DIALOG_FLAG_DISABLED : RG_DIALOG_FLAG_NORMAL,
+             NULL},
+            {2, "Add to queue",        NULL, item->kind == ROW_NET_FOLDER
+                                                 ? RG_DIALOG_FLAG_DISABLED : RG_DIALOG_FLAG_NORMAL,
+             NULL},
+            {3, "Save to this list",   NULL, bookmarked ? RG_DIALOG_FLAG_DISABLED
+                                                        : RG_DIALOG_FLAG_NORMAL, NULL},
+            {4, "Remove from list",    NULL, bookmarked ? RG_DIALOG_FLAG_NORMAL
+                                                        : RG_DIALOG_FLAG_DISABLED, NULL},
+            RG_DIALOG_END,
+        };
+
+        switch (rg_gui_dialog(item->text, net_options, 0))
+        {
+        case 0:
+            media_player_play_path(path, 0);
+            mui.page = MEDIA_PAGE_NOW_PLAYING;
+            mui.in_library = false;
+            break;
+        case 1:
+            media_queue_add_next(path, 0);
+            break;
+        case 2:
+            media_queue_add(path, 0);
+            break;
+        case 3:
+            media_net_bookmark_add(item->text, path, item->kind == ROW_NET_FOLDER,
+                                   item->kind != ROW_NET_FOLDER);
+            break;
+        case 4:
+            media_net_bookmark_remove(path);
+            media_ui_library_refresh();
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+
+    bool is_track = item->kind == ROW_TRACK;
+    bool is_folder = item->kind == ROW_FOLDER;
 
     if (!is_track && !is_folder)
         return;

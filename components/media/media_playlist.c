@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "media_net.h"
 #include "media_playlist.h"
 #include "media_util.h"
 
@@ -96,7 +97,16 @@ media_playlist_t *media_playlist_load(const char *path, const char *root)
         if ((uint8_t)entry[0] == 0xEF && (uint8_t)entry[1] == 0xBB && (uint8_t)entry[2] == 0xBF)
             entry += 3;
 
-        // Remote URLs are meaningless here
+        // A URL is taken verbatim: it is not part of the card's tree, so the root check
+        // that protects local entries does not apply and would only reject it.
+        if (media_net_is_url(entry))
+        {
+            if (!playlist_add(pl, entry))
+                break;
+            continue;
+        }
+
+        // Anything else with a scheme is a protocol we cannot play
         if (strstr(entry, "://"))
             continue;
 

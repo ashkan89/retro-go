@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "media_net.h"
 #include "media_playlist.h"
 #include "media_ui_internal.h"
 
@@ -39,7 +40,43 @@ static const struct
     {"Favorites",       MEDIA_BROWSE_FAVORITES},
     {"Recently Played", MEDIA_BROWSE_RECENT},
     {"All Tracks",      MEDIA_BROWSE_ALL_TRACKS},
+    {"Network",         MEDIA_BROWSE_NETWORK},
 };
+
+/* Listing for the network view being shown. Owned here, replaced on every refresh. */
+static media_net_entry_t *net_entries;
+static int net_count;
+
+static void net_entries_free(void)
+{
+    free(net_entries);
+    net_entries = NULL;
+    net_count = 0;
+}
+
+static const media_net_entry_t *net_entry(uint32_t index)
+{
+    return (net_entries && (int)index < net_count) ? &net_entries[index] : NULL;
+}
+
+/** Fill `net_entries` from the bookmark file or from a remote listing. */
+static int net_entries_load(bool bookmarks, const char *url)
+{
+    net_entries_free();
+
+    net_entries = rg_alloc(MEDIA_NET_MAX_ENTRIES * sizeof(media_net_entry_t),
+                           MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    if (!net_entries)
+        return 0;
+
+    memset(net_entries, 0, MEDIA_NET_MAX_ENTRIES * sizeof(media_net_entry_t));
+
+    int count = bookmarks ? media_net_bookmarks_load(net_entries, MEDIA_NET_MAX_ENTRIES)
+                          : media_net_list(url, net_entries, MEDIA_NET_MAX_ENTRIES);
+
+    net_count = count > 0 ? count : 0;
+    return count;
+}
 
 /* -------------------------------------------------------------------------------------- */
 /* Folder listing                                                                           */
@@ -71,13 +108,13 @@ static int folder_scan_cb(const rg_scandir_t *file, void *arg)
     if (file->is_dir)
     {
         snprintf(item->text, sizeof(item->text), "%s", file->basename);
-        item->kind = 1;
+        item->kind = ROW_FOLDER;
         state->folders++;
     }
     else
     {
         media_path_stem(item->text, sizeof(item->text), file->basename);
-        item->kind = playlist ? 4 : 2;
+        item->kind = playlist ? ROW_PLAYLIST : ROW_TRACK;
     }
 
     // The full path is needed for playback, so keep it in the subtext slot.
@@ -92,7 +129,7 @@ static int compare_items(const void *a, const void *b)
     const media_list_item_t *ia = a, *ib = b;
     // Folders first, then natural order so "2 - Song" precedes "10 - Song".
     if (ia->kind != ib->kind)
-        return (ia->kind == 1) ? -1 : ((ib->kind == 1) ? 1 : 0);
+        return (ia->kind == ROW_FOLDER) ? -1 : ((ib->kind == ROW_FOLDER) ? 1 : 0);
     return media_strnatcasecmp(ia->text, ib->text);
 }
 
@@ -132,7 +169,7 @@ static void add_track_rows(const uint32_t *indices, uint32_t count, bool show_nu
         if (!show_number && artist[0])
             snprintf(item->subtext, sizeof(item->subtext), "%.20s  %s", artist, duration);
 
-        item->kind = 2;
+        item->kind = ROW_TRACK;
         item->arg = entry->id;
         item->flags = entry->flags;
     }
@@ -168,9 +205,14 @@ static void add_group_rows(media_view_t view)
             snprintf(item->subtext, sizeof(item->subtext), "%u tracks", group->track_count);
         }
 
-        item->kind = 3;
+        item->kind = ROW_GROUP;
         item->arg = group->hash;
     }
+}
+
+void media_ui_library_release(void)
+{
+    net_entries_free();
 }
 
 void media_ui_library_refresh(void)
@@ -186,7 +228,7 @@ void media_ui_library_refresh(void)
             if (!item)
                 break;
             media_utf8_copy(item->text, sizeof(item->text), home_entries[i].label);
-            item->kind = 0;
+            item->kind = ROW_ACTION;
             item->arg = (uint32_t)home_entries[i].mode;
 
             switch (home_entries[i].mode)
@@ -278,10 +320,71 @@ void media_ui_library_refresh(void)
                     break;
                 media_utf8_copy(item->text, sizeof(item->text), found[i].name);
                 media_utf8_copy(item->subtext, sizeof(item->subtext), "playlist");
-                item->kind = 4;
+                item->kind = ROW_PLAYLIST;
                 item->arg = (uint32_t)i;
             }
             free(found);
+        }
+        break;
+    }
+
+    case MEDIA_BROWSE_NETWORK:
+    {
+        media_list_item_t *add = media_list_add(&mui.list);
+        if (add)
+        {
+            media_utf8_copy(add->text, sizeof(add->text), "Add a network location...");
+            media_utf8_copy(add->subtext, sizeof(add->subtext), "URL");
+            add->kind = ROW_NET_ADD;
+        }
+
+        net_entries_load(true, NULL);
+
+        for (int i = 0; i < net_count; ++i)
+        {
+            media_list_item_t *item = media_list_add(&mui.list);
+            if (!item)
+                break;
+            media_utf8_copy(item->text, sizeof(item->text), net_entries[i].name);
+            media_utf8_copy(item->subtext, sizeof(item->subtext),
+                            net_entries[i].is_dir ? "folder" : (net_entries[i].is_stream ? "radio"
+                                                                                        : "url"));
+            item->kind = net_entries[i].is_dir ? ROW_NET_FOLDER : ROW_NET_TRACK;
+            item->arg = (uint32_t)i;
+        }
+        break;
+    }
+
+    case MEDIA_BROWSE_NETWORK_FOLDER:
+    {
+        // Relative hrefs in an HTML index resolve against the directory, so a folder URL has
+        // to end in a slash or every link would come out one level too high.
+        size_t len = strlen(mui.folder);
+        if (len && mui.folder[len - 1] != '/' && len + 1 < sizeof(mui.folder))
+        {
+            mui.folder[len] = '/';
+            mui.folder[len + 1] = 0;
+        }
+
+        // Fetching a listing blocks for as long as the server takes. Say so rather than
+        // leaving a frozen screen behind.
+        rg_gui_draw_message("Connecting...");
+
+        int listed = net_entries_load(false, mui.folder);
+
+        // -1 means the server could not be reached at all, which is worth saying out loud
+        // rather than showing an empty folder.
+        if (listed < 0)
+            break;
+
+        for (int i = 0; i < net_count; ++i)
+        {
+            media_list_item_t *item = media_list_add(&mui.list);
+            if (!item)
+                break;
+            media_utf8_copy(item->text, sizeof(item->text), net_entries[i].name);
+            item->kind = net_entries[i].is_dir ? ROW_NET_FOLDER : ROW_NET_TRACK;
+            item->arg = (uint32_t)i;
         }
         break;
     }
@@ -299,7 +402,7 @@ void media_ui_library_refresh(void)
                     break;
                 media_path_stem(item->text, sizeof(item->text), path);
                 media_utf8_copy(item->subtext, sizeof(item->subtext), rg_basename(rg_dirname(path)));
-                item->kind = 2;
+                item->kind = ROW_TRACK;
                 item->arg = media_library_find_by_path(path);
             }
             media_playlist_free(pl);
@@ -351,6 +454,29 @@ void media_ui_library_enter(media_browse_mode_t mode, uint32_t filter_hash, cons
 /** Returns false when we are already at the top and the player should exit. */
 bool media_ui_library_back(void)
 {
+    // A remote folder's parent is one path segment up; only once we are at the server root
+    // does back fall through to the navigation stack.
+    if (mui.browse == MEDIA_BROWSE_NETWORK_FOLDER)
+    {
+        char parent[MEDIA_MAX_PATH + 1];
+        media_utf8_copy(parent, sizeof(parent), mui.folder);
+
+        size_t len = strlen(parent);
+        while (len > 0 && parent[len - 1] == '/')
+            parent[--len] = 0;
+
+        char *slash = strrchr(parent, '/');
+        // Stop at the "http://host" boundary: the two slashes of the scheme are not levels.
+        if (slash && slash > parent + 8)
+        {
+            slash[1] = 0;
+            media_utf8_copy(mui.folder, sizeof(mui.folder), parent);
+            mui.list.cursor = 0;
+            media_ui_library_refresh();
+            return true;
+        }
+    }
+
     // Inside the folder view, back walks up the tree before it pops the navigation stack.
     if (mui.browse == MEDIA_BROWSE_FOLDERS)
     {
@@ -414,13 +540,22 @@ static void play_list_from(int start)
     for (int i = 0; i < mui.list.count; ++i)
     {
         const media_list_item_t *item = &mui.list.items[i];
-        if (item->kind != 2)
+        if (item->kind != ROW_TRACK && item->kind != ROW_NET_TRACK)
             continue;
 
         char path[MEDIA_MAX_PATH + 1];
         const char *source = NULL;
 
-        if (mui.browse == MEDIA_BROWSE_FOLDERS)
+        if (item->kind == ROW_NET_TRACK)
+        {
+            const media_net_entry_t *entry = net_entry(item->arg);
+            if (entry)
+            {
+                media_utf8_copy(path, sizeof(path), entry->url);
+                source = path;
+            }
+        }
+        else if (mui.browse == MEDIA_BROWSE_FOLDERS)
         {
             if (folder_item_path(item, path, sizeof(path)))
                 source = path;
@@ -504,25 +639,57 @@ bool media_ui_library_input(uint32_t key, bool repeat)
         {
             // Holding A opens the context menu, matching the launcher's own long-press idiom.
             char path[MEDIA_MAX_PATH + 1] = {0};
-            if (mui.browse == MEDIA_BROWSE_FOLDERS)
+            if (item->kind == ROW_NET_TRACK || item->kind == ROW_NET_FOLDER)
+            {
+                const media_net_entry_t *entry = net_entry(item->arg);
+                if (entry)
+                    media_utf8_copy(path, sizeof(path), entry->url);
+            }
+            else if (mui.browse == MEDIA_BROWSE_FOLDERS)
                 folder_item_path(item, path, sizeof(path));
-            else if (item->arg && item->kind == 2)
+            else if (item->arg && item->kind == ROW_TRACK)
             {
                 media_track_t track;
                 if (media_library_get_track(item->arg, &track))
                     media_utf8_copy(path, sizeof(path), track.path);
             }
-            media_ui_context_menu(item, path[0] ? path : NULL, item->kind == 2 ? item->arg : 0);
+            media_ui_context_menu(item, path[0] ? path : NULL,
+                                  item->kind == ROW_TRACK ? item->arg : 0);
             return true;
         }
 
         switch (item->kind)
         {
-        case 0: // Home category
+        case ROW_ACTION: // Home category
             media_ui_library_enter((media_browse_mode_t)item->arg, 0, item->text);
             break;
 
-        case 1: // Folder
+        case ROW_NET_ADD:
+            media_ui_network_add();
+            media_ui_library_refresh();
+            break;
+
+        case ROW_NET_FOLDER:
+        {
+            const media_net_entry_t *entry = net_entry(item->arg);
+            if (entry)
+            {
+                // Copied before entering: the refresh that follows frees the listing.
+                char url[MEDIA_MAX_PATH + 1];
+                char name[MEDIA_TAG_ALBUM_LEN];
+                media_utf8_copy(url, sizeof(url), entry->url);
+                media_utf8_copy(name, sizeof(name), entry->name);
+                media_utf8_copy(mui.folder, sizeof(mui.folder), url);
+                media_ui_library_enter(MEDIA_BROWSE_NETWORK_FOLDER, 0, name);
+            }
+            break;
+        }
+
+        case ROW_NET_TRACK:
+            play_list_from(mui.list.cursor);
+            break;
+
+        case ROW_FOLDER: // Folder
         {
             char path[MEDIA_MAX_PATH + 1];
             if (folder_item_path(item, path, sizeof(path)))
@@ -534,11 +701,11 @@ bool media_ui_library_input(uint32_t key, bool repeat)
             break;
         }
 
-        case 2: // Track
+        case ROW_TRACK:
             play_list_from(mui.list.cursor);
             break;
 
-        case 3: // Album / artist / genre group
+        case ROW_GROUP: // Album / artist / genre group
         {
             media_browse_mode_t mode = mui.browse == MEDIA_BROWSE_ALBUMS  ? MEDIA_BROWSE_ALBUM_TRACKS
                                        : mui.browse == MEDIA_BROWSE_ARTISTS ? MEDIA_BROWSE_ARTIST_TRACKS
@@ -547,7 +714,7 @@ bool media_ui_library_input(uint32_t key, bool repeat)
             break;
         }
 
-        case 4: // Playlist
+        case ROW_PLAYLIST:
             if (mui.browse == MEDIA_BROWSE_FOLDERS)
             {
                 char path[MEDIA_MAX_PATH + 1];
@@ -606,6 +773,8 @@ static const char *browse_title(void)
     case MEDIA_BROWSE_FAVORITES:       return "Favorites";
     case MEDIA_BROWSE_RECENT:          return "Recently Played";
     case MEDIA_BROWSE_ALL_TRACKS:      return "All Tracks";
+    case MEDIA_BROWSE_NETWORK:         return "Network";
+    case MEDIA_BROWSE_NETWORK_FOLDER:  return mui.filter_name[0] ? mui.filter_name : "Network";
     case MEDIA_BROWSE_PLAYLIST_TRACKS: return mui.filter_name;
     default:                           return mui.filter_name[0] ? mui.filter_name : "Library";
     }
@@ -689,6 +858,20 @@ void media_ui_library_draw(void)
         {
             snprintf(body, sizeof(body), "Copy music into:\n%s", media_library_root());
         }
+        else if (mui.browse == MEDIA_BROWSE_NETWORK_FOLDER)
+        {
+            const char *reason = media_net_status();
+            snprintf(body, sizeof(body), "%s", reason ? reason
+                                                      : "The server returned nothing playable.\n"
+                                                        "It needs a WebDAV or HTML file listing.");
+            title = reason ? "No network" : "Nothing here";
+        }
+        else if (mui.browse == MEDIA_BROWSE_NETWORK)
+        {
+            const char *reason = media_net_status();
+            snprintf(body, sizeof(body), "%s", reason ?: "Add a URL to get started.");
+            title = reason ? "No network" : "No saved locations";
+        }
         else if (mui.browse == MEDIA_BROWSE_FAVORITES)
         {
             snprintf(body, sizeof(body), "Hold %s on a track to add it here.",
@@ -727,15 +910,23 @@ void media_ui_library_draw(void)
         int text_x = l->pad * 2;
         int text_w = list_w - l->pad * 2;
 
-        // Currently playing indicator
-        bool playing = item->kind == 2 && item->arg && item->arg == mui.snapshot.track_id;
+        // Currently playing indicator. Network rows carry no library id, so they are matched
+        // on the URL instead.
+        bool playing = item->kind == ROW_TRACK && item->arg && item->arg == mui.snapshot.track_id;
+        if (!playing && item->kind == ROW_NET_TRACK)
+        {
+            const media_net_entry_t *entry = net_entry(item->arg);
+            const char *current = media_player_path();
+            playing = entry && current && strcmp(entry->url, current) == 0;
+        }
+
         if (playing)
         {
             draw_playing_marker(text_x, y + 2, l->line_h - 3);
             text_x += l->line_h;
             text_w -= l->line_h;
         }
-        else if (item->kind == 1)
+        else if (item->kind == ROW_FOLDER || item->kind == ROW_NET_FOLDER)
         {
             // Folder glyph
             rg_gui_draw_rect(text_x, y + l->line_h / 3, l->line_h / 2, l->line_h / 2 - 1, 0, 0,

@@ -44,11 +44,24 @@ bool rg_network_wifi_delete_config(int slot);
 
 typedef struct
 {
+    const char *name;
+    const char *value;
+} rg_http_header_t;
+
+typedef struct
+{
     int max_redirections;
     int timeout_ms;
     // Perform POST request
     const void *post_data;
     int post_len;
+    // Extra request headers, terminated by an entry with a NULL name. Needed for things like
+    // Range (partial reads) and Icy-MetaData (shoutcast/icecast titles).
+    const rg_http_header_t *headers;
+    // Called once per response header. esp_http_client does not retain them, so a caller
+    // that needs Content-Type, Accept-Ranges or icy-* has to capture them as they arrive.
+    void (*on_header)(const char *name, const char *value, void *arg);
+    void *on_header_arg;
 } rg_http_cfg_t;
 
 #define RG_HTTP_DEFAULT_CONFIG() \
@@ -57,6 +70,9 @@ typedef struct
         .timeout_ms = 30000,     \
         .post_data = NULL,       \
         .post_len = 0,           \
+        .headers = NULL,         \
+        .on_header = NULL,       \
+        .on_header_arg = NULL,   \
     }
 
 typedef struct

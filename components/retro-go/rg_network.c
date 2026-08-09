@@ -335,6 +335,20 @@ fail:
     return false;
 }
 
+#ifdef RG_ENABLE_NETWORKING
+static esp_err_t http_event_handler(esp_http_client_event_t *event)
+{
+    if (event->event_id != HTTP_EVENT_ON_HEADER)
+        return ESP_OK;
+
+    rg_http_req_t *req = event->user_data;
+    if (req && req->config.on_header && event->header_key)
+        req->config.on_header(event->header_key, event->header_value ?: "",
+                              req->config.on_header_arg);
+    return ESP_OK;
+}
+#endif
+
 rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
 {
     RG_ASSERT_ARG(url != NULL);
@@ -353,6 +367,8 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
         .buffer_size_tx = 1024,
         .method = req->config.post_data ? HTTP_METHOD_POST : HTTP_METHOD_GET,
         .timeout_ms = req->config.timeout_ms,
+        .event_handler = req->config.on_header ? http_event_handler : NULL,
+        .user_data = req,
     });
 
     if (!req->client)
@@ -360,6 +376,9 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
         RG_LOGE("Error creating client");
         goto fail;
     }
+
+    for (const rg_http_header_t *header = req->config.headers; header && header->name; ++header)
+        esp_http_client_set_header(req->client, header->name, header->value ?: "");
 
 try_again:
     if (esp_http_client_open(req->client, req->config.post_len) != ESP_OK)

@@ -126,7 +126,10 @@ void media_ui_nowplaying_draw(void)
 
     char elapsed[16], total[16];
     media_format_time(elapsed, sizeof(elapsed), mui.snapshot.position_ms);
-    media_format_time(total, sizeof(total), mui.snapshot.duration_ms);
+    if (mui.snapshot.live)
+        snprintf(total, sizeof(total), "LIVE");
+    else
+        media_format_time(total, sizeof(total), mui.snapshot.duration_ms);
 
     char clock_text[16] = "";
     time_t now = time(NULL);
@@ -175,9 +178,13 @@ void media_ui_nowplaying_draw(void)
     int bar_x = l->pad * 2;
     int bar_w = l->width - l->pad * 4;
 
-    // Interpolated only between position updates; it never runs ahead of the real position.
-    int percent = position_percent();
-    media_ui_draw_progress(bar_x, bar_y, bar_w, 3, percent, mui.theme.accent, mui.theme.divider);
+    // A broadcast has no end to draw a playhead against, so the bar becomes a plain level
+    // strip rather than pretending to be scrubbable.
+    if (mui.snapshot.live)
+        rg_gui_draw_rect(bar_x, bar_y, bar_w, 3, 0, 0, mui.theme.divider);
+    else
+        media_ui_draw_progress(bar_x, bar_y, bar_w, 3, position_percent(), mui.theme.accent,
+                               mui.theme.divider);
 
     rg_gui_draw_text(bar_x, bar_y + 6, bar_w / 2, elapsed, mui.theme.text_dim, C_TRANSPARENT,
                      RG_TEXT_ALIGN_LEFT);
