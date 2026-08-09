@@ -1,3 +1,69 @@
+# Retro-Go 3.6.0 (2026-08-09)
+
+## Media Player (new)
+
+- Launcher: New **Media** tab opens a full-screen music player for files under `/sd/media`
+- Media: MP3 (minimp3), WAV and FLAC (dr_flac) playback behind a common codec interface
+- Media: Decoding, SD reading, audio output and rendering run on separate tasks, so none of
+  them can block another; progress is derived from frames actually played rather than a timer
+- Media: Adaptive buffering with a compressed prefetch ring and a decoded PCM ring, sized at
+  runtime from the detected PSRAM (N8R2 and N16R8 get different budgets)
+- Media: Library index on the SD card with incremental rescan, atomic writes and a version
+  check; favourites, play counts and resume positions are kept in a separate file so a full
+  rebuild never loses them
+- Media: Browse by Folders, Albums, Artists, Genres, Playlists, Favorites, Recently Played,
+  All Tracks and Network
+- Media: Now Playing, Lyrics, Visualizer, Queue and Track Info pages
+- Media: Album art from embedded tags (ID3 APIC, FLAC PICTURE, MP4 covr) or `cover`/`folder`/
+  `front` images beside the track. JPEG is decoded by TJpgDec out of the ESP32-S3 ROM, so it
+  costs no flash and never expands a large cover in RAM
+- Media: Accent colours are extracted from the artwork, with a blurred darkened background
+- Media: Synchronised lyrics from a `.lrc` beside the track or embedded tags, with a
+  per-track timing offset
+- Media: 7-band biquad equaliser with 10 presets, automatic headroom and a soft limiter
+- Media: 12 visualiser modes driven by a real FFT of the audio being played
+- Media: Queue with a shuffle bag (no immediate repeats), four repeat modes, and `.m3u`/
+  `.m3u8` playlist support
+- Media: Sleep timer, background playback while browsing the launcher, gapless playback for
+  FLAC and WAV, and ReplayGain normalisation
+- Media: Tags read from ID3v1, ID3v2.2/2.3/2.4, FLAC Vorbis comments, MP4 atoms and RIFF
+  INFO, decoded to UTF-8 so non-Latin metadata survives intact
+- Media: Playback stops and releases the audio hardware before an emulator is launched
+
+## Media Player - network
+
+- Media: Play internet radio and any `http(s)` audio URL
+- Media: Browse a shared folder served over HTTP or WebDAV (nginx/Apache autoindex,
+  `python3 -m http.server`, Nextcloud, most NAS boxes) and play from it like the card
+- Media: Icecast/Shoutcast `StreamTitle` updates drive the Now Playing text
+- Media: Station URLs that point at a `.m3u`/`.pls` are resolved automatically, trying each
+  mirror in turn; HLS manifests are reported rather than half-played
+- Media: Stream format is identified from the server's `Content-Type` first, so an
+  extension-less or query-suffixed URL is recognised correctly
+- Media: A dropped stream reconnects, resuming mid-file when the server supports ranges
+- Media: Saved locations live in `/media/.retrogo-media/network.txt`, editable on a PC
+
+## Fixes and core changes
+
+- All: The screen-timeout tick now runs only on the UI task. It hangs off `rg_task_delay()`,
+  so any task could end up redrawing the whole UI on its own stack - which overflowed
+  `rg_sysmon` when several background tasks were running
+- All: `rg_task_t` table grown from 8 to 16 slots; the previous size left one free slot with
+  the media player running
+- All: Fixed the WS2812 status LED never completing a transfer. `rmt_tx_wait_all_done()`
+  takes milliseconds but was being passed `pdMS_TO_TICKS()`, and a single timeout leaves the
+  RMT channel permanently wedged, so it is now rebuilt rather than re-enabled
+- All: LED updates are rate limited; the SD activity indicator was driving a blocking RMT
+  transfer around every block transfer
+- All: `rg_network_http_open()` accepts request headers and reports response headers, and
+  follows 303/307/308 redirects as well as 301/302
+- All: The legacy I2S deprecation notice is suppressed on ESP32-S3 targets
+- All: ESP32-S3 launcher partition grown from 1.5 MB to 1.75 MB to hold the media player
+
+Not yet supported: AAC/HE-AAC, Ogg Vorbis and Opus decoding (the formats are identified and
+named, but no decoder is bundled), HLS, and SMB/CIFS shares.
+
+
 # Retro-Go 1.46 (2025-11-07)
 - Launcher: Added virtual keyboard to manage wifi networks
 - Launcher: Diacritics are now correctly shown in filenames
