@@ -60,8 +60,21 @@ bool media_artwork_take_tags(const char *track_path, media_metadata_t *out);
 /** True when the worker still has queued work. */
 bool media_artwork_busy(void);
 
-/** Drop everything (SD removal, root change, memory pressure). */
+/** Drop everything (SD removal, root change, memory pressure). Takes the cache lock. */
 void media_artwork_flush(void);
+
+/**
+ * Forget every cached entry for `track_path`, including a negative one. A load that failed for
+ * a transient reason (a dropped connection) would otherwise be remembered as "no artwork" and
+ * never retried.
+ */
+void media_artwork_forget(const char *track_path);
+
+/**
+ * Drop queued requests and wait, bounded, for the one in flight to finish. Call this before
+ * tearing down anything the worker might still be holding.
+ */
+void media_artwork_cancel(void);
 
 /** Install the same resource-pressure hook the library scanner uses. */
 void media_artwork_set_pressure_source(int (*cb)(void));

@@ -51,13 +51,27 @@ static void draw_status_row(int x, int y, int w)
 {
     char left[48];
     char right[48];
+    char buffering[32];
 
     const char *state = "";
     switch (mui.snapshot.state)
     {
     case MEDIA_STATE_PLAYING:   state = "Playing"; break;
     case MEDIA_STATE_PAUSED:    state = "Paused"; break;
-    case MEDIA_STATE_BUFFERING: state = "Buffering..."; break;
+    case MEDIA_STATE_BUFFERING:
+        // A delayed live start can take twenty seconds; say how far along it is, or it reads as
+        // a hang.
+        if (mui.snapshot.preroll_target_s)
+        {
+            snprintf(buffering, sizeof(buffering), "Buffering %us/%us",
+                     (unsigned)mui.snapshot.preroll_s, (unsigned)mui.snapshot.preroll_target_s);
+            state = buffering;
+        }
+        else
+        {
+            state = "Buffering...";
+        }
+        break;
     case MEDIA_STATE_LOADING:   state = "Loading..."; break;
     case MEDIA_STATE_SEEKING:   state = "Seeking..."; break;
     case MEDIA_STATE_ENDED:     state = "End of queue"; break;
@@ -141,7 +155,7 @@ void media_ui_nowplaying_draw(void)
 
     // Layout: art on the left for wide screens, centred above the text for narrow ones.
     bool wide = l->width >= l->height * 5 / 4 && l->width >= 400;
-    media_palette_t palette = media_artwork_palette(media_player_path());
+    media_palette_t palette = media_artwork_palette(media_ui_art_path());
 
     int content_bottom = l->height - l->footer_h - l->pad;
     int art_size;
@@ -483,7 +497,7 @@ void media_ui_visualizer_draw(void)
         return;
     }
 
-    media_palette_t palette = media_artwork_palette(media_player_path());
+    media_palette_t palette = media_artwork_palette(media_ui_art_path());
 
     switch (cfg->visualizer)
     {

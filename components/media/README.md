@@ -241,6 +241,44 @@ profile) rather than on the PCM stage alone, and the *Buffering* state is only r
 when **both** stages are dry. Watching the PCM level by itself made the state flap between
 Buffering and Playing on every dip.
 
+### Delayed live playback
+
+The buffering above still starts playing within a few seconds, so the reserve it has banked is
+whatever happened to arrive by then. On a link that stalls for longer than that, the audio
+drops out. **Settings → Live stream buffer** trades latency for immunity:
+
+| setting | behaviour |
+| --- | --- |
+| `Live` (default) | Play as soon as the normal prebuffer is met — lowest latency |
+| `12 s` / `15 s` / `20 s` | Hold output silent until that much of the broadcast is banked |
+
+With a delay set, playback runs that far behind the live edge and the stream has to be
+unreachable for longer than the delay before anything is audible. Output is genuinely paused
+while the reserve fills — otherwise the audio task would drain the PCM stage as fast as the
+decoder filled it and nothing would accumulate. The decoder keeps running, stops when the PCM
+stage is full, and the compressed reserve grows behind it. Progress shows as `Buffering 8s/20s`.
+
+The ring is sized from the setting rather than the profile alone. It is planned for 128 kbps —
+what almost all radio uses — and deliberately tightly, because the ring rounds up to a power of
+two and a more generous estimate would double it on every profile for a setting most listeners
+leave off. Resulting reserve:
+
+| delay | LOW | NORMAL | HIGH |
+| --- | --- | --- | --- |
+| `Live` | 256 KB | 512 KB | 1 MB |
+| `12 s` | 256 KB | 512 KB | 1 MB |
+| `15 s` / `20 s` | 512 KB | 512 KB | 1 MB |
+
+A stream above 128 kbps banks less than the requested delay rather than failing, and the trim is
+logged. If PSRAM is too tight for the ring at all, `media_ring_create()` falls back to a quarter
+of it and the pre-roll target follows the capacity it actually got.
+
+If the server stops sending mid-fill, the wait is abandoned after 8 s without progress and
+playback starts with whatever was banked — any forward progress restarts that clock, so a
+merely slow link still gets its full reserve.
+
+The setting applies from the next stream opened, not to one already playing.
+
 ### Live streams
 
 A response with no `Content-Length` is treated as a broadcast: duration and seeking are
@@ -248,8 +286,17 @@ disabled, and Now Playing shows `LIVE` with a flat bar rather than a fake playhe
 
 `Icy-MetaData: 1` is always requested, so Icecast/Shoutcast stations that send inline
 `StreamTitle` updates drive the Now Playing text. `Artist - Title` is split so the layout
-matches a local file, and `icy-name` becomes the album line. The metadata blocks are stripped
-inside the source layer, which is why the decoders need no knowledge of any of this.
+matches a local file. The metadata blocks are stripped inside the source layer, which is why
+the decoders need no knowledge of any of this.
+
+`icy-name` and `icy-genre` are applied to the album and genre lines **as soon as the response
+headers arrive**, not on the first inline title — a station may not send one for minutes, and
+some never do.
+
+Cover art for a broadcast comes only from the station: `StreamArtwork`, or `StreamUrl` when it
+points at an image. Most stations send neither, and then a stream keeps the placeholder. A
+broadcast is never looked up like a file: there are no tags in the middle of a stream, and
+asking would download its head again and again while competing with the audio for bandwidth.
 
 A dropped connection is retried up to four times with a widening delay. For a seekable HTTP
 *file* the retry resumes mid-file with a `Range` header; a broadcast simply reconnects.
@@ -390,9 +437,9 @@ All under the `launcher` namespace with a `Media.` prefix, stored via
 `rg_settings_*` (NVS-backed). Nothing large is ever written to NVS.
 
 Background playback · Resume playback · Remember queue · Scan on startup · Normalization ·
-Gapless · Crossfade · Skip failed tracks · Album-art background · Dynamic theme · Low
-effects · Visualizer + FPS · Lyrics + offset · EQ enable/preset/7 band gains · Sleep timer ·
-Debug overlay · Media root.
+Gapless · Crossfade · Skip failed tracks · **Live stream buffer** · Album-art background ·
+Dynamic theme · Low effects · Visualizer + FPS · Lyrics + offset · EQ enable/preset/7 band
+gains · Sleep timer · Debug overlay · Media root.
 
 Play statistics are debounced (30 s) and written atomically; favourites are written
 immediately because they are an explicit user action.

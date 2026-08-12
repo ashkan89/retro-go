@@ -84,6 +84,9 @@
 #define MEDIA_MAX_SCAN_DEPTH        12
 #define MEDIA_MAX_LIBRARY_TRACKS    20000
 
+/* Longest live-stream pre-roll offered; the stored setting is clamped to it. */
+#define MEDIA_STREAM_DELAY_MAX      20
+
 /* -------------------------------------------------------------------------------------- */
 /* Audio pipeline constants                                                                 */
 /* -------------------------------------------------------------------------------------- */
@@ -122,6 +125,7 @@ typedef struct
 
     size_t source_buffer;       // Compressed prefetch ring for a file on the card, bytes
     size_t network_buffer;      // Compressed prefetch ring for a URL, bytes
+    size_t network_buffer_max;  // Ceiling when a configured stream delay needs more than that
     size_t pcm_buffer_frames;   // Decoded PCM ring, frames
     size_t prebuffer_frames;    // PCM frames required before leaving BUFFERING
     uint32_t prebuffer_ms;      // Compressed audio to bank before starting a network stream

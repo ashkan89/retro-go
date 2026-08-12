@@ -219,6 +219,10 @@ typedef struct
     uint8_t src_fill_pct;
     uint32_t underruns;
 
+    /* Live pre-roll progress. Both zero unless a delayed start is banking right now. */
+    uint16_t preroll_s;         // Seconds of the broadcast banked so far
+    uint16_t preroll_target_s;  // Seconds being waited for
+
     float rms_left, rms_right;
     float peak_left, peak_right;
 

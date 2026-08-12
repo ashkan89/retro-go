@@ -70,6 +70,13 @@ typedef struct
     bool dynamic_theme;
     bool low_effects;
 
+    /**
+     * Seconds of a live broadcast to bank before the first note is played, 0 to play at the
+     * live edge. Trading latency for immunity to network stalls: at 15 s the stream has to be
+     * unreachable for that long before anything is audible.
+     */
+    int stream_delay_s;
+
     int sleep_timer_minutes;        // 0 = off, -1 = end of track, -2 = end of album
     bool scan_on_startup;
     bool remember_queue;

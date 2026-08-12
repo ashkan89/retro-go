@@ -60,6 +60,8 @@ static struct
     int (*pressure_cb)(void);
     void (*ready_cb)(void);
 
+    volatile bool busy;     // A request is being serviced right now (outside the lock)
+
     /* Tags parsed on the way to finding the artwork, waiting to be collected. */
     char tags_path[MEDIA_MAX_PATH + 1];
     media_metadata_t tags;
@@ -90,6 +92,9 @@ static cache_entry_t *cache_find(uint32_t key)
 
 static void cache_drop(int index)
 {
+    if (index < 0 || index >= art.entry_count)
+        return;
+
     cache_entry_t *entry = &art.entries[index];
     art.bytes_used -= entry->bytes;
     rg_surface_free(entry->image);
@@ -167,6 +172,11 @@ static rg_image_t *load_cover_file(const char *art_path, int max_dim)
 /** Decode the artwork for one track, returning a new surface or NULL. */
 static rg_image_t *load_artwork(const char *path, int max_dim)
 {
+    // A radio station's inline metadata can name a cover image directly. There are no tags to
+    // look for in a JPEG, so decode it and skip the parser entirely.
+    if (media_path_is_image(path))
+        return load_cover_file(path, max_dim);
+
     media_metadata_t *meta = calloc(1, sizeof(media_metadata_t));
     if (!meta)
         return NULL;
@@ -235,14 +245,20 @@ static void worker_task(void *arg)
 
         if (!have_request)
         {
+            art.busy = false;
             rg_task_delay(20);
             continue;
         }
 
-        // Decoding a JPEG is CPU and SD heavy. When the audio buffer is low it can wait:
-        // a missing cover is invisible next to a dropout.
+        art.busy = true;
+
+        // Decoding a JPEG is CPU and SD heavy. When the audio buffer is low it can wait: a
+        // missing cover is invisible next to a dropout. The wait is bounded, though -- a live
+        // stream can hold the buffer near its low mark indefinitely, and deferring for ever
+        // meant remote tracks never got their tags or cover at all.
+        int64_t defer_until = rg_system_timer() + 3 * 1000000LL;
         int pressure = art.pressure_cb ? art.pressure_cb() : 0;
-        while (pressure >= 2 && !art.stop)
+        while (pressure >= 2 && !art.stop && rg_system_timer() < defer_until)
         {
             rg_task_delay(100);
             pressure = art.pressure_cb ? art.pressure_cb() : 0;
@@ -276,6 +292,7 @@ static void worker_task(void *arg)
                 if (background && art.ready_cb)
                     art.ready_cb();
             }
+            art.busy = false;
             continue;
         }
 
@@ -299,8 +316,11 @@ static void worker_task(void *arg)
         if (art.ready_cb)
             art.ready_cb();
 
+        art.busy = false;
         rg_task_delay(1);
     }
+
+    art.busy = false;
 
 #ifdef ESP_PLATFORM
     RG_LOGI("Artwork worker exiting, stack headroom was %u bytes",
@@ -372,6 +392,9 @@ void media_artwork_unlock(void)
 
 static bool queue_request(const char *path, int max_dim, bool background, int width, int height)
 {
+    if (art.request_count < 0)
+        art.request_count = 0;
+
     if (art.request_count >= REQUEST_SLOTS)
     {
         // The queue is a work list, not a history: drop the oldest so the newest (which is
@@ -500,7 +523,49 @@ bool media_artwork_busy(void)
     return art.request_count > 0;
 }
 
-void media_artwork_flush(void)
+void media_artwork_forget(const char *track_path)
+{
+    if (!track_path || !*track_path || !art.lock)
+        return;
+
+    uint32_t path_hash = rg_hash(track_path, strlen(track_path));
+
+    if (!rg_mutex_take(art.lock, 1000))
+        return;
+
+    // Every size variant of the same path, so a failed load cannot leave a negative entry
+    // behind that blocks the retry.
+    for (int i = art.entry_count - 1; i >= 0; --i)
+    {
+        if (art.entries[i].path_hash == path_hash)
+            cache_drop(i);
+    }
+
+    rg_mutex_give(art.lock);
+}
+
+void media_artwork_cancel(void)
+{
+    if (!art.lock)
+        return;
+
+    if (rg_mutex_take(art.lock, 1000))
+    {
+        art.request_count = 0;
+        rg_mutex_give(art.lock);
+    }
+
+    // A request already in flight owns no lock while it decodes, so dropping the queue is not
+    // enough: wait for it to finish before the caller starts freeing what it may be using.
+    for (int i = 0; i < 300 && art.busy; ++i)
+        rg_task_delay(10);
+
+    if (art.busy)
+        RG_LOGW("Artwork worker is still busy after 3 s");
+}
+
+/** Flush with `art.lock` already held. */
+static void flush_locked(void)
 {
     art.tags_ready = false;
     art.tags_path[0] = 0;
@@ -513,6 +578,24 @@ void media_artwork_flush(void)
     art.background_key = 0;
     art.request_count = 0;
     art.bytes_used = 0;
+}
+
+void media_artwork_flush(void)
+{
+    if (!art.lock)
+        return;
+
+    // The worker is still running when the player is left playing in the background, and it
+    // holds this lock while it inserts into the cache. Flushing without it freed surfaces the
+    // worker was about to publish and corrupted the entry count.
+    if (!rg_mutex_take(art.lock, 2000))
+    {
+        RG_LOGE("Could not take the artwork lock to flush; keeping the cache");
+        return;
+    }
+
+    flush_locked();
+    rg_mutex_give(art.lock);
 }
 
 void media_artwork_set_pressure_source(int (*cb)(void))

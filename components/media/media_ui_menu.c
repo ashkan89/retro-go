@@ -122,6 +122,27 @@ static rg_gui_event_t crossfade_cb(rg_gui_option_t *option, rg_gui_event_t event
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t stream_delay_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    static const int values[] = {0, 12, 15, 20};
+    media_settings_t *cfg = media_settings();
+
+    int index = 0;
+    for (size_t i = 0; i < RG_COUNT(values); ++i)
+    {
+        if (values[i] == cfg->stream_delay_s)
+            index = (int)i;
+    }
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+        cfg->stream_delay_s = values[cycle(index, (int)RG_COUNT(values), event)];
+
+    if (cfg->stream_delay_s)
+        sprintf(option->value, "%d s", cfg->stream_delay_s);
+    else
+        strcpy(option->value, "Live");
+    return RG_DIALOG_VOID;
+}
+
 static rg_gui_event_t background_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     static const char *names[] = {"Off", "Launcher only", "Always"};
@@ -478,13 +499,15 @@ void media_ui_settings_menu(void)
         {0, "Crossfade",           value_buffers[6], RG_DIALOG_FLAG_NORMAL, &crossfade_cb},
         {0, "Skip failed tracks",  value_buffers[7], RG_DIALOG_FLAG_NORMAL, &skip_error_cb},
         RG_DIALOG_SEPARATOR,
-        {0, "Album art background", value_buffers[8], RG_DIALOG_FLAG_NORMAL, &artwork_bg_cb},
-        {0, "Dynamic theme",       value_buffers[9], RG_DIALOG_FLAG_NORMAL, &dynamic_theme_cb},
-        {0, "Low effects mode",    value_buffers[10], RG_DIALOG_FLAG_NORMAL, &low_effects_cb},
-        {0, "Visualizer FPS",      value_buffers[11], RG_DIALOG_FLAG_NORMAL, &viz_fps_cb},
+        {0, "Live stream buffer",  value_buffers[8], RG_DIALOG_FLAG_NORMAL, &stream_delay_cb},
         RG_DIALOG_SEPARATOR,
-        {0, "Lyrics",              value_buffers[12], RG_DIALOG_FLAG_NORMAL, &lyrics_toggle_cb},
-        {0, "Debug overlay",       value_buffers[13], RG_DIALOG_FLAG_NORMAL, &debug_cb},
+        {0, "Album art background", value_buffers[9], RG_DIALOG_FLAG_NORMAL, &artwork_bg_cb},
+        {0, "Dynamic theme",       value_buffers[10], RG_DIALOG_FLAG_NORMAL, &dynamic_theme_cb},
+        {0, "Low effects mode",    value_buffers[11], RG_DIALOG_FLAG_NORMAL, &low_effects_cb},
+        {0, "Visualizer FPS",      value_buffers[12], RG_DIALOG_FLAG_NORMAL, &viz_fps_cb},
+        RG_DIALOG_SEPARATOR,
+        {0, "Lyrics",              value_buffers[13], RG_DIALOG_FLAG_NORMAL, &lyrics_toggle_cb},
+        {0, "Debug overlay",       value_buffers[14], RG_DIALOG_FLAG_NORMAL, &debug_cb},
         RG_DIALOG_END,
     };
 

@@ -55,6 +55,14 @@ media_snapshot_t media_player_snapshot(void);
 /** Metadata of the track being played. Valid until the next track change. */
 const media_track_t *media_player_track(void);
 const char *media_player_path(void);
+
+/**
+ * Path to look artwork up by, which is not always the track's own path: a station may name a
+ * cover URL in its metadata. NULL for a broadcast that named none -- there is nothing to find,
+ * and asking would pull the head of the stream repeatedly.
+ */
+const char *media_player_art_path(void);
+
 const media_lyrics_t *media_player_lyrics(void);
 bool media_player_lyrics_available(void);
 
