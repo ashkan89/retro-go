@@ -4,6 +4,8 @@ $Targets = @(
     "esp32-s3-n8r2-st7796",
     "esp32-s3-n16r8-st7789v2",
     "esp32-s3-n8r2-st7789v2",
+    "esp32-s3-n16r8-st7789",
+    "esp32-s3-n8r2-st7789",
     "esp32-s3-n16r8-ili9341",
     "esp32-s3-n8r2-ili9341"
 )
