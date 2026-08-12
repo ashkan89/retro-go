@@ -68,8 +68,37 @@
 - All: ESP32-S3 launcher partition grown from 1.5 MB to 1.75 MB to hold the media player
 - Media: Remote files now show their real title, artist, album and cover art. Tags are read
   with an HTTP range request on the artwork worker, so playback still starts immediately
+- Media: Fixed remote tracks never actually getting those tags or their cover. The artwork
+  worker defers while the audio buffer is low, and that test measured the compressed reserve as
+  a percentage of its ring - but the network ring is deliberately sized for a server's opening
+  burst, so a healthy stream sits at a low percentage for as long as it plays. The reserve is
+  now judged in seconds of audio, and the deferral is bounded
+- Media: Fixed a crash when leaving the player with music still going. The artwork cache was
+  reclaimed without its lock while the worker was still running, freeing surfaces it was about
+  to publish
+- Media: A failed remote tag read is retried up to three times instead of being cached as
+  "no artwork" for the rest of the track
+- Media: Station name and genre now appear as soon as a stream's headers arrive, rather than
+  waiting for the first inline title - which some stations never send
+- Media: Cover art for radio, where the station names one in its metadata (`StreamArtwork`, or
+  `StreamUrl` when it points at an image)
+- Media: A coverless broadcast no longer queues artwork lookups against its own stream URL
+- Media: The Icecast metadata block moved off the IO task's 8 KB stack onto the heap, and is
+  only allocated for a station that sends metadata
 - Launcher: Regenerated `images.c`, which had gone out of sync with
   `themes/default/background_msx.png`
+
+## Media Player - delayed live playback
+
+- Media: New **Live stream buffer** setting: `Live` (default), `12 s`, `15 s` or `20 s`. With a
+  delay set, output is held silent until that much of the broadcast is banked, so playback runs
+  that far behind the live edge and a network stall shorter than the delay is inaudible
+- Media: The compressed ring is sized from the setting rather than the profile alone, with a
+  per-profile ceiling; a stream above 192 kbps banks less than the full delay rather than
+  failing, and the trim is logged
+- Media: A pre-roll that stops making progress for 8 s starts playing with what it has, so a
+  server that goes quiet mid-fill cannot leave the player waiting for ever
+- Media: Buffering progress is shown as `Buffering 8s/20s` rather than a bare spinner
 
 Not yet supported: AAC/HE-AAC, Ogg Vorbis and Opus decoding (the formats are identified and
 named, but no decoder is bundled), HLS, and SMB/CIFS shares.

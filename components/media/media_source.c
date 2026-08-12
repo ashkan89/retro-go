@@ -33,6 +33,8 @@
 #define NET_MAX_RECONNECTS 4
 // Shoutcast metadata blocks are a length byte times 16, so 255 * 16 is the hard maximum.
 #define ICY_MAX_META 4080
+// One block, NUL, then room for a cover URL parsed out of it.
+#define ICY_SCRATCH_SIZE (ICY_MAX_META + 1 + MEDIA_MAX_PATH + 1)
 
 struct media_source_s
 {
@@ -51,8 +53,18 @@ struct media_source_s
     uint32_t icy_remaining; // Audio bytes still to come before the next metadata block
     char icy_title[160];
     char icy_station[96];
+    char icy_genre[48];
+    char icy_artwork[MEDIA_MAX_PATH + 1]; // Cover URL from the inline metadata, when sent
     char content_type[64];
     volatile bool icy_updated;
+    volatile bool icy_art_updated;
+
+    /**
+     * Scratch for one inline metadata block plus a URL parsed out of it. On the heap because the
+     * IO task has 8 KB and a 4 KB block plus a 256 byte URL is too much of it to spend on one
+     * call chain. Only allocated for a stream that actually sends metadata.
+     */
+    char *icy_scratch;
 
     char path[MEDIA_MAX_PATH + 1];
     uint64_t size;
@@ -90,6 +102,8 @@ static void on_response_header(const char *name, const char *value, void *arg)
         media_utf8_copy(src->icy_station, sizeof(src->icy_station), value);
     else if (strcasecmp(name, "icy-description") == 0 && !src->icy_station[0])
         media_utf8_copy(src->icy_station, sizeof(src->icy_station), value);
+    else if (strcasecmp(name, "icy-genre") == 0)
+        media_utf8_copy(src->icy_genre, sizeof(src->icy_genre), value);
 }
 
 /** Open (or reopen) the HTTP request, optionally resuming at `offset`. */
@@ -165,6 +179,15 @@ static bool net_open(media_source_t *src, uint64_t offset)
     src->icy_remaining = src->icy_metaint;
     src->file_pos = offset;
 
+    // Only a station that actually sends inline metadata pays for the scratch, and only once
+    // however many times the stream is reconnected.
+    if (src->icy_metaint && !src->icy_scratch)
+    {
+        src->icy_scratch = rg_alloc(ICY_SCRATCH_SIZE, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+        if (!src->icy_scratch)
+            RG_LOGW("No memory for the metadata buffer; titles will be skipped");
+    }
+
     return true;
 }
 
@@ -182,40 +205,69 @@ static size_t net_read_exact(media_source_t *src, uint8_t *buffer, size_t len)
     return total;
 }
 
-/** Parse a Shoutcast metadata block: StreamTitle='Artist - Title'; */
-static void icy_parse(media_source_t *src, const char *block)
+/**
+ * Read one `Key='value';` field out of a metadata block into `out`. Returns false when the key
+ * is absent. Values are single-quoted by convention but not always, so both are accepted.
+ */
+static bool icy_field(const char *block, const char *key, char *out, size_t out_size)
 {
-    const char *key = strcasestr(block, "StreamTitle=");
-    if (!key)
-        return;
+    const char *found = strcasestr(block, key);
+    if (!found)
+        return false;
 
-    const char *value = key + 12;
+    const char *value = found + strlen(key);
     char quote = 0;
     if (*value == '\'' || *value == '"')
         quote = *value++;
 
-    char title[sizeof(src->icy_title)];
     size_t i = 0;
-
-    while (*value && i < sizeof(title) - 1)
+    while (*value && i < out_size - 1)
     {
         if (quote && *value == quote && (value[1] == ';' || value[1] == 0))
             break;
         if (!quote && *value == ';')
             break;
-        title[i++] = *value++;
+        out[i++] = *value++;
     }
-    title[i] = 0;
+    out[i] = 0;
 
-    media_str_trim(title);
-    media_utf8_sanitize(title, sizeof(title));
+    media_str_trim(out);
+    media_utf8_sanitize(out, out_size);
+    return true;
+}
 
-    // Stations repeat the same title between songs; only publish real changes.
-    if (title[0] && strcmp(title, src->icy_title) != 0)
+/** Parse a Shoutcast metadata block: StreamTitle='Artist - Title';StreamUrl='...'; */
+static void icy_parse(media_source_t *src, const char *block)
+{
+    char title[sizeof(src->icy_title)];
+
+    if (icy_field(block, "StreamTitle=", title, sizeof(title)))
     {
-        media_utf8_copy(src->icy_title, sizeof(src->icy_title), title);
-        src->icy_updated = true;
-        RG_LOGI("Stream title: %s", src->icy_title);
+        // Stations repeat the same title between songs; only publish real changes.
+        if (title[0] && strcmp(title, src->icy_title) != 0)
+        {
+            media_utf8_copy(src->icy_title, sizeof(src->icy_title), title);
+            src->icy_updated = true;
+            RG_LOGI("Stream title: %s", src->icy_title);
+        }
+    }
+
+    // Some stations name the current cover here. StreamArtwork is the explicit field;
+    // StreamUrl is usually a link to the station's site, so it is only taken when it actually
+    // points at an image. Most stations send neither, and then a stream simply has no cover.
+    char *art = src->icy_scratch + ICY_MAX_META + 1;
+    const size_t art_size = MEDIA_MAX_PATH + 1;
+
+    bool have_art = icy_field(block, "StreamArtwork=", art, art_size) && art[0];
+
+    if (!have_art && icy_field(block, "StreamUrl=", art, art_size))
+        have_art = art[0] && media_path_is_image(art);
+
+    if (have_art && media_net_is_url(art) && strcmp(art, src->icy_artwork) != 0)
+    {
+        media_utf8_copy(src->icy_artwork, sizeof(src->icy_artwork), art);
+        src->icy_art_updated = true;
+        RG_LOGI("Stream artwork: %s", src->icy_artwork);
     }
 }
 
@@ -231,11 +283,27 @@ static bool icy_consume(media_source_t *src)
         return true;
 
     // A single length byte cannot ask for more than this, but the bound is explicit so the
-    // stack buffer below can never be overrun regardless of what the server sends.
+    // buffer below can never be overrun regardless of what the server sends.
     if (length > ICY_MAX_META)
         return false;
 
-    char block[ICY_MAX_META + 1];
+    if (!src->icy_scratch)
+    {
+        // No buffer to parse into, but the bytes still have to leave the socket: left in place
+        // they would be handed to the decoder as audio. Discard them and keep the framing.
+        uint8_t sink[64];
+        size_t left = length;
+        while (left > 0)
+        {
+            size_t chunk = left < sizeof(sink) ? left : sizeof(sink);
+            if (net_read_exact(src, sink, chunk) != chunk)
+                return false;
+            left -= chunk;
+        }
+        return true;
+    }
+
+    char *block = src->icy_scratch;
     if (net_read_exact(src, (uint8_t *)block, length) != length)
         return false;
 
@@ -465,7 +533,7 @@ media_source_t *media_source_open(const char *path, size_t buffer_bytes)
 
     src->running = true;
     // FatFs read paths can nest a few levels; 4 KB leaves room for that plus logging. The
-    // network path additionally puts a 4 KB Icecast metadata block on the stack.
+    // network path needs more for esp_http_client and, for https, the TLS record buffers.
     src->task = rg_task_create("media_io", &io_task, src, src->is_url ? 8 * 1024 : 4 * 1024,
                                RG_TASK_PRIORITY_4, RG_TASK_AFFINITY_IO);
     if (!src->task)
@@ -510,6 +578,7 @@ void media_source_close(media_source_t *source)
 #endif
         media_ring_free(source->ring);
         free(source->scratch);
+        free(source->icy_scratch);
         if (source->lock)
             rg_mutex_free(source->lock);
         free(source);
@@ -706,9 +775,24 @@ bool media_source_take_stream_title(media_source_t *source, char *out, size_t ou
     return out[0] != 0;
 }
 
+bool media_source_take_stream_artwork(media_source_t *source, char *out, size_t out_size)
+{
+    if (!source || !out || !out_size || !source->icy_art_updated)
+        return false;
+
+    source->icy_art_updated = false;
+    media_utf8_copy(out, out_size, source->icy_artwork);
+    return out[0] != 0;
+}
+
 const char *media_source_station_name(const media_source_t *source)
 {
     return (source && source->icy_station[0]) ? source->icy_station : NULL;
+}
+
+const char *media_source_station_genre(const media_source_t *source)
+{
+    return (source && source->icy_genre[0]) ? source->icy_genre : NULL;
 }
 
 const char *media_source_content_type(const media_source_t *source)

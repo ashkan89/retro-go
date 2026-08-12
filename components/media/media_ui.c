@@ -52,7 +52,9 @@ void media_ui_update_theme(void)
 
     if (cfg->dynamic_theme && mui.snapshot.state != MEDIA_STATE_STOPPED)
     {
-        const char *path = media_player_path();
+        // The palette has to come from the same image the cover slot shows, or the accents
+        // describe artwork that is not on screen.
+        const char *path = media_ui_art_path();
         if (path)
             palette = media_artwork_palette(path);
     }
@@ -106,7 +108,9 @@ void media_ui_clear(void)
 
     if (cfg->artwork_background && !cfg->low_effects && mui.snapshot.state != MEDIA_STATE_STOPPED)
     {
-        const char *path = media_player_path();
+        // Never the raw track path: for a coverless broadcast that would queue a lookup for the
+        // stream URL itself, downloading its head again and again for tags it does not have.
+        const char *path = media_ui_art_path();
         if (path)
             background = media_artwork_background(path, mui.layout.width, mui.layout.height);
     }
@@ -320,7 +324,7 @@ void media_ui_draw_message(const char *title, const char *body)
  */
 const char *media_ui_art_path(void)
 {
-    return mui.snapshot.live ? NULL : media_player_path();
+    return media_player_art_path();
 }
 
 void media_ui_draw_art(int x, int y, int size, const char *path, const media_palette_t *palette,
@@ -381,7 +385,7 @@ void media_ui_draw_mini_player(void)
     media_ui_draw_panel(0, y, l->width, h, media_color_scale(mui.theme.surface, 225),
                         mui.theme.divider);
 
-    media_palette_t palette = media_artwork_palette(media_player_path());
+    media_palette_t palette = media_artwork_palette(media_ui_art_path());
     media_ui_draw_art(l->pad, y + l->pad, art, media_ui_art_path(), &palette, NULL);
 
     int text_x = l->pad * 2 + art;

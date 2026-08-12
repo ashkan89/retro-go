@@ -21,6 +21,7 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .name = "Low",
         .source_buffer = 64 * 1024,
         .network_buffer = 256 * 1024,       // ~16 s of a 128 kbps stream
+        .network_buffer_max = 512 * 1024,   // An N8R2 cannot spare more than this for one ring
         .pcm_buffer_frames = 8 * 1024,      // 32 KB, ~186 ms at 44.1 kHz
         .prebuffer_frames = 2 * 1024,
         .prebuffer_ms = 2500,
@@ -42,6 +43,7 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         .name = "Normal",
         .source_buffer = 128 * 1024,
         .network_buffer = 512 * 1024,       // ~32 s
+        .network_buffer_max = 1024 * 1024,
         .pcm_buffer_frames = 16 * 1024,     // 64 KB, ~372 ms
         .prebuffer_frames = 4 * 1024,
         .prebuffer_ms = 3000,
@@ -67,6 +69,9 @@ static const media_profile_t profiles[MEDIA_MEMORY_COUNT] = {
         // reader to stall, and a stalled client is exactly what Icecast drops off its queue
         // and disconnects. Taking the whole burst turns it into ~64 s of reserve instead.
         .network_buffer = 1024 * 1024,
+        // A 20 s pre-roll planned for 192 kbps needs ~544 KB, so the default already covers the
+        // longest delay offered. The ceiling is only here for a very high bitrate stream.
+        .network_buffer_max = 2048 * 1024,
         .pcm_buffer_frames = 32 * 1024,     // 128 KB, ~743 ms
         .prebuffer_frames = 8 * 1024,
         .prebuffer_ms = 4000,

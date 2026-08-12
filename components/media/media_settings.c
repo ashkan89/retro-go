@@ -72,6 +72,11 @@ void media_settings_load(void)
     settings.low_effects =
         rg_settings_get_boolean(NS, KEY("LowEffects"), profile->profile == MEDIA_MEMORY_LOW);
 
+    // Off, or one of the offered delays. Clamped rather than snapped to a step: a value from a
+    // future build should degrade to something sane, not to zero.
+    settings.stream_delay_s =
+        media_clampi((int)rg_settings_get_number(NS, KEY("StreamDelay"), 0), 0, MEDIA_STREAM_DELAY_MAX);
+
     settings.sleep_timer_minutes = (int)rg_settings_get_number(NS, KEY("SleepTimer"), 0);
     settings.scan_on_startup = rg_settings_get_boolean(NS, KEY("ScanOnStartup"), true);
     settings.remember_queue = rg_settings_get_boolean(NS, KEY("RememberQueue"), true);
@@ -126,6 +131,7 @@ void media_settings_save(void)
     rg_settings_set_boolean(NS, KEY("ScanOnStartup"), settings.scan_on_startup);
     rg_settings_set_boolean(NS, KEY("RememberQueue"), settings.remember_queue);
     rg_settings_set_boolean(NS, KEY("PauseOnUnplug"), settings.pause_on_unplug);
+    rg_settings_set_number(NS, KEY("StreamDelay"), settings.stream_delay_s);
     rg_settings_set_boolean(NS, KEY("SkipOnError"), settings.skip_on_error);
     rg_settings_set_boolean(NS, KEY("Debug"), settings.show_debug);
 

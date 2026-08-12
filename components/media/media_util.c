@@ -319,23 +319,33 @@ static bool ext_equals(const char *ext, const char *want)
     return !*ext && !*want;
 }
 
-media_codec_t media_codec_from_path(const char *path)
+/**
+ * The extension of `path`, with any URL query or fragment removed: "…/hot108?aw_0_req.gdpr=true"
+ * would otherwise yield an extension of "gdpr=true". Copies into `buf` only when it has to.
+ */
+static const char *path_ext(const char *path, char *buf, size_t buf_size)
 {
     const char *ext = rg_extension(path);
     if (!ext)
-        return MEDIA_CODEC_NONE;
+        return NULL;
 
-    // "…/hot108?aw_0_req.gdpr=true" would otherwise yield an extension of "gdpr=true".
+    if (!strchr(ext, '?') && !strchr(ext, '#'))
+        return ext;
+
+    size_t len = 0;
+    while (ext[len] && ext[len] != '?' && ext[len] != '#' && len < buf_size - 1)
+        len++;
+    memcpy(buf, ext, len);
+    buf[len] = 0;
+    return buf;
+}
+
+media_codec_t media_codec_from_path(const char *path)
+{
     char trimmed[16];
-    if (strchr(ext, '?') || strchr(ext, '#'))
-    {
-        size_t len = 0;
-        while (ext[len] && ext[len] != '?' && ext[len] != '#' && len < sizeof(trimmed) - 1)
-            len++;
-        memcpy(trimmed, ext, len);
-        trimmed[len] = 0;
-        ext = trimmed;
-    }
+    const char *ext = path_ext(path, trimmed, sizeof(trimmed));
+    if (!ext)
+        return MEDIA_CODEC_NONE;
 
     for (size_t i = 0; i < RG_COUNT(audio_extensions); ++i)
     {
@@ -428,7 +438,8 @@ bool media_path_is_playlist(const char *path)
 
 bool media_path_is_image(const char *path)
 {
-    const char *ext = rg_extension(path);
+    char trimmed[16];
+    const char *ext = path_ext(path, trimmed, sizeof(trimmed));
     return ext_equals(ext, "jpg") || ext_equals(ext, "jpeg") || ext_equals(ext, "png");
 }
 

@@ -69,8 +69,17 @@ bool media_source_is_live(const media_source_t *source);
  */
 bool media_source_take_stream_title(media_source_t *source, char *out, size_t out_size);
 
+/**
+ * Take the cover URL a station named in its inline metadata (StreamArtwork, or StreamUrl when
+ * it points at an image), if one has arrived since the last call. Most stations send neither.
+ */
+bool media_source_take_stream_artwork(media_source_t *source, char *out, size_t out_size);
+
 /** Station name from the icy-name header, or NULL. */
 const char *media_source_station_name(const media_source_t *source);
+
+/** Station genre from the icy-genre header, or NULL. */
+const char *media_source_station_genre(const media_source_t *source);
 
 /** Content-Type the server reported, or NULL for a local file. */
 const char *media_source_content_type(const media_source_t *source);

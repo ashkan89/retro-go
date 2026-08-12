@@ -66,6 +66,27 @@ static struct
     bool lyrics_loaded;
     bool net_tags_requested;    // Remote tags are read by the artwork worker, not at open
     bool net_tags_applied;
+    int net_tags_attempts;
+    int64_t net_tags_retry_us;
+
+    /* Cover named by a station's inline metadata; empty when it sent none. */
+    char stream_art[MEDIA_MAX_PATH + 1];
+
+    /**
+     * Live pre-roll. When enabled, output is held paused until this many compressed bytes are
+     * banked, so playback runs a fixed distance behind the broadcast and a network stall of up
+     * to that length is inaudible.
+     */
+    bool preroll_active;
+    size_t preroll_bytes;
+    size_t preroll_seen;        // High-water mark, to notice a stall
+    int64_t preroll_stall_us;   // Give up and play what we have past this
+
+    /**
+     * Whether the open source is a broadcast, mirrored out of the decoder so the UI task can
+     * ask without dereferencing a decoder the decode task may be closing.
+     */
+    volatile bool live;
 
     uint32_t consecutive_failures;
 
@@ -86,6 +107,11 @@ static struct
 /* -------------------------------------------------------------------------------------- */
 /* Helpers                                                                                  */
 /* -------------------------------------------------------------------------------------- */
+
+/* How long a live pre-roll may make no progress before we play what has been banked. */
+#define PREROLL_STALL_US (8 * 1000000LL)
+
+static size_t bytes_for_ms(uint32_t ms);
 
 static void emit(media_event_t event, intptr_t arg)
 {
@@ -160,6 +186,12 @@ static void release_track_resources(void)
         player.lyrics = NULL;
     }
     player.lyrics_loaded = false;
+
+    // The pre-roll belonged to the decoder that just went away; never let it act on the next.
+    player.preroll_active = false;
+    player.preroll_bytes = 0;
+    player.preroll_seen = 0;
+    player.live = false;
 }
 
 /** Read tags for the current path so the UI has something to show immediately. */
@@ -217,6 +249,39 @@ static void load_track_metadata(const char *path, uint32_t track_id)
     emit(MEDIA_EVENT_METADATA_READY, (intptr_t)track_id);
 }
 
+/**
+ * Ring size for a network source. The profile's figure is chosen to swallow a server's opening
+ * burst; a configured pre-roll may need more than that, because the whole delay has to fit with
+ * working room left over for the reader.
+ */
+static size_t network_reserve_bytes(void)
+{
+    const media_profile_t *profile = media_profile();
+    size_t reserve = profile->network_buffer;
+    int delay_s = media_settings()->stream_delay_s;
+
+    if (delay_s <= 0)
+        return reserve;
+
+    // The real bitrate is unknown until the first frame is decoded, so the ring is planned for
+    // the 128 kbps almost all radio uses, plus working room. A higher-bitrate stream banks less
+    // than the full delay rather than failing, and open_current() logs the trim.
+    //
+    // Planned deliberately tightly because media_ring_create() rounds up to a power of two: a
+    // more generous estimate pushes a 20 s delay past 512 KB and doubles the ring on every
+    // profile, which an N8R2 cannot spare for a setting most listeners leave off.
+    size_t needed = (size_t)delay_s * 16 * 1024 + 64 * 1024;
+
+    if (needed > reserve)
+    {
+        reserve = needed < profile->network_buffer_max ? needed : profile->network_buffer_max;
+        RG_LOGI("Stream reserve raised to %u KB for a %d s pre-roll",
+                (unsigned)(reserve / 1024), delay_s);
+    }
+
+    return reserve;
+}
+
 static bool open_current(void)
 {
     char path_copy[MEDIA_MAX_PATH + 1] = {0};
@@ -257,6 +322,11 @@ static bool open_current(void)
     player.generation++;
     player.net_tags_requested = false;
     player.net_tags_applied = false;
+    player.net_tags_attempts = 0;
+    player.net_tags_retry_us = 0;
+    player.stream_art[0] = 0;
+    player.preroll_active = false;
+    player.preroll_bytes = 0;
     player.play_counted = false;
     player.last_position_save_us = rg_system_timer();
 
@@ -268,6 +338,11 @@ static bool open_current(void)
     media_err_t err = MEDIA_OK;
     player.decoder = NULL;
 
+    // A stream gets the much larger reserve: unlike the card, the far end decides when the
+    // bytes arrive, and servers front-load a burst that is worth catching.
+    size_t reserve = media_net_is_url(path) ? network_reserve_bytes()
+                                            : media_profile()->source_buffer;
+
     // A station URL is very often a .m3u/.pls holding the real address (sometimes a handful
     // of mirrors). Resolve it here so every entry point -- typed URL, bookmark, playlist
     // line, remote folder -- benefits, and try the mirrors in turn.
@@ -277,7 +352,7 @@ static bool open_current(void)
         int found = streams ? media_net_fetch_playlist(path, streams, 4) : -1;
 
         for (int i = 0; i < found && !player.decoder; ++i)
-            player.decoder = media_decoder_open(streams[i], media_profile()->network_buffer, &err);
+            player.decoder = media_decoder_open(streams[i], reserve, &err);
 
         free(streams);
 
@@ -288,10 +363,6 @@ static bool open_current(void)
     }
     else
     {
-        // A stream gets the much larger reserve: unlike the card, the far end decides when
-        // the bytes arrive, and servers front-load a burst that is worth catching.
-        size_t reserve = media_net_is_url(path) ? media_profile()->network_buffer
-                                                : media_profile()->source_buffer;
         player.decoder = media_decoder_open(path, reserve, &err);
     }
 
@@ -338,6 +409,49 @@ static bool open_current(void)
         {
             resume_ms = 0;
         }
+    }
+
+    player.live = media_source_is_live(player.decoder->source);
+
+    if (player.live)
+    {
+        // A broadcast has no tags, but the response headers describe the station. Apply them
+        // now rather than waiting for the first inline title, which may be minutes away or may
+        // never come at all.
+        const char *station = media_source_station_name(player.decoder->source);
+        const char *genre = media_source_station_genre(player.decoder->source);
+
+        if (station)
+            media_utf8_copy(player.track.album, sizeof(player.track.album), station);
+        if (genre)
+            media_utf8_copy(player.track.genre, sizeof(player.track.genre), genre);
+
+        int delay_s = media_settings()->stream_delay_s;
+        if (delay_s > 0)
+        {
+            size_t want = bytes_for_ms((uint32_t)delay_s * 1000);
+            size_t capacity = media_ring_capacity_of(player.decoder->source);
+
+            // Leave the reader a working margin: waiting for a completely full ring would wedge
+            // it against a buffer nothing is draining yet.
+            size_t ceiling = capacity - capacity / 8;
+            if (capacity && want > ceiling)
+            {
+                RG_LOGW("Pre-roll trimmed from %u to %u KB by the %u KB ring",
+                        (unsigned)(want / 1024), (unsigned)(ceiling / 1024),
+                        (unsigned)(capacity / 1024));
+                want = ceiling;
+            }
+
+            player.preroll_bytes = want;
+            player.preroll_seen = 0;
+            player.preroll_stall_us = rg_system_timer() + PREROLL_STALL_US;
+            player.preroll_active = true;
+            media_audio_set_paused(true);
+            RG_LOGI("Banking %u KB (~%d s) before playing", (unsigned)(want / 1024), delay_s);
+        }
+
+        emit(MEDIA_EVENT_METADATA_READY, 0);
     }
 
     set_state(MEDIA_STATE_BUFFERING);
@@ -516,6 +630,53 @@ static void decode_task(void *arg)
             continue;
         }
 
+        /* --- Live pre-roll ------------------------------------------------------------ */
+        // Checked here rather than in the decode result below, because output is paused during
+        // the pre-roll and the paused branch never gets that far. The decoder still runs: it
+        // fills PCM, stops when that is full, and the reserve keeps growing behind it.
+        if (player.preroll_active)
+        {
+            if (player.state != MEDIA_STATE_BUFFERING)
+            {
+                // The listener paused, stopped or skipped. Their intent outranks the pre-roll.
+                player.preroll_active = false;
+            }
+            else
+            {
+                size_t banked = media_source_buffered(player.decoder->source);
+                bool done = banked >= player.preroll_bytes || player.decoder->eos ||
+                            media_source_eof(player.decoder->source);
+
+                // A server that stops sending mid-fill must not leave the listener staring at a
+                // progress figure for ever. Any forward progress restarts the clock, so a slow
+                // link still gets its full reserve; only a genuine stall cuts the wait short.
+                if (banked > player.preroll_seen)
+                {
+                    player.preroll_seen = banked;
+                    player.preroll_stall_us = rg_system_timer() + PREROLL_STALL_US;
+                }
+                else if (rg_system_timer() >= player.preroll_stall_us)
+                {
+                    RG_LOGW("Pre-roll stalled at %u KB, starting anyway",
+                            (unsigned)(banked / 1024));
+                    done = true;
+                }
+
+                if (done)
+                {
+                    player.preroll_active = false;
+                    media_audio_set_paused(false);
+                    set_state(MEDIA_STATE_PLAYING);
+                    RG_LOGI("Pre-roll complete, %u KB banked", (unsigned)(banked / 1024));
+                }
+                else
+                {
+                    emit(MEDIA_EVENT_BUFFERING,
+                         (intptr_t)(banked * 100 / (player.preroll_bytes ? player.preroll_bytes : 1)));
+                }
+            }
+        }
+
         // While paused we stop decoding once the buffer is comfortably full, so a paused
         // player costs nothing but keeps an instant resume.
         if (media_audio_get_paused() && media_audio_fill_percent() > 70)
@@ -539,7 +700,9 @@ static void decode_task(void *arg)
                 written += n;
             }
 
-            if (player.state == MEDIA_STATE_BUFFERING)
+            // The pre-roll owns the transition out of BUFFERING while it runs; the ordinary
+            // test would see a full PCM ring, notice that output is paused, and report PAUSED.
+            if (player.state == MEDIA_STATE_BUFFERING && !player.preroll_active)
             {
                 if (prebuffer_satisfied())
                     set_state(media_audio_get_paused() ? MEDIA_STATE_PAUSED : MEDIA_STATE_PLAYING);
@@ -695,7 +858,18 @@ void media_player_shutdown(bool keep_playing)
             player.lyrics = NULL;
             player.lyrics_loaded = false;
         }
+
+        // The worker stays alive here, unlike the full teardown below where it is stopped
+        // first. Quiesce it before reclaiming the cache, or it publishes into entries that are
+        // being freed underneath it.
+        media_artwork_cancel();
         media_artwork_flush();
+
+        // Nothing will collect remote tags until the UI is back, so let the next visit ask
+        // again rather than sit on a request that was cancelled.
+        player.net_tags_requested = false;
+        player.net_tags_attempts = 0;
+
         RG_LOGI("Player left running in the background");
         return;
     }
@@ -947,12 +1121,26 @@ media_snapshot_t media_player_snapshot(void)
     snapshot.shuffle = media_queue_get_shuffle();
     snapshot.repeat = media_queue_get_repeat();
     snapshot.favorite = player.track.favorite;
-    snapshot.live = player.decoder && media_source_is_live(player.decoder->source);
+    snapshot.live = player.live;
     snapshot.network = media_net_is_url(player.path);
     snapshot.pcm_fill_pct = (uint8_t)media_clampi(media_audio_fill_percent(), 0, 100);
     snapshot.src_fill_pct = (uint8_t)media_clampi(
         player.decoder ? media_source_fill_percent(player.decoder->source) : 0, 0, 100);
     snapshot.underruns = media_audio_underruns();
+
+    if (player.preroll_active && player.decoder)
+    {
+        // Reported in seconds rather than as a percentage: "8s / 20s" tells the listener how
+        // much longer the wait is, which a bare percentage does not.
+        size_t per_second = bytes_for_ms(1000);
+        if (per_second)
+        {
+            snapshot.preroll_s =
+                (uint16_t)(media_source_buffered(player.decoder->source) / per_second);
+            snapshot.preroll_target_s = (uint16_t)(player.preroll_bytes / per_second);
+        }
+    }
+
     snapshot.rms_left = spectrum->rms_left;
     snapshot.rms_right = spectrum->rms_right;
     snapshot.peak_left = spectrum->peak_left;
@@ -980,6 +1168,20 @@ const media_track_t *media_player_track(void)
 
 const char *media_player_path(void)
 {
+    return player.path[0] ? player.path : NULL;
+}
+
+const char *media_player_art_path(void)
+{
+    // A station's own cover URL when it sent one.
+    if (player.stream_art[0])
+        return player.stream_art;
+
+    // Otherwise there is nothing to look up for a broadcast: no tags to parse, no folder to
+    // find a cover in. Asking anyway would download the head of the stream over and over.
+    if (player.live)
+        return NULL;
+
     return player.path[0] ? player.path : NULL;
 }
 
@@ -1012,19 +1214,33 @@ static void ensure_network_tags(void)
 {
     if (!player.decoder || player.net_tags_applied || !media_net_is_url(player.path))
         return;
-    if (media_source_is_live(player.decoder->source))
+    if (player.live)
         return;
 
     if (!player.net_tags_requested)
     {
         media_artwork_request(player.path, media_profile()->artwork_max_dim);
         player.net_tags_requested = true;
+        player.net_tags_attempts++;
+        // Long enough for a range request over a slow link, plus the worker's own deferral.
+        player.net_tags_retry_us = rg_system_timer() + 8 * 1000000LL;
         return;
     }
 
     media_metadata_t meta;
     if (!media_artwork_take_tags(player.path, &meta))
+    {
+        // A dropped connection is remembered as "no artwork" and would never be retried, so
+        // clear the cache entry and ask again. Bounded: after three tries the URL-derived name
+        // is what the listener gets.
+        if (player.net_tags_attempts < 3 && rg_system_timer() >= player.net_tags_retry_us)
+        {
+            RG_LOGD("No tags yet for '%s', retrying", player.path);
+            media_artwork_forget(player.path);
+            player.net_tags_requested = false;
+        }
         return;
+    }
 
     player.net_tags_applied = true;
 
@@ -1170,6 +1386,14 @@ void media_player_tick(void)
 
             emit(MEDIA_EVENT_METADATA_READY, 0);
         }
+
+        // Stations that name a cover in their metadata get one; the rest keep the placeholder.
+        char art[MEDIA_MAX_PATH + 1];
+        if (media_source_take_stream_artwork(player.decoder->source, art, sizeof(art)))
+        {
+            media_utf8_copy(player.stream_art, sizeof(player.stream_art), art);
+            emit(MEDIA_EVENT_ARTWORK_READY, 0);
+        }
     }
 
     /* Sleep timer */
@@ -1212,10 +1436,17 @@ int media_player_pressure(void)
         return 0;
 
     int pcm = media_audio_fill_percent();
-    int src = player.decoder ? media_source_fill_percent(player.decoder->source) : 100;
 
-    // Either buffer running low means the SD card and the CPU are needed for audio.
-    if (pcm < 35 || src < 25 || player.state == MEDIA_STATE_BUFFERING)
+    // The compressed stage is judged in seconds of audio, never as a fraction of the ring. The
+    // network ring is deliberately sized to swallow a server's opening burst, so a perfectly
+    // healthy live stream sits at a low percentage for as long as it plays -- and a percentage
+    // test there reported permanent pressure, which starved the artwork worker and the library
+    // scanner for the whole session. That is why remote tracks never showed tags or a cover.
+    bool source_thin = false;
+    if (player.decoder && !media_source_eof(player.decoder->source))
+        source_thin = media_source_buffered(player.decoder->source) < bytes_for_ms(1500);
+
+    if (pcm < 35 || source_thin)
         return 2;
 
     return 1;
