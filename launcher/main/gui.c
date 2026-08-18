@@ -5,12 +5,14 @@
 #include "applications.h"
 #include "gui.h"
 
-#define HEADER_HEIGHT       (50)
-#define LOGO_WIDTH          (46)
-#define PREVIEW_HEIGHT      ((int)(gui.height * 0.70f))
-#define PREVIEW_WIDTH       ((int)(gui.width * 0.50f))
+/* Width reserved to the right of the list for the scrollbar, and how far a row's text sits from
+ * the edge of its selection pill (past the accent bar). */
+#define SCROLLBAR_GUTTER    (6)
+#define ROW_TEXT_INSET      (8)
 
 retro_gui_t gui;
+
+static int max_visible_lines(const tab_t *tab, int *_line_height);
 
 #define SETTING_SELECTED_TAB    "SelectedTab"
 #define SETTING_START_SCREEN    "StartScreen"
@@ -22,13 +24,6 @@ retro_gui_t gui;
 #define SETTING_SCREEN_DIM      "ScreenDimTimeout"
 #define SETTING_SCREEN_OFF      "ScreenOffTimeout"
 #define SETTING_HIDE_TAB(name)  strcat((char[99]){"HideTab."}, (name))
-
-static int max_visible_lines(const tab_t *tab, int *_line_height)
-{
-    int line_height = TEXT_RECT("ABC123", 0).height;
-    if (_line_height) *_line_height = line_height;
-    return (gui.height - (HEADER_HEIGHT + 6) - (tab->navpath ? line_height : 0)) / line_height;
-}
 
 void gui_init(bool cold_boot)
 {
@@ -202,19 +197,19 @@ void gui_set_status(tab_t *tab, const char *left, const char *right)
 void gui_update_theme(void)
 {
     // Load our four color schemes from gui theme
-    gui.themes[0].background = rg_gui_get_theme_color("launcher_1", "background", C_BLACK);
-    gui.themes[0].foreground = rg_gui_get_theme_color("launcher_1", "foreground", C_SNOW);
+    gui.themes[0].background = rg_gui_get_theme_color("launcher_1", "background", C_RGB(14, 15, 20));
+    gui.themes[0].foreground = rg_gui_get_theme_color("launcher_1", "foreground", C_RGB(242, 245, 250));
     gui.themes[0].list.standard_bg = rg_gui_get_theme_color("launcher_1", "list_standard_bg", C_TRANSPARENT);
-    gui.themes[0].list.standard_fg = rg_gui_get_theme_color("launcher_1", "list_standard_fg", C_GRAY);
+    gui.themes[0].list.standard_fg = rg_gui_get_theme_color("launcher_1", "list_standard_fg", C_RGB(172, 178, 194));
     gui.themes[0].list.selected_bg = rg_gui_get_theme_color("launcher_1", "list_selected_bg", C_TRANSPARENT);
-    gui.themes[0].list.selected_fg = rg_gui_get_theme_color("launcher_1", "list_selected_fg", C_WHITE);
+    gui.themes[0].list.selected_fg = rg_gui_get_theme_color("launcher_1", "list_selected_fg", C_RGB(255, 255, 255));
 
-    gui.themes[1].background = rg_gui_get_theme_color("launcher_2", "background", C_BLACK);
-    gui.themes[1].foreground = rg_gui_get_theme_color("launcher_2", "foreground", C_SNOW);
+    gui.themes[1].background = rg_gui_get_theme_color("launcher_2", "background", C_RGB(10, 18, 14));
+    gui.themes[1].foreground = rg_gui_get_theme_color("launcher_2", "foreground", C_RGB(236, 250, 240));
     gui.themes[1].list.standard_bg = rg_gui_get_theme_color("launcher_2", "list_standard_bg", C_TRANSPARENT);
-    gui.themes[1].list.standard_fg = rg_gui_get_theme_color("launcher_2", "list_standard_fg", C_GRAY);
+    gui.themes[1].list.standard_fg = rg_gui_get_theme_color("launcher_2", "list_standard_fg", C_RGB(150, 176, 158));
     gui.themes[1].list.selected_bg = rg_gui_get_theme_color("launcher_2", "list_selected_bg", C_TRANSPARENT);
-    gui.themes[1].list.selected_fg = rg_gui_get_theme_color("launcher_2", "list_selected_fg", C_GREEN);
+    gui.themes[1].list.selected_fg = rg_gui_get_theme_color("launcher_2", "list_selected_fg", C_RGB(120, 240, 150));
 
     gui.themes[2].background = rg_gui_get_theme_color("launcher_3", "background", C_BLACK);
     gui.themes[2].foreground = rg_gui_get_theme_color("launcher_3", "foreground", C_SNOW);
@@ -226,7 +221,7 @@ void gui_update_theme(void)
     gui.themes[3].background = rg_gui_get_theme_color("launcher_4", "background", C_BLACK);
     gui.themes[3].foreground = rg_gui_get_theme_color("launcher_4", "foreground", C_SNOW);
     gui.themes[3].list.standard_bg = rg_gui_get_theme_color("launcher_4", "list_standard_bg", C_TRANSPARENT);
-    gui.themes[3].list.standard_fg = rg_gui_get_theme_color("launcher_4", "list_standard_fg", C_DARK_GRAY);
+    gui.themes[3].list.standard_fg = rg_gui_get_theme_color("launcher_4", "list_standard_fg", C_RGB(190, 196, 210));
     gui.themes[3].list.selected_bg = rg_gui_get_theme_color("launcher_4", "list_selected_bg", C_WHITE);
     gui.themes[3].list.selected_fg = rg_gui_get_theme_color("launcher_4", "list_selected_fg", C_BLACK);
 
@@ -376,6 +371,174 @@ void gui_scroll_list(tab_t *tab, scroll_whence_t mode, int arg)
     }
 }
 
+/* -------------------------------------------------------------------------------------- */
+/* Layout                                                                                   */
+/* -------------------------------------------------------------------------------------- */
+
+/**
+ * Every screen is measured from the font and the panel size rather than from constants, because
+ * the supported targets run from 240x240 to 480x320 and a layout tuned for 320x240 either wastes
+ * half of the big panels or overflows the small ones.
+ */
+static layout_t gui_layout(const tab_t *tab)
+{
+    layout_t l = {0};
+
+    l.width = gui.width;
+    l.height = gui.height;
+    l.pad = RG_MAX(l.width / 64, 3);
+    l.line_h = TEXT_RECT("ABC123", 0).height;
+    l.row_h = l.line_h + 2;
+    l.header_h = RG_MAX(l.line_h * 3 + l.pad * 2, 40);
+    l.footer_h = l.line_h + l.pad;
+    l.content_y = l.header_h + l.pad;
+    l.content_h = l.height - l.content_y - l.footer_h - l.pad;
+
+    // The preview gets its own column instead of floating over the list: covers used to sit on
+    // top of the game names, which is exactly where the eye is while scrolling.
+    l.has_preview = gui.show_preview != PREVIEW_MODE_NONE;
+    l.preview_w = l.has_preview ? (l.width * 42) / 100 : 0;
+    l.preview_x = l.width - l.pad - l.preview_w;
+    l.preview_y = l.content_y;
+    l.preview_h = l.content_h;
+
+    l.list_x = l.pad;
+    l.list_y = l.content_y;
+    l.list_w = l.width - l.pad * 2 - SCROLLBAR_GUTTER - (l.has_preview ? l.preview_w + l.pad : 0);
+    l.list_h = l.content_h;
+
+    if (tab && tab->navpath)
+    {
+        l.list_y += l.line_h + 2;
+        l.list_h -= l.line_h + 2;
+    }
+
+    l.list_rows = RG_MAX(l.list_h / l.row_h, 1);
+    l.list_h = l.list_rows * l.row_h; // Trim the remainder so rows fill the area exactly
+
+    return l;
+}
+
+static int max_visible_lines(const tab_t *tab, int *_line_height)
+{
+    layout_t l = gui_layout(tab);
+    if (_line_height)
+        *_line_height = l.row_h;
+    return l.list_rows;
+}
+
+/* Scale an image down to fit a box, once, replacing it. Resampling on every redraw was costing
+ * more than the whole rest of the frame for a cover-sized image. */
+static rg_image_t *fit_image(rg_image_t *img, int max_width, int max_height)
+{
+    if (!img || max_width < 1 || max_height < 1)
+        return img;
+    if (img->width <= max_width && img->height <= max_height)
+        return img;
+
+    float scale = RG_MIN((float)max_width / img->width, (float)max_height / img->height);
+    rg_image_t *scaled = rg_surface_resize(img, RG_MAX((int)(img->width * scale), 1),
+                                           RG_MAX((int)(img->height * scale), 1));
+    if (!scaled)
+        return img;
+
+    rg_surface_free(img);
+    return scaled;
+}
+
+/* A top-down or bottom-up darkening ramp. Theme backgrounds are photos and artwork, and text on
+ * top of them is only readable if we put something between the two. */
+static void draw_scrim(int y, int height, int alpha_top, int alpha_bottom)
+{
+    if (height < 1)
+        return;
+
+    for (int i = 0; i < height; ++i)
+    {
+        int alpha = alpha_top + ((alpha_bottom - alpha_top) * i) / RG_MAX(height - 1, 1);
+        rg_gui_fill_blend(0, y + i, gui.width, 1, C_BLACK, alpha);
+    }
+}
+
+/**
+ * Text that scrolls one character at a time when it does not fit, after a pause.
+ *
+ * Advancing by codepoints rather than pixels keeps every draw inside the box (the renderer has no
+ * clip rectangle) and is UTF-8 safe by construction. Same approach as the media player, so a long
+ * name behaves identically in both.
+ */
+static void draw_marquee(int x, int y, int width, const char *text, rg_color_t fg, rg_color_t bg, bool active)
+{
+    if (!text || !*text || width <= 0)
+        return;
+
+    if (!active || TEXT_RECT(text, 0).width <= width)
+    {
+        rg_gui_draw_text(x, y, width, text, fg, bg, RG_TEXT_ALIGN_LEFT);
+        return;
+    }
+
+    size_t offsets[96];
+    int steps = 0;
+    offsets[0] = 0;
+
+    for (const char *p = text; *p && steps < (int)RG_COUNT(offsets) - 1;)
+    {
+        const char *next = p;
+        rg_utf8_decode(&next);
+        if (next == p)
+            break;
+        offsets[++steps] = (size_t)(next - text);
+        if (TEXT_RECT(next, 0).width <= width)
+            break; // The remainder now fits, this is the last useful position
+        p = next;
+    }
+
+    const int64_t hold_ms = 1000, step_ms = 130;
+    int64_t travel_ms = (int64_t)steps * step_ms;
+    int64_t cycle = hold_ms * 2 + travel_ms * 2;
+    int64_t phase = cycle > 0 ? ((rg_system_timer() / 1000) % cycle) : 0;
+    int step;
+
+    if (phase < hold_ms)
+        step = 0;
+    else if (phase < hold_ms + travel_ms)
+        step = (int)((phase - hold_ms) / step_ms);
+    else if (phase < hold_ms * 2 + travel_ms)
+        step = steps;
+    else
+        step = steps - (int)((phase - hold_ms * 2 - travel_ms) / step_ms);
+
+    step = RG_MIN(RG_MAX(step, 0), steps);
+    rg_gui_draw_text(x, y, width, text + offsets[step], fg, bg, RG_TEXT_ALIGN_LEFT);
+}
+
+/**
+ * True while something on screen is moving, so the main loop knows it has to keep redrawing.
+ *
+ * It is deliberately narrow: only the selected row's name, and only when it is too long to fit.
+ * Redrawing the whole launcher ten times a second for a name that already fits would burn CPU
+ * (and battery) for no visible difference.
+ */
+bool gui_has_animation(void)
+{
+    if (!gui.browse)
+        return false;
+
+    tab_t *tab = gui_get_current_tab();
+    if (!tab || tab->listbox.length < 1)
+        return false;
+
+    const listbox_item_t *item = &tab->listbox.items[RG_MIN(RG_MAX(tab->listbox.cursor, 0), tab->listbox.length - 1)];
+    layout_t l = gui_layout(tab);
+
+    return TEXT_RECT(item->text, 0).width > l.list_w - l.pad * 2 - ROW_TEXT_INSET;
+}
+
+/* -------------------------------------------------------------------------------------- */
+/* Drawing                                                                                  */
+/* -------------------------------------------------------------------------------------- */
+
 void gui_redraw(void)
 {
     rg_display_sync(true);
@@ -388,31 +551,28 @@ void gui_redraw(void)
     }
     else if (gui.browse)
     {
-        gui_draw_background(tab, 4);
+        gui_draw_background(tab, 3);
         gui_draw_header(tab, 0);
         gui_draw_status(tab);
         gui_draw_list(tab);
         gui_draw_preview(tab);
+        gui_draw_footer(tab);
     }
     else
     {
+        layout_t l = gui_layout(tab);
         gui_draw_background(tab, 0);
-        gui_draw_header(tab, (gui.height - HEADER_HEIGHT) / 2);
-        // gui_draw_tab_indicator();
+        // Scrims top and bottom: the artwork is full brightness on this screen, and the status
+        // icons and hint line have to stay readable over whatever the theme puts behind them.
+        draw_scrim(0, l.header_h, 160, 0);
+        draw_scrim(l.height - l.footer_h * 2, l.footer_h * 2, 0, 175);
+        gui_draw_header(tab, 0);
+        gui_draw_tab_indicator();
+        rg_gui_draw_icons();
     }
 
     rg_gui_set_surface(NULL);
     rg_display_submit(gui.surface, 0);
-}
-
-void gui_draw_preview(tab_t *tab)
-{
-    if (tab->preview)
-    {
-        int height = RG_MIN(tab->preview->height, PREVIEW_HEIGHT);
-        int width = RG_MIN(tab->preview->width, PREVIEW_WIDTH);
-        rg_gui_draw_image(-width, -height, width, height, true, tab->preview);
-    }
 }
 
 void gui_draw_background(tab_t *tab, int shade)
@@ -463,79 +623,311 @@ void gui_draw_background(tab_t *tab, int shade)
         rg_gui_draw_image(0, 0, gui.width, gui.height, false, tab->background);
     else
         rg_gui_draw_rect(0, 0, gui.width, gui.height, 0, 0, gui.theme->background);
+
+    // Without a theme image the flat background is very plain, so put a soft accent glow in the
+    // corner. It costs one gradient and gives the default look some depth.
+    if (!tab->background)
+    {
+        const rg_gui_palette_t *pal = rg_gui_get_palette();
+        rg_gui_draw_gradient(0, 0, gui.width, gui.height / 2, rg_gui_blend_color(gui.theme->background, pal->accent, 40),
+                             gui.theme->background, false, 255);
+    }
 }
 
+/**
+ * The header: system logo, name, and (in the browser) the item counter and status text.
+ *
+ * In the carousel it is a centered card with the tab's banner artwork, because that screen is
+ * about picking a system and the artwork is the whole point. In the browser it is a slim band, so
+ * the list gets the space instead.
+ */
 void gui_draw_header(tab_t *tab, int offset)
 {
-    if (!tab->banner)
-        tab->banner = gui_get_image("banner", tab->name);
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    layout_t l = gui_layout(tab);
+    int logo_box = l.header_h - l.pad * 2;
+
     if (!tab->logo)
-        tab->logo = gui_get_image("logo", tab->name);
+        tab->logo = fit_image(gui_get_image("logo", tab->name), logo_box, logo_box);
 
-    rg_gui_draw_image(0, offset, LOGO_WIDTH, HEADER_HEIGHT, false, tab->logo);
+    if (gui.browse)
+    {
+        // Slim band with a hairline, then logo, name and status
+        rg_gui_fill_blend(0, 0, l.width, l.header_h, pal->background, 165);
+        rg_gui_fill_blend(0, l.header_h - 1, l.width, 1, pal->accent, 150);
+
+        int x = l.pad;
+
+        if (tab->logo)
+        {
+            rg_gui_draw_image(x, (l.header_h - tab->logo->height) / 2, 0, 0, false, tab->logo);
+            x += tab->logo->width + l.pad;
+        }
+
+        // A quarter of the width is left free on the right for the battery/clock cluster, so a long
+        // system name never runs underneath it.
+        rg_gui_draw_text(x, l.pad, l.width - x - l.pad - l.width / 4, tab->desc, gui.theme->foreground,
+                         C_TRANSPARENT, RG_TEXT_BIGGER | RG_TEXT_ALIGN_LEFT);
+        return;
+    }
+
+    // Carousel: a card holding the logo and the banner, centered a little above the middle so the
+    // tab indicator and the hint line below it have room to breathe.
+    int card_w = l.width - l.pad * 4;
+    int card_h = logo_box + l.pad * 3 + l.line_h;
+    int card_x = (l.width - card_w) / 2;
+    int card_y = (l.height - card_h) / 2 - l.line_h + offset;
+
+    // Fitted to the space it will actually occupy inside the card, next to the logo
+    if (!tab->banner)
+        tab->banner = fit_image(gui_get_image("banner", tab->name), card_w - l.pad * 6 - logo_box, l.line_h * 2 + 6);
+
+    rg_gui_draw_shadow(card_x, card_y, card_w, card_h, 8, 3);
+    rg_gui_draw_panel(card_x, card_y, card_w, card_h, 8, pal->surface, pal->divider, 175);
+    // Accent edge along the top of the card, the same cue the dialogs use for their header chip
+    rg_gui_fill_blend(card_x + 8, card_y + 1, card_w - 16, 1, pal->accent, 190);
+
+    int content_x = card_x + l.pad * 2;
+    int content_w = card_w - l.pad * 4;
+
+    if (tab->logo)
+    {
+        rg_gui_draw_image(content_x, card_y + l.pad + (logo_box - tab->logo->height) / 2, 0, 0, false, tab->logo);
+        content_x += tab->logo->width + l.pad * 2;
+        content_w -= tab->logo->width + l.pad * 2;
+    }
+
     if (tab->banner)
-        rg_gui_draw_image(LOGO_WIDTH + 1, offset + 8, 0, HEADER_HEIGHT - 8, false, tab->banner);
+        rg_gui_draw_image(content_x, card_y + l.pad + (logo_box - tab->banner->height) / 2, 0, 0, false, tab->banner);
     else
-        rg_gui_draw_text(LOGO_WIDTH + 8, offset + 8, 0, tab->desc, gui.theme->foreground, C_TRANSPARENT, RG_TEXT_BIGGER);
+        rg_gui_draw_text(content_x, card_y + l.pad + (logo_box - l.line_h * 2) / 2, content_w, tab->desc,
+                         gui.theme->foreground, C_TRANSPARENT, RG_TEXT_BIGGER | RG_TEXT_ALIGN_LEFT);
+
+    // Status line inside the card: whatever the tab wants to say (it is where "Loading...", the
+    // media player's now-playing line and error text end up), otherwise how many entries it holds.
+    // The cursor position that status[0] carries belongs to the browser, not here.
+    char count[24] = {0};
+    const char *txt_left = tab->status[1].left;
+    const char *txt_right = tab->status[tab->status[1].right[0] ? 1 : 0].right;
+    int status_y = card_y + card_h - l.pad - l.line_h;
+
+    if (!txt_left[0] && tab->initialized)
+    {
+        snprintf(count, sizeof(count), "%d %s", tab->listbox.length % 100000, _("items"));
+        txt_left = count;
+    }
+
+    // Drawn only when there is something to say: an empty rule under an empty line looks broken
+    if ((txt_left && *txt_left) || (txt_right && *txt_right))
+    {
+        rg_gui_fill_blend(card_x + l.pad * 2, status_y - l.pad / 2, card_w - l.pad * 4, 1, pal->divider, 200);
+        if (txt_left && *txt_left)
+            rg_gui_draw_text(card_x + l.pad * 2, status_y, card_w - l.pad * 4, txt_left, pal->text_dim, C_TRANSPARENT,
+                             RG_TEXT_ALIGN_LEFT);
+        if (txt_right && *txt_right)
+            rg_gui_draw_text(card_x + l.pad * 2, status_y, card_w - l.pad * 4, txt_right, pal->text_dim, C_TRANSPARENT,
+                             RG_TEXT_ALIGN_RIGHT);
+    }
 }
 
-void gui_draw_tab_indicator(void)
-{
-    char buffer[64] = {0};
-    memset(buffer, '-', gui.tabs_count);
-    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, gui.theme->list.standard_fg, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
-    memset(buffer, ' ', gui.tabs_count);
-    buffer[gui.selected_tab] = '-';
-    rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_BOTTOM, 0, buffer, gui.theme->list.selected_fg, C_TRANSPARENT, RG_TEXT_BIGGER|RG_TEXT_MONOSPACE);
-}
-
+/* Status: the counter and messages, plus the battery/network/clock cluster. */
 void gui_draw_status(tab_t *tab)
 {
-    const int status_x = LOGO_WIDTH + 12;
-    const int status_y = HEADER_HEIGHT - 16;
-    char *txt_left = tab->status[tab->status[1].left[0] ? 1 : 0].left;
-    char *txt_right = tab->status[tab->status[1].right[0] ? 1 : 0].right;
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    layout_t l = gui_layout(tab);
+    // Only the tab's own message goes here ("Loading...", the media player's now-playing line).
+    // The item counter lives in the hint bar at the bottom, and printing it twice just made the
+    // header look busy.
+    const char *txt_left = tab->status[1].left;
+    const char *txt_right = tab->status[tab->status[1].right[0] ? 1 : 0].right;
+    int x = l.pad + (tab->logo ? tab->logo->width + l.pad : 0);
+    int y = l.pad + l.line_h * 2;
 
-    rg_gui_draw_text(status_x, status_y, gui.width - status_x, txt_right, gui.theme->foreground, C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
-    rg_gui_draw_text(status_x, status_y, 0, txt_left, gui.theme->foreground, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+    // The right-hand status text would run under the icon cluster, so it is placed on the left of
+    // the second line and the icons keep the corner to themselves.
+    if (txt_left && *txt_left)
+        rg_gui_draw_text(x, y, 0, txt_left, pal->text_dim, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+    if (txt_right && *txt_right)
+    {
+        int left_width = (txt_left && *txt_left) ? TEXT_RECT(txt_left, 0).width + l.pad * 2 : 0;
+        // A chip, so a warning like "No cover" reads as a badge rather than as more body text
+        int chip_w = TEXT_RECT(txt_right, 0).width + l.pad * 2;
+        rg_gui_draw_panel(x + left_width, y - 1, chip_w, l.line_h + 2, 3, pal->surface_alt, C_NONE, 220);
+        rg_gui_draw_text(x + left_width + l.pad, y, 0, txt_right, pal->accent, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+    }
+
     rg_gui_draw_icons();
 }
 
 void gui_draw_list(tab_t *tab)
 {
-    rg_color_t fg[2] = {gui.theme->list.standard_fg, gui.theme->list.selected_fg};
-    rg_color_t bg[2] = {gui.theme->list.standard_bg, gui.theme->list.selected_bg};
-
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
     const listbox_t *list = &tab->listbox;
-    int line_height, top = HEADER_HEIGHT + 6;
-    int lines = max_visible_lines(tab, &line_height);
-    int line_offset = 0;
+    layout_t l = gui_layout(tab);
+    int line_offset;
 
     if (tab->navpath)
     {
-        char buffer[64];
-        snprintf(buffer, 63, "[%s]",  tab->navpath);
-        top += rg_gui_draw_text(0, top, gui.width, buffer, gui.theme->foreground, C_TRANSPARENT, 0).height;
+        // Breadcrumb chip for the folder we are inside
+        int width = RG_MIN(TEXT_RECT(tab->navpath, 0).width + l.pad * 3, l.list_w);
+        rg_gui_draw_panel(l.list_x, l.content_y, width, l.line_h + 2, 3, pal->surface_alt, C_NONE, 200);
+        rg_gui_draw_text(l.list_x + l.pad, l.content_y + 1, width - l.pad * 2, tab->navpath, pal->text, C_TRANSPARENT,
+                         RG_TEXT_ALIGN_LEFT);
     }
-
-    top += ((gui.height - top) - (lines * line_height)) / 2;
 
     if (gui.scroll_mode == SCROLL_MODE_PAGING)
-    {
-        line_offset = (list->cursor / lines) * lines;
-    }
+        line_offset = (list->cursor / l.list_rows) * l.list_rows;
     else // (gui.scroll_mode == SCROLL_MODE_CENTER)
+        line_offset = list->cursor - (l.list_rows / 2);
+
+    // Keep the window inside the list so the last page is full instead of half empty
+    if (line_offset > list->length - l.list_rows)
+        line_offset = list->length - l.list_rows;
+    if (line_offset < 0)
+        line_offset = 0;
+
+    if (list->length == 0)
     {
-        line_offset = list->cursor - (lines / 2);
+        rg_gui_draw_text(l.list_x, l.list_y + l.list_h / 2 - l.line_h, l.list_w, _("No files"), pal->text_dim,
+                         C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+        return;
     }
 
-    for (int i = 0; i < lines; i++)
+    for (int i = 0; i < l.list_rows; i++)
     {
         int idx = line_offset + i;
-        int selected = idx == list->cursor;
-        char *label = (idx >= 0 && idx < list->length) ? list->items[idx].text : "";
-        top += rg_gui_draw_text(0, top, gui.width, label, fg[selected], bg[selected], 0).height;
+        int y = l.list_y + i * l.row_h;
+        bool selected = idx == list->cursor;
+        rg_color_t fg = selected ? gui.theme->list.selected_fg : gui.theme->list.standard_fg;
+        rg_color_t bg = selected ? gui.theme->list.selected_bg : gui.theme->list.standard_bg;
+
+        if (idx < 0 || idx >= list->length)
+            continue;
+
+        if (selected)
+        {
+            // Selection pill with a leading accent bar. A theme that sets an opaque
+            // list_selected_bg gets its own color for the pill, otherwise we tint the accent.
+            rg_color_t pill = (bg == C_TRANSPARENT) ? pal->accent_dim : bg;
+            int alpha = (bg == C_TRANSPARENT) ? 210 : 255;
+            rg_gui_draw_panel(l.list_x, y, l.list_w, l.row_h, RG_MIN(4, l.row_h / 2), pill, C_NONE, alpha);
+            rg_gui_draw_panel(l.list_x, y + 1, 3, l.row_h - 2, 1, pal->accent, C_NONE, 255);
+        }
+        else if (bg != C_TRANSPARENT)
+        {
+            rg_gui_draw_panel(l.list_x, y, l.list_w, l.row_h, RG_MIN(4, l.row_h / 2), bg, C_NONE, 255);
+        }
+
+        draw_marquee(l.list_x + ROW_TEXT_INSET, y + (l.row_h - l.line_h) / 2, l.list_w - ROW_TEXT_INSET - l.pad,
+                     list->items[idx].text, fg, C_TRANSPARENT, selected);
     }
+
+    rg_gui_draw_scrollbar(l.list_x + l.list_w + 1, l.list_y, l.list_h, l.list_rows, list->length, line_offset);
+}
+
+/* Cover art or save-state screenshot, in a card of its own on the right of the list. */
+void gui_draw_preview(tab_t *tab)
+{
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    layout_t l = gui_layout(tab);
+
+    if (!l.has_preview)
+        return;
+
+    int inner_w = l.preview_w - 6;
+    int inner_h = l.preview_h - 6;
+    int img_w = tab->preview ? RG_MIN(tab->preview->width, inner_w) : inner_w;
+    int img_h = tab->preview ? RG_MIN(tab->preview->height, inner_h) : (inner_w * 3) / 4;
+    int card_w = img_w + 6;
+    int card_h = img_h + 6;
+    int card_x = l.preview_x + (l.preview_w - card_w) / 2;
+    int card_y = l.preview_y + (l.preview_h - card_h) / 2;
+
+    rg_gui_draw_shadow(card_x, card_y, card_w, card_h, 5, 3);
+    rg_gui_draw_panel(card_x, card_y, card_w, card_h, 5, pal->surface, pal->divider, tab->preview ? 235 : 150);
+
+    if (tab->preview)
+    {
+        rg_gui_draw_image(card_x + 3, card_y + 3, img_w, img_h, false, tab->preview);
+    }
+    else
+    {
+        // Placeholder: the system's own logo, dimmed, instead of an empty hole in the layout
+        if (tab->logo)
+        {
+            int lx = card_x + (card_w - tab->logo->width) / 2;
+            int ly = card_y + (card_h - tab->logo->height) / 2 - l.line_h / 2;
+            rg_gui_draw_image(lx, ly, 0, 0, false, tab->logo);
+            rg_gui_dim_area(lx, ly, tab->logo->width, tab->logo->height, 110);
+        }
+        rg_gui_draw_text(card_x, card_y + card_h - l.line_h - 3, card_w, _("No cover"), pal->text_dim, C_TRANSPARENT,
+                         RG_TEXT_ALIGN_CENTER);
+    }
+}
+
+/* Hint bar. Which buttons do what is the one thing a launcher should never make you guess. */
+void gui_draw_footer(tab_t *tab)
+{
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    layout_t l = gui_layout(tab);
+    int y = l.height - l.footer_h;
+    char counter[24] = {0};
+
+    rg_gui_fill_blend(0, y, l.width, l.footer_h, pal->background, 165);
+    rg_gui_fill_blend(0, y, l.width, 1, pal->divider, 220);
+
+    rg_gui_draw_text(l.pad, y + l.pad / 2, l.width / 2, _("A Launch   B Back   MENU Info"), pal->text_dim,
+                     C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+
+    if (tab->listbox.length > 0)
+    {
+        snprintf(counter, sizeof(counter), "%d / %d", (tab->listbox.cursor + 1) % 100000,
+                 tab->listbox.length % 100000);
+        rg_gui_draw_text(l.width / 2, y + l.pad / 2, l.width / 2 - l.pad, counter, pal->text, C_TRANSPARENT,
+                         RG_TEXT_ALIGN_RIGHT);
+    }
+}
+
+/* Which system you are on, as pills at the bottom of the carousel. */
+void gui_draw_tab_indicator(void)
+{
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    layout_t l = gui_layout(gui_get_current_tab());
+    int dot = RG_MAX(l.pad, 4);
+    int gap = RG_MAX(l.pad - 1, 3);
+    int active_w = dot * 3;
+    int count = 0, active_index = 0;
+
+    for (size_t i = 0; i < gui.tabs_count; ++i)
+    {
+        if (!gui.tabs[i]->enabled)
+            continue;
+        if ((int)i == gui.selected_tab)
+            active_index = count;
+        count++;
+    }
+
+    if (count < 1)
+        return;
+
+    int total = (count - 1) * (dot + gap) + active_w;
+    int x = (l.width - total) / 2;
+    int y = l.height - l.footer_h - dot;
+
+    for (int i = 0, drawn = 0; i < (int)gui.tabs_count; ++i)
+    {
+        if (!gui.tabs[i]->enabled)
+            continue;
+
+        bool active = drawn == active_index;
+        int width = active ? active_w : dot;
+        rg_gui_draw_panel(x, y, width, dot, dot / 2, active ? pal->accent : pal->text_dim, C_NONE, active ? 255 : 150);
+        x += width + gap;
+        drawn++;
+    }
+
+    rg_gui_draw_text(0, l.height - l.line_h - 2, l.width, _("A Open   LEFT RIGHT Systems   MENU Info"), pal->text_dim,
+                     C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
 }
 
 void gui_set_preview(tab_t *tab, rg_image_t *preview)
@@ -545,6 +937,13 @@ void gui_set_preview(tab_t *tab, rg_image_t *preview)
 
     if (tab->preview)
         rg_surface_free(tab->preview);
+
+    // Scale to the card once, here, rather than resampling it on every redraw
+    if (preview)
+    {
+        layout_t l = gui_layout(tab);
+        preview = fit_image(preview, RG_MAX(l.preview_w - 6, 8), RG_MAX(l.preview_h - 6, 8));
+    }
 
     tab->preview = preview;
 }

@@ -54,6 +54,21 @@ typedef enum {
     PREVIEW_MODE_COUNT
 } preview_mode_t;
 
+/* Everything the launcher draws is placed from this, computed per frame from the panel size and
+ * the current font so the same code lays out a 240x240 and a 480x320 screen. */
+typedef struct {
+    int width, height;
+    int pad;
+    int line_h;
+    int row_h;
+    int header_h;
+    int footer_h;
+    int content_y, content_h;
+    int list_x, list_y, list_w, list_h, list_rows;
+    int preview_x, preview_y, preview_w, preview_h;
+    bool has_preview;
+} layout_t;
+
 typedef struct {
     rg_color_t background;
     rg_color_t foreground;
@@ -172,3 +187,5 @@ void gui_draw_status(tab_t *tab);
 void gui_draw_list(tab_t *tab);
 void gui_draw_tab_indicator(void);
 void gui_draw_preview(tab_t *tab);
+void gui_draw_footer(tab_t *tab);
+bool gui_has_animation(void);

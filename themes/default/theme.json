@@ -1,64 +1,72 @@
 {
-    "description": "Default Retro-Go Theme",
+    "description": "default",
     "website": "https://github.com/ashkan89/retro-go/",
     "author": "ducalex",
     "dialog": {
-        "__comment": "This section contains global dialog colors",
-        "background": "0x0010",
-        "foreground": "0xFFFF",
-        "border": "0x6B4D",
-        "header": "0xFFFF",
-        "scrollbar": "0xFFFF",
-        "shadow": "none",
-        "item_standard": "0xFFFF",
-        "item_disabled": "0x8410",
-        "item_message": "0xBDF7"
+        "__comment": "Global dialog colors. Colors may be given as RGB565 (0xFFFF) or RGB888 (0xFFFFFF). The accent/surface/divider keys drive the cards, header chips, selection pills and scrollbars; leave any of them out and it is derived from the keys above it.",
+        "background": "0x11121A",
+        "foreground": "0xF8FCFF",
+        "border": "0x505967",
+        "header": "0xF8FCFF",
+        "scrollbar": "0x5AAAFF",
+        "shadow": "0x000000",
+        "item_standard": "0xE1E8F1",
+        "item_disabled": "0x6E727A",
+        "item_message": "0xB9BFC8",
+        "item_value": "0x9A9FA8",
+        "accent": "0x5AAAFF",
+        "accent_dim": "0x2D4C71",
+        "highlight": "0xC0DFFF",
+        "surface": "0x333844",
+        "surface_alt": "0x1B273A",
+        "divider": "0x45464C",
+        "text_dim": "0x888D96"
     },
     "launcher_1": {
-        "__comment": "This section contains launcher colors variant 1",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 1: white selection over the accent pill",
+        "background": "0x0D0E14",
+        "foreground": "0xF8FCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
+        "list_standard_fg": "0x969BA3",
         "list_selected_bg": "transparent",
-        "list_selected_fg": "0xFFFF"
+        "list_selected_fg": "0xFFFFFF"
     },
     "launcher_2": {
-        "__comment": "This section contains launcher colors variant 2",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 2: selection uses the theme's second color",
+        "background": "0x0D0E14",
+        "foreground": "0xF8FCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
+        "list_standard_fg": "0x8D929A",
         "list_selected_bg": "transparent",
-        "list_selected_fg": "0x07E0"
+        "list_selected_fg": "0x7BE8A0"
     },
     "launcher_3": {
-        "__comment": "This section contains launcher colors variant 3",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 3: solid accent pill with dark text",
+        "background": "0x0D0E14",
+        "foreground": "0xF8FCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
-        "list_selected_bg": "0xFFFF",
-        "list_selected_fg": "0x0000"
-    },
-    "media": {
-        "__comment": "This section contains media player colors. Accents follow the album art when Dynamic theme is on.",
-        "background": "0x0000",
-        "surface": "0x10A3",
-        "text": "0xEF5E",
-        "text_dim": "0x8C51",
-        "divider": "0x31C6",
-        "accent": "0x5D5F",
-        "accent_dim": "0x3314",
-        "highlight": "0xA65F"
+        "list_standard_fg": "0x969BA3",
+        "list_selected_bg": "0x5AAAFF",
+        "list_selected_fg": "0x11121A"
     },
     "launcher_4": {
-        "__comment": "This section contains launcher colors variant 4",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 4: high contrast, white pill with black text",
+        "background": "0x0D0E14",
+        "foreground": "0xF8FCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0xAD55",
-        "list_selected_bg": "0xFFFF",
-        "list_selected_fg": "0x0000"
+        "list_standard_fg": "0xB5BBC3",
+        "list_selected_bg": "0xFFFFFF",
+        "list_selected_fg": "0x000000"
+    },
+    "media": {
+        "__comment": "Media player colors. Accents follow the album art when Dynamic theme is on.",
+        "background": "0x0B0C11",
+        "surface": "0x333844",
+        "text": "0xEEF6FF",
+        "text_dim": "0x888D96",
+        "divider": "0x45464C",
+        "accent": "0x5AAAFF",
+        "accent_dim": "0x376191",
+        "highlight": "0xC0DFFF"
     }
 }

@@ -16,6 +16,7 @@
 #include "browser.h"
 #include "gui.h"
 #include "media_tab.h"
+#include "splash.h"
 #include "webui.h"
 #include "updater.h"
 
@@ -132,6 +133,17 @@ static rg_gui_event_t color_theme_cb(rg_gui_option_t *option, rg_gui_event_t eve
         return RG_DIALOG_REDRAW;
 
     sprintf(option->value, "%d/%d", gui.color_theme + 1, max + 1);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t boot_animation_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    bool enabled = splash_enabled();
+
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+        splash_set_enabled((enabled = !enabled));
+
+    strcpy(option->value, enabled ? _("On") : _("Off"));
     return RG_DIALOG_VOID;
 }
 
@@ -428,7 +440,10 @@ static void retro_loop(void)
             prev_joystick = 0;
             gui_event(TAB_IDLE, tab);
             next_idle_event = rg_system_timer() + 100000;
-            if (gui.idle_counter % 10 == 1)
+            // Once a second for the clock and status text, but on every idle tick (100ms) while
+            // something on screen is actually moving - that is what makes a long game name scroll
+            // instead of stepping once per second.
+            if (gui.idle_counter % 10 == 1 || gui_has_animation())
                 redraw_pending = true;
         }
         else if (gui.idle_counter)
@@ -490,6 +505,7 @@ static void options_handler(rg_gui_option_t *dest)
         {0, _("Preview"),      "-", RG_DIALOG_FLAG_NORMAL, &show_preview_cb},
         {0, _("Scroll mode"),  "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
         {0, _("Start screen"), "-", RG_DIALOG_FLAG_NORMAL, &start_screen_cb},
+        {0, _("Boot animation"), "-", RG_DIALOG_FLAG_NORMAL, &boot_animation_cb},
         {0, _("Screen dim"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_dim_timeout_cb},
         {0, _("Screen off"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_off_timeout_cb},
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
@@ -534,6 +550,11 @@ void app_main(void)
         rg_storage_mkdir(RG_BASE_PATH_CONFIG);
         try_migrate();
     }
+
+    // After the storage check so the animation can report the card state, and before anything that
+    // touches the SD card: the scan below is the slow part of boot, and this is the only moment
+    // where showing something on screen costs nothing.
+    splash_show(app->isColdBoot);
 
 #ifdef ESP_PLATFORM
     // The launcher makes a lot of small allocations and it sometimes fills internal RAM, causing the SD Card driver to

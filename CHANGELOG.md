@@ -1,3 +1,52 @@
+# Retro-Go 3.7.0 (unreleased)
+
+## Interface
+
+- All: New drawing primitives in `rg_gui`: rounded cards, translucent fills, soft drop shadows,
+  gradients, lines, discs, scrollbars and progress bars. Translucency composites against the
+  surface when there is one to read back (launcher, media player, boot screen) and against the
+  theme background when there is not (dialogs over a running game), so one set of code draws the
+  same design in both places
+- All: Dialogs redrawn as rounded cards with a drop shadow, a header chip with an accent bar, a
+  selection pill instead of an inverted row, values right-aligned in a dimmer color, real
+  separators instead of a row of dashes, and a scrollbar in the card's gutter in place of the
+  little arrows
+- All: Status icons redrawn. The battery is a rounded cell with a contact tip, a charge bar that
+  keeps its green/amber/red meaning, a lightning bolt while charging and a blink when nearly
+  empty; Wi-Fi is a three-bar meter driven by the actual RSSI, sweeping while it associates. Over
+  a theme background image the cluster sits on a translucent chip so it stays readable
+- All: The on-screen keyboard (Wi-Fi passwords, renames) now has rounded keys, an accent-filled
+  selected key and a dark input field with an accent outline
+- All: Save-slot previews get a rounded label chip; the frame still shows at a glance whether the
+  slot holds a state
+- Launcher: The browser is laid out in columns - a slim header band with the system logo and name,
+  the list on the left with a scrollbar, and the cover/save preview in a card of its own on the
+  right. Covers no longer float on top of the game names
+- Launcher: Selected row drawn as a pill with a leading accent bar, and a name too long to fit
+  scrolls (one character at a time, after a pause) while it is selected
+- Launcher: Hint bar along the bottom showing what the buttons do, with the item counter on the
+  right
+- Launcher: The system carousel shows the logo and banner on a translucent card, the systems as
+  pills at the bottom, and the battery/clock cluster it was missing
+- Launcher: Backgrounds get a scrim behind the header and footer so text stays readable over any
+  theme artwork, and the flat no-image background gets a soft accent gradient
+- Launcher: Animated boot screen on cold boot - a synthwave horizon with a scrolling grid, a
+  striped sun, twinkling stars, the console mark dropping in and switching on, and the wordmark
+  with a specular sweep. It is drawn from shapes rather than a bitmap, so it costs no flash and
+  fits every panel size. Any button skips it, and it can be turned off in
+  *Options > Launcher options > Boot animation*
+- Launcher: Update download progress uses the same card and bar as the rest of the UI
+- Theming: `theme.json`'s `dialog` section gains `accent`, `accent_dim`, `highlight`, `surface`,
+  `surface_alt`, `divider`, `text_dim` and `item_value`. All are optional and derived from the
+  existing keys when absent, so older themes keep working; colors may now be written as RGB888
+  (`0x5AAAFF`) as well as RGB565
+- Theming: All 13 bundled themes rewritten with a full palette each, one hue per theme - Art Book
+  Next (indigo), Commic Book (magenta), GBZ (lime), Super Lopez (orange), base (monochrome), basic
+  (cyan), box (amber), classic (navy), clean (mint), default (azure), noir (crimson), pixel
+  (violet) and tv (yellow on midnight blue). Each also gets its own `media` section and four
+  distinct launcher variants (white-on-accent, second colour, solid accent pill, high contrast),
+  and every theme's `description` is now its folder name
+
 # Retro-Go 3.6.0 (2026-08-09)
 
 ## Media Player (new)

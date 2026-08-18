@@ -54,7 +54,6 @@ static void draw_download_progress(int received, int total, int speed)
     const int bar_w = box_w - 24;
     const int bar_h = 26;
     const int inner_w = bar_w - 4;
-    const int inner_h = bar_h - 4;
     int fill_w;
 
     if (total > 0)
@@ -85,17 +84,25 @@ static void draw_download_progress(int received, int total, int speed)
     if (surface)
         rg_gui_set_surface(surface);
 
-    // Box/text chrome follows the active theme; the progress fill stays a
-    // recognizable blue-on-dark indicator regardless of theme.
-    rg_color_t box_bg = rg_gui_get_theme_color("dialog", "background", C_NAVY);
-    rg_color_t box_border = rg_gui_get_theme_color("dialog", "border", C_DIM_GRAY);
-    rg_color_t box_text = rg_gui_get_theme_color("dialog", "header", C_WHITE);
-    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, box_border, box_bg);
-    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", box_text, box_bg, RG_TEXT_ALIGN_CENTER);
-    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, box_text, C_BLACK);
-    rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
-    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
-    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, box_text, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+    // Same card, header chip and bar as the rest of the UI, so an update looks like part of the
+    // firmware rather than like a different program that took the screen.
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    rg_color_t box_bg = rg_gui_get_theme_color("dialog", "background", pal->background);
+    int text_h = rg_gui_get_font_height() + 2;
+    int chip_h = text_h + 6;
+
+    rg_gui_draw_shadow(box_x, box_y, box_w, box_h, 7, 3);
+    rg_gui_draw_panel(box_x, box_y, box_w, box_h, 7, box_bg, pal->border, 255);
+    rg_gui_draw_panel(box_x + 7, box_y + 7, box_w - 14, chip_h, 4, pal->surface_alt, C_NONE, 255);
+    rg_gui_draw_panel(box_x + 7, box_y + 9, 3, chip_h - 4, 1, pal->accent, C_NONE, 255);
+    rg_gui_draw_text(box_x + 14, box_y + 7 + (chip_h - text_h) / 2, box_w - 28, _("Downloading update"), pal->text,
+                     pal->surface_alt, RG_TEXT_ALIGN_CENTER);
+
+    // The fill keeps its own accent so a download always looks the same, whatever the theme
+    int bar_thickness = RG_MAX(bar_h / 4, 4);
+    rg_gui_draw_progress_bar(bar_x, bar_y + 2, bar_w, bar_thickness, (fill_w * 100) / RG_MAX(inner_w, 1), pal->accent,
+                             rg_gui_scale_color(pal->divider, 200));
+    rg_gui_draw_text(bar_x, bar_y + bar_thickness + 6, bar_w, info, pal->text_dim, box_bg, RG_TEXT_ALIGN_CENTER);
 
     if (surface)
     {

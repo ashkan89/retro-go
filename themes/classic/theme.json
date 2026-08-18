@@ -1,53 +1,72 @@
 {
-    "description": "Classic Retro-Go Theme",
+    "description": "classic",
     "website": "https://github.com/ashkan89/retro-go/",
     "author": "ducalex",
     "dialog": {
-        "__comment": "This section contains global dialog colors",
-        "background": "0x0010",
-        "foreground": "0xFFFF",
-        "border": "0x0010",
-        "header": "0xFFFF",
-        "scrollbar": "0xFFFF",
-        "shadow": "none",
-        "item_standard": "0xFFFF",
-        "item_disabled": "0x8410",
-        "item_message": "0xBDF7"
+        "__comment": "Global dialog colors. Colors may be given as RGB565 (0xFFFF) or RGB888 (0xFFFFFF). The accent/surface/divider keys drive the cards, header chips, selection pills and scrollbars; leave any of them out and it is derived from the keys above it.",
+        "background": "0x0A1030",
+        "foreground": "0xFBFCFF",
+        "border": "0x515875",
+        "header": "0xFBFCFF",
+        "scrollbar": "0x8FB0FF",
+        "shadow": "0x000000",
+        "item_standard": "0xE6E9F3",
+        "item_disabled": "0x6C7187",
+        "item_message": "0xBCC0CD",
+        "item_value": "0x9B9FB0",
+        "accent": "0x8FB0FF",
+        "accent_dim": "0x3D4D7F",
+        "highlight": "0xD4E1FF",
+        "surface": "0x303756",
+        "surface_alt": "0x1D264D",
+        "divider": "0x40455E",
+        "text_dim": "0x888DA0"
     },
     "launcher_1": {
-        "__comment": "This section contains launcher colors variant 1",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 1: white selection over the accent pill",
+        "background": "0x080C25",
+        "foreground": "0xFBFCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
+        "list_standard_fg": "0x969BAC",
         "list_selected_bg": "transparent",
-        "list_selected_fg": "0xFFFF"
+        "list_selected_fg": "0xFFFFFF"
     },
     "launcher_2": {
-        "__comment": "This section contains launcher colors variant 2",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 2: selection uses the theme's second color",
+        "background": "0x080C25",
+        "foreground": "0xFBFCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
+        "list_standard_fg": "0x8D91A4",
         "list_selected_bg": "transparent",
-        "list_selected_fg": "0x07E0"
+        "list_selected_fg": "0xFFFFFF"
     },
     "launcher_3": {
-        "__comment": "This section contains launcher colors variant 3",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 3: solid accent pill with dark text",
+        "background": "0x080C25",
+        "foreground": "0xFBFCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0x8410",
-        "list_selected_bg": "0xFFFF",
-        "list_selected_fg": "0x0000"
+        "list_standard_fg": "0x969BAC",
+        "list_selected_bg": "0x8FB0FF",
+        "list_selected_fg": "0x0A1030"
     },
     "launcher_4": {
-        "__comment": "This section contains launcher colors variant 4",
-        "background": "0x0000",
-        "foreground": "0xFFDE",
+        "__comment": "Launcher variant 4: high contrast, white pill with black text",
+        "background": "0x080C25",
+        "foreground": "0xFBFCFF",
         "list_standard_bg": "transparent",
-        "list_standard_fg": "0xAD55",
-        "list_selected_bg": "0xFFFF",
-        "list_selected_fg": "0x0000"
+        "list_standard_fg": "0xB7BBC9",
+        "list_selected_bg": "0xFFFFFF",
+        "list_selected_fg": "0x000000"
+    },
+    "media": {
+        "__comment": "Media player colors. Accents follow the album art when Dynamic theme is on.",
+        "background": "0x060A1F",
+        "surface": "0x303756",
+        "text": "0xF4F7FF",
+        "text_dim": "0x888DA0",
+        "divider": "0x40455E",
+        "accent": "0x8FB0FF",
+        "accent_dim": "0x4F639C",
+        "highlight": "0xD4E1FF"
     }
 }
