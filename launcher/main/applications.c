@@ -103,6 +103,365 @@ static int scan_saves_cb(const rg_scandir_t *entry, void *arg)
     return RG_SCANDIR_CONTINUE;
 }
 
+/* -------------------------------------------------------------------------------------------- */
+/* ROM list cache                                                                                 */
+/* -------------------------------------------------------------------------------------------- */
+/**
+ * Scanning a rom folder is the slowest thing the launcher does: every tab used to sit on
+ * "Loading..." until it had walked the whole directory tree, and it did that again every time the
+ * tab was re-entered. So the result of a scan is written to the cache folder and read back on the
+ * next boot, which makes opening a tab instant and lets the game count be shown before a tab has
+ * ever been opened.
+ *
+ * The cache records the folders it came from together with their modification times, so a folder
+ * whose contents changed is rescanned by itself. Because FAT does not always update a directory's
+ * timestamp when a file is added, that check is a best effort and not the only way out: a reboot
+ * revalidates everything, and "Scan Game List" in the menu forces a full rescan on demand.
+ */
+
+#define ROM_CACHE_MAGIC   0x4C524752 // "RGRL"
+#define ROM_CACHE_VERSION 1
+
+typedef struct __attribute__((packed))
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t entries;  // Number of files and folders in the list
+    uint32_t folders;  // Number of distinct folders in the mtime table that follows the header
+} romcache_header_t;
+
+/* Both tables are written as length-prefixed strings so the file stays valid whatever RG_PATH_MAX
+ * happens to be in the build that reads it. */
+typedef struct __attribute__((packed))
+{
+    uint16_t path_len;
+    int64_t mtime;
+} romcache_folder_t;
+
+typedef struct __attribute__((packed))
+{
+    uint8_t type;
+    uint16_t folder_index;
+    uint8_t name_len;
+} romcache_entry_t;
+
+static void romcache_path(const retro_app_t *app, char *out, size_t out_len)
+{
+    snprintf(out, out_len, RG_BASE_PATH_CACHE "/roms_%s.list", app->short_name);
+}
+
+/**
+ * Distinct folders of an app's current file list. Folder strings are interned (rg_unique_string), so
+ * they can be compared by pointer.
+ *
+ * Returns SIZE_MAX if there are more folders than the table can hold, which means no cache is
+ * written for that app: getting a folder wrong would rewrite the path of every game in it, so the
+ * only safe answer is to keep scanning.
+ */
+static size_t romcache_collect_folders(const retro_app_t *app, const char **folders, size_t max)
+{
+    size_t count = 0;
+
+    for (size_t i = 0; i < app->files_count; i++)
+    {
+        const char *folder = app->files[i].folder;
+        size_t j = 0;
+
+        if (!folder)
+            continue;
+
+        for (; j < count; j++)
+            if (folders[j] == folder)
+                break;
+
+        if (j < count)
+            continue;
+
+        if (count >= max)
+            return SIZE_MAX;
+
+        folders[count++] = folder;
+    }
+
+    // A freshly created (empty) rom folder still has to be recorded, or an app with no games would
+    // have nothing to revalidate and could never notice the first game being added.
+    if (count == 0 && max > 0)
+        folders[count++] = rg_unique_string(app->paths.roms);
+
+    return count;
+}
+
+static bool romcache_save(const retro_app_t *app)
+{
+    const char *folders[64];
+    size_t folders_count = romcache_collect_folders(app, folders, RG_COUNT(folders));
+    size_t size = sizeof(romcache_header_t);
+
+    if (folders_count == SIZE_MAX)
+    {
+        RG_LOGW("'%s' spans more than %d folders, not caching its list", app->short_name,
+                (int)RG_COUNT(folders));
+        return false;
+    }
+
+    for (size_t i = 0; i < folders_count; i++)
+        size += sizeof(romcache_folder_t) + strlen(folders[i]);
+
+    for (size_t i = 0; i < app->files_count; i++)
+        size += sizeof(romcache_entry_t) + strlen(app->files[i].name ?: "");
+
+    uint8_t *data = malloc(size);
+    if (!data)
+    {
+        RG_LOGW("Not enough memory to build the rom list cache for '%s'", app->short_name);
+        return false;
+    }
+
+    uint8_t *ptr = data;
+
+    romcache_header_t header = {
+        .magic = ROM_CACHE_MAGIC,
+        .version = ROM_CACHE_VERSION,
+        .entries = app->files_count,
+        .folders = folders_count,
+    };
+    memcpy(ptr, &header, sizeof(header)), ptr += sizeof(header);
+
+    for (size_t i = 0; i < folders_count; i++)
+    {
+        rg_stat_t stat = rg_storage_stat(folders[i]);
+        size_t path_len = strlen(folders[i]);
+        romcache_folder_t entry = {.path_len = path_len, .mtime = (int64_t)stat.mtime};
+        memcpy(ptr, &entry, sizeof(entry)), ptr += sizeof(entry);
+        memcpy(ptr, folders[i], path_len), ptr += path_len;
+    }
+
+    for (size_t i = 0; i < app->files_count; i++)
+    {
+        const retro_file_t *file = &app->files[i];
+        const char *name = file->name ?: "";
+        size_t name_len = RG_MIN(strlen(name), 255);
+        uint16_t folder_index = 0;
+
+        for (size_t j = 0; j < folders_count; j++)
+        {
+            if (folders[j] == file->folder)
+            {
+                folder_index = j;
+                break;
+            }
+        }
+
+        romcache_entry_t entry = {.type = file->type, .folder_index = folder_index, .name_len = name_len};
+        memcpy(ptr, &entry, sizeof(entry)), ptr += sizeof(entry);
+        memcpy(ptr, name, name_len), ptr += name_len;
+    }
+
+    char path[RG_PATH_MAX];
+    romcache_path(app, path, sizeof(path));
+
+    size_t written = ptr - data;
+    bool success = rg_storage_write_file(path, data, written, RG_FILE_ATOMIC_WRITE);
+    free(data);
+
+    if (success)
+        RG_LOGI("Cached %d entries for '%s' (%d bytes)", (int)app->files_count, app->short_name, (int)written);
+    else
+        RG_LOGW("Failed to write the rom list cache for '%s'", app->short_name);
+
+    return success;
+}
+
+/**
+ * Fill an app's file list from its cache file.
+ *
+ * `out_stale` reports that the cache was read but one of the folders it came from has since
+ * changed, which means the list is usable right now (so a tab can open instantly) but should be
+ * rescanned. The caller decides when that happens.
+ */
+static bool romcache_load(retro_app_t *app, bool *out_stale)
+{
+    char path[RG_PATH_MAX];
+    void *data = NULL;
+    size_t data_len = 0;
+    bool stale = false;
+
+    romcache_path(app, path, sizeof(path));
+
+    if (!rg_storage_read_file(path, &data, &data_len, 0))
+        return false;
+
+    const uint8_t *ptr = data;
+    const uint8_t *end = (const uint8_t *)data + data_len;
+    const char *folders[64];
+    size_t folders_count = 0;
+    bool valid = false;
+
+    romcache_header_t header;
+
+    if (data_len < sizeof(header))
+        goto done;
+
+    memcpy(&header, ptr, sizeof(header)), ptr += sizeof(header);
+
+    if (header.magic != ROM_CACHE_MAGIC || header.version != ROM_CACHE_VERSION)
+    {
+        RG_LOGI("Rom list cache for '%s' is from another version, ignoring it", app->short_name);
+        goto done;
+    }
+
+    if (header.folders > RG_COUNT(folders))
+        goto done;
+
+    for (uint32_t i = 0; i < header.folders; i++)
+    {
+        romcache_folder_t entry;
+        char folder[RG_PATH_MAX + 1];
+
+        if ((size_t)(end - ptr) < sizeof(entry))
+            goto done;
+
+        memcpy(&entry, ptr, sizeof(entry)), ptr += sizeof(entry);
+
+        if (entry.path_len > RG_PATH_MAX || (size_t)(end - ptr) < entry.path_len)
+            goto done;
+
+        memcpy(folder, ptr, entry.path_len), ptr += entry.path_len;
+        folder[entry.path_len] = 0;
+        folders[folders_count++] = rg_unique_string(folder);
+
+        rg_stat_t stat = rg_storage_stat(folder);
+        if (!stat.exists || (int64_t)stat.mtime != entry.mtime)
+        {
+            RG_LOGI("Folder '%s' changed since it was cached", folder);
+            stale = true;
+        }
+    }
+
+    // Grow once for the whole list instead of reallocating per entry like the scanner has to
+    if (header.entries > app->files_capacity)
+    {
+        retro_file_t *files = realloc(app->files, (header.entries + 10) * sizeof(retro_file_t));
+        if (!files)
+            goto done;
+        app->files = files;
+        app->files_capacity = header.entries + 10;
+    }
+
+    app->files_count = 0;
+
+    for (uint32_t i = 0; i < header.entries; i++)
+    {
+        romcache_entry_t entry;
+
+        if ((size_t)(end - ptr) < sizeof(entry))
+            goto done;
+
+        memcpy(&entry, ptr, sizeof(entry)), ptr += sizeof(entry);
+
+        if ((size_t)(end - ptr) < entry.name_len || entry.folder_index >= folders_count)
+            goto done;
+
+        // Copied through a local buffer because the bucket has to receive the terminator too, and
+        // reading it from the file buffer would step one byte past the end on the last entry.
+        char name_buffer[256];
+        memcpy(name_buffer, ptr, entry.name_len);
+        name_buffer[entry.name_len] = 0;
+        ptr += entry.name_len;
+
+        char *name = rg_bucket_insert(app->filenames, name_buffer, entry.name_len + 1);
+        if (!name)
+            goto done;
+
+        app->files[app->files_count++] = (retro_file_t){
+            .name = name,
+            .folder = folders[entry.folder_index],
+            .checksum = 0,
+            .missing_cover = 0,
+            .saves = 0,
+            .type = entry.type,
+            .app = app,
+        };
+    }
+
+    valid = true;
+
+done:
+    free(data);
+
+    if (!valid)
+    {
+        // A truncated or corrupt cache leaves a partial list behind, which would show up as missing
+        // games with no explanation. Drop it and let the caller scan.
+        app->files_count = 0;
+        rg_bucket_free(app->filenames);
+        app->filenames = rg_bucket_create(4096);
+        return false;
+    }
+
+    if (out_stale)
+        *out_stale = stale;
+
+    RG_LOGI("Loaded %d cached entries for '%s'%s", (int)app->files_count, app->short_name,
+            stale ? " (stale)" : "");
+    return true;
+}
+
+/**
+ * Read just the entry count out of an app's cache file.
+ *
+ * This is what lets a tab show its game count on the carousel before it has ever been opened,
+ * without paying for the whole list: it reads sixteen bytes, not the file.
+ */
+static int romcache_peek_count(const retro_app_t *app)
+{
+    char path[RG_PATH_MAX];
+    romcache_header_t header;
+    FILE *fp;
+    int count = -1;
+
+    romcache_path(app, path, sizeof(path));
+
+    if ((fp = fopen(path, "rb")))
+    {
+        if (fread(&header, sizeof(header), 1, fp) == 1 && header.magic == ROM_CACHE_MAGIC &&
+            header.version == ROM_CACHE_VERSION)
+            count = (int)header.entries;
+        fclose(fp);
+    }
+
+    return count;
+}
+
+/* Forget an app's list so the next application_init() has to scan the card again. */
+static void romcache_forget(retro_app_t *app)
+{
+    rg_bucket_free(app->filenames);
+    app->filenames = rg_bucket_create(4096);
+    app->files_count = 0;
+    app->initialized = false;
+    app->cached = false;
+}
+
+/* Walk the card and write the result to the cache. This is the slow path, in every sense. */
+static void application_scan(retro_app_t *app, bool interactive)
+{
+    if (interactive)
+        rg_gui_draw_message(_("Scanning %s..."), app->short_name);
+
+    RG_LOGI("Scanning roms for '%s'", app->short_name);
+
+    rg_bucket_free(app->filenames);
+    app->filenames = rg_bucket_create(4096);
+    app->files_count = 0;
+
+    rg_storage_scandir(app->paths.roms, scan_folder_cb, app, RG_SCANDIR_RECURSIVE);
+    romcache_save(app);
+
+    app->cached = true;
+    app->cached_count = app->files_count;
+}
+
 static void application_init(retro_app_t *app)
 {
     RG_LOGI("Initializing application '%s' (%s)", app->description, app->partition);
@@ -114,7 +473,24 @@ static void application_init(retro_app_t *app)
     rg_storage_mkdir(app->paths.saves);
     rg_storage_mkdir(app->paths.roms);
 
-    rg_storage_scandir(app->paths.roms, scan_folder_cb, app, RG_SCANDIR_RECURSIVE);
+    // The list comes from the cache whenever there is one, which is what makes opening a tab
+    // instant. A folder that changed since it was cached is rescanned, and so is a missing or
+    // unreadable cache.
+    if (!app->cached)
+    {
+        bool stale = false;
+        if (romcache_load(app, &stale))
+            app->cached = true;
+        if (!app->cached || stale)
+            application_scan(app, true);
+    }
+
+    app->cached_count = app->files_count;
+
+    // Save states are deliberately not cached: they appear and disappear while you play, and the
+    // saves folder is small enough to walk every time.
+    for (size_t i = 0; i < app->files_count; i++)
+        app->files[i].saves = 0;
     rg_storage_scandir(app->paths.saves, scan_saves_cb, app, RG_SCANDIR_RECURSIVE);
     // rg_storage_scandir(app->paths.covers, scan_folder_cb3, app, RG_SCANDIR_RECURSIVE);
 
@@ -431,13 +807,10 @@ static void event_handler(gui_event_t event, tab_t *tab)
     }
     else if (event == TAB_DEINIT)
     {
+        // The list is dropped to get the memory back; re-entering the tab reloads it from the cache,
+        // which is a single file read rather than another walk of the card.
         if (app && app->initialized)
-        {
-            rg_bucket_free(app->filenames);
-            app->filenames = rg_bucket_create(4096);
-            app->files_count = 0;
-            app->initialized = false;
-        }
+            romcache_forget(app);
     }
     else if (event == TAB_REFRESH)
     {
@@ -716,4 +1089,83 @@ void applications_init(void)
 
     if (!rg_system_get_app()->lowMemoryMode)
         crc_cache_init();
+
+    // Tell each tab how many games it holds, from the cache header alone. This is why a tab no
+    // longer sits on "Loading..." until it is opened: the count is known before any scanning.
+    for (int i = 0; i < apps_count; i++)
+    {
+        retro_app_t *app = apps[i];
+        tab_t *tab = gui_get_tab(i);
+        char status[32];
+
+        app->cached_count = romcache_peek_count(app);
+
+        if (!tab)
+            continue;
+
+        if (app->cached_count > 0)
+            snprintf(status, sizeof(status), _("%d games"), app->cached_count);
+        else if (app->cached_count == 0)
+            snprintf(status, sizeof(status), "%s", _("No games"));
+        else
+            snprintf(status, sizeof(status), "%s", _("Not scanned"));
+
+        gui_set_status(tab, status, "");
+    }
+}
+
+void applications_forget_lists(void)
+{
+    for (int i = 0; i < apps_count; i++)
+    {
+        romcache_forget(apps[i]);
+        apps[i]->cached_count = -1;
+    }
+
+    crc_cache_dirty = false; // Its file is gone; do not write the stale copy back out
+}
+
+/**
+ * Rescan every rom folder and rewrite the caches.
+ *
+ * This is the "Scan Game List" menu action, and the answer to "I copied new games onto the card":
+ * it does not trust the cached folder timestamps, it walks everything.
+ */
+void applications_scan_all(void)
+{
+    int total = 0;
+
+    for (int i = 0; i < apps_count; i++)
+    {
+        retro_app_t *app = apps[i];
+        char status[32];
+
+        if (!app->available)
+            continue;
+
+        // Give up on any button press, like the CRC prebuild does, so a big card is never a trap
+        if (rg_input_read_gamepad())
+            break;
+
+        rg_storage_mkdir(app->paths.roms);
+        romcache_forget(app);
+        application_scan(app, true);
+        total += app->files_count;
+
+        if (app->files_count > 0)
+            snprintf(status, sizeof(status), _("%d games"), (int)app->files_count);
+        else
+            snprintf(status, sizeof(status), "%s", _("No games"));
+        gui_set_status(gui_get_tab(i), status, "");
+
+        // Keep the lists out of RAM: they are on the card now and reload in one read
+        romcache_forget(app);
+    }
+
+    rg_storage_commit();
+    rg_gui_draw_message(_("Found %d games"), total);
+    rg_task_delay(900);
+
+    // Kick every tab so the next entry picks up the new lists
+    gui_invalidate();
 }

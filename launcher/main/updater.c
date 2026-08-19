@@ -23,6 +23,16 @@ typedef struct
     size_t assets_count;
 } release_t;
 
+/**
+ * How much is read from the socket and written to the card at a time.
+ *
+ * Bigger means fewer FatFs transactions and fewer trips through the HTTP client per megabyte, but
+ * the read only returns once the whole chunk has arrived, and the cancel button is polled between
+ * chunks - so this is also the worst-case delay before B is noticed. 32 KB is a tenth of a second at
+ * a healthy rate and just over a second on a bad link.
+ */
+#define DOWNLOAD_CHUNK_SIZE (32 * 1024)
+
 static void format_size(char *out, size_t out_len, int bytes, bool speed)
 {
     if (bytes < 0)
@@ -41,12 +51,11 @@ static void format_size(char *out, size_t out_len, int bytes, bool speed)
 
 static void draw_download_progress(int received, int total, int speed)
 {
-    static rg_surface_t *surface = NULL;
     char received_str[16], total_str[16], speed_str[16], info[80];
     const int screen_w = rg_display_get_width();
     const int screen_h = rg_display_get_height();
     const int box_w = RG_MIN(screen_w - 24, 300);
-    const int box_h = 82;
+    const int box_h = 96;
     const int box_x = (screen_w - box_w) / 2;
     const int box_y = (screen_h - box_h) / 2;
     const int bar_x = box_x + 12;
@@ -54,7 +63,6 @@ static void draw_download_progress(int received, int total, int speed)
     const int bar_w = box_w - 24;
     const int bar_h = 26;
     const int inner_w = bar_w - 4;
-    const int inner_h = bar_h - 4;
     int fill_w;
 
     if (total > 0)
@@ -76,33 +84,74 @@ static void draw_download_progress(int received, int total, int speed)
     else
         snprintf(info, sizeof(info), "%s  %s", received_str, speed_str);
 
-    if (!surface || surface->width != screen_w || surface->height != screen_h)
-    {
-        rg_surface_free(surface);
-        surface = rg_surface_create(screen_w, screen_h, RG_PIXEL_565_LE, MEM_SLOW);
-    }
+    // Composited like every other overlay, over whatever the launcher last drew: one transfer per
+    // update instead of a card built piece by piece on screen. This used to keep a full-screen
+    // scratch surface of its own (~150 KB) purely to avoid that flicker.
+    bool overlay = rg_gui_begin_overlay(box_x - 5, box_y - 5, box_w + 10, box_h + 12, C_NONE);
 
-    if (surface)
-        rg_gui_set_surface(surface);
+    // Same card, header chip and bar as the rest of the UI, so an update looks like part of the
+    // firmware rather than like a different program that took the screen.
+    const rg_gui_palette_t *pal = rg_gui_get_palette();
+    rg_color_t box_bg = rg_gui_get_theme_color("dialog", "background", pal->background);
+    int text_h = rg_gui_get_font_height() + 2;
+    int chip_h = text_h + 6;
 
-    // Box/text chrome follows the active theme; the progress fill stays a
-    // recognizable blue-on-dark indicator regardless of theme.
-    rg_color_t box_bg = rg_gui_get_theme_color("dialog", "background", C_NAVY);
-    rg_color_t box_border = rg_gui_get_theme_color("dialog", "border", C_DIM_GRAY);
-    rg_color_t box_text = rg_gui_get_theme_color("dialog", "header", C_WHITE);
-    rg_gui_draw_rect(box_x, box_y, box_w, box_h, 2, box_border, box_bg);
-    rg_gui_draw_text(box_x + 8, box_y + 12, box_w - 16, "Downloading update", box_text, box_bg, RG_TEXT_ALIGN_CENTER);
-    rg_gui_draw_rect(bar_x, bar_y, bar_w, bar_h, 1, box_text, C_BLACK);
-    rg_gui_draw_rect(bar_x + 2, bar_y + 2, inner_w, inner_h, 0, 0, C_DARK_GRAY);
-    rg_gui_draw_rect(bar_x + 2, bar_y + 2, fill_w, inner_h, 0, 0, C_DODGER_BLUE);
-    rg_gui_draw_text(bar_x + 3, bar_y + 6, bar_w - 6, info, box_text, C_TRANSPARENT, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_shadow(box_x, box_y, box_w, box_h, 7, 3);
+    rg_gui_draw_panel(box_x, box_y, box_w, box_h, 7, box_bg, pal->border, 255);
+    rg_gui_draw_panel(box_x + 7, box_y + 7, box_w - 14, chip_h, 4, pal->surface_alt, C_NONE, 255);
+    rg_gui_draw_panel(box_x + 7, box_y + 9, 3, chip_h - 4, 1, pal->accent, C_NONE, 255);
+    rg_gui_draw_text(box_x + 14, box_y + 7 + (chip_h - text_h) / 2, box_w - 28, _("Downloading update"), pal->text,
+                     pal->surface_alt, RG_TEXT_ALIGN_CENTER);
 
-    if (surface)
-    {
-        uint16_t *data = surface->data;
-        rg_gui_set_surface(NULL);
-        rg_gui_copy_buffer(box_x, box_y, box_w, box_h, screen_w * 2, data + box_y * screen_w + box_x, false);
-    }
+    // The fill keeps its own accent so a download always looks the same, whatever the theme
+    int bar_thickness = RG_MAX(bar_h / 4, 4);
+    rg_gui_draw_progress_bar(bar_x, bar_y + 2, bar_w, bar_thickness, (fill_w * 100) / RG_MAX(inner_w, 1), pal->accent,
+                             rg_gui_scale_color(pal->divider, 200));
+    rg_gui_draw_text(bar_x, bar_y + bar_thickness + 6, bar_w, info, pal->text_dim, box_bg, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_text(bar_x, bar_y + bar_thickness + 6 + text_h, bar_w, _("B  Cancel"), pal->accent, box_bg,
+                     RG_TEXT_ALIGN_CENTER);
+
+    if (overlay)
+        rg_gui_end_overlay();
+}
+
+typedef struct
+{
+    const char *keep;
+    int removed;
+} purge_state_t;
+
+static int purge_image_cb(const rg_scandir_t *file, void *arg)
+{
+    purge_state_t *state = (purge_state_t *)arg;
+
+    if (!file->is_file || !rg_extension_match(file->path, "img"))
+        return RG_SCANDIR_CONTINUE;
+    if (state->keep && strcmp(file->path, state->keep) == 0)
+        return RG_SCANDIR_CONTINUE;
+
+    RG_LOGI("Removing stale firmware image '%s'", file->path);
+    if (rg_storage_delete(file->path))
+        state->removed++;
+
+    return RG_SCANDIR_CONTINUE;
+}
+
+/**
+ * Delete firmware images already sitting in the download folder.
+ *
+ * Nothing used to clean these up, so every update left another few megabytes behind. That is not
+ * only wasted space (which a 4 MB image can easily run out of, and a truncated download then fails
+ * its checksum): the factory app looks in this folder for the image to apply, so an old one being
+ * there at all is a hazard.
+ */
+static int purge_stale_images(const char *keep)
+{
+    purge_state_t state = {.keep = keep};
+    rg_storage_scandir(RG_UPDATER_DOWNLOAD_LOCATION, purge_image_cb, &state, RG_SCANDIR_FILES);
+    if (state.removed)
+        RG_LOGI("Removed %d stale firmware image(s)", state.removed);
+    return state.removed;
 }
 
 static bool download_file(const char *url, const char *filename, int expected_size)
@@ -121,13 +170,19 @@ static bool download_file(const char *url, const char *filename, int expected_si
     RG_LOGI("Downloading: '%s' to '%s'", url, filename);
     rg_gui_draw_message("Connecting...");
 
-    if (!(req = rg_network_http_open(url, NULL)))
+    // A firmware image is megabytes, so this asks for a transfer sized for that: a 16 KB socket
+    // buffer inside the HTTP client and 64 KB reads out of it. The old 1 KB/16 KB pair meant
+    // thousands of small reads (and, over TLS, thousands of record boundaries) per megabyte.
+    rg_http_cfg_t http_cfg = RG_HTTP_DEFAULT_CONFIG();
+    http_cfg.buffer_size = 16 * 1024;
+
+    if (!(req = rg_network_http_open(url, &http_cfg)))
     {
         rg_gui_alert("Download failed!", "Connection failed!");
         return false;
     }
 
-    if (!(buffer = malloc(16 * 1024)))
+    if (!(buffer = malloc(DOWNLOAD_CHUNK_SIZE)))
     {
         rg_network_http_close(req);
         rg_gui_alert("Download failed!", "Out of memory!");
@@ -142,32 +197,110 @@ static bool download_file(const char *url, const char *filename, int expected_si
         return false;
     }
 
+    // A firmware image is megabytes and the card may not have room for it. Finding that out now
+    // beats finding out later: a write that runs out of space leaves a file whose size looks
+    // right but whose contents stop early, which then surfaces as a verification failure with no
+    // obvious cause.
+    int64_t free_space = rg_storage_get_free_space(filename);
+    int needed = req->content_length > 0 ? req->content_length : expected_size;
+
+    if (free_space >= 0 && needed > 0 && free_space < (int64_t)needed + 64 * 1024)
+    {
+        char message[128];
+        snprintf(message, sizeof(message), "Needs %d KB, only %d KB free on the card.", needed / 1024,
+                 (int)(free_space / 1024));
+        fclose(fp);
+        rg_storage_delete(filename);
+        rg_network_http_close(req);
+        free(buffer);
+        rg_gui_alert("Download failed!", message);
+        return false;
+    }
+
     int content_length = req->content_length > 0 ? req->content_length : expected_size;
     start_time = last_draw = rg_system_timer();
     draw_download_progress(0, content_length, 0);
 
-    while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
+    // Input is polled on every chunk. Before, the download owned the device until it finished: no
+    // button did anything, and once the screen had dimmed or switched off there was no way to bring
+    // it back either, because nothing was reading the gamepad (which is what wakes it).
+    bool cancelled = false;
+    uint32_t prev_keys = rg_input_read_gamepad();
+
+    while ((len = rg_network_http_read(req, buffer, DOWNLOAD_CHUNK_SIZE)) > 0)
     {
         rg_system_tick(0);
         received += len;
         written += fwrite(buffer, 1, len, fp);
         int64_t now = rg_system_timer();
+        int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
+
         if (now - last_draw > 200000)
         {
-            int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
             draw_download_progress(received, content_length, speed);
             last_draw = now;
         }
+
+        uint32_t keys = rg_input_read_gamepad();
+
+        // Edge triggered, so holding the button does not ask again and again
+        if ((keys & RG_KEY_B) && !(prev_keys & RG_KEY_B))
+        {
+            // The transfer just pauses while the question is on screen; the server may drop a
+            // connection left idle for a long time, in which case this fails like any other read
+            // error and the partial file is removed.
+            if (rg_gui_confirm(_("Cancel update?"), _("Stop the download and delete the partial file?"), false))
+            {
+                cancelled = true;
+                break;
+            }
+            draw_download_progress(received, content_length, speed);
+            last_draw = rg_system_timer();
+            keys = rg_input_read_gamepad();
+        }
+
+        prev_keys = keys;
+
         if (received != written)
             break; // No point in continuing
     }
-    int64_t end_time = rg_system_timer();
-    int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
-    draw_download_progress(received, content_length, speed);
+    if (!cancelled)
+    {
+        int64_t end_time = rg_system_timer();
+        int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
+        draw_download_progress(received, content_length, speed);
+    }
 
     rg_network_http_close(req);
     free(buffer);
-    fclose(fp);
+
+    // fclose is where a buffered write finally reaches the card, so it is also where running out
+    // of space shows up. Checking it (and the size that ended up on the card) is the difference
+    // between reporting a bad download now and a mysterious bad image later.
+    bool write_error = ferror(fp) != 0;
+    if (fclose(fp) != 0)
+        write_error = true;
+
+    rg_stat_t written_stat = rg_storage_stat(filename);
+
+    if (!cancelled && (write_error || (int)written_stat.size != written))
+    {
+        char message[128];
+        snprintf(message, sizeof(message), "The card stored %d of %d bytes.", (int)written_stat.size,
+                 written);
+        rg_storage_delete(filename);
+        rg_gui_alert("Download failed!", message);
+        return false;
+    }
+
+    if (cancelled)
+    {
+        rg_storage_delete(filename);
+        rg_gui_draw_message(_("Update cancelled"));
+        rg_task_delay(700);
+        gui_redraw();
+        return false;
+    }
 
     if (received != written || (received != content_length && content_length != -1))
     {
@@ -251,21 +384,50 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                 rg_gui_alert("Download failed!", "Could not create firmware folder!");
                 return RG_DIALOG_REDRAW;
             }
+            // Clear out earlier downloads before writing a new one: they are superseded by this
+            // image, they are what the factory app might otherwise pick up, and a 4 MB image needs
+            // the space they are holding.
+            if (rg_extension_match(dest_path, "img"))
+                purge_stale_images(dest_path);
             if (download_file(release->assets[sel].url, dest_path, release->assets[sel].size))
             {
-                if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
+                // The version from the image's own footer, because a release built for an older
+                // partition layout is indistinguishable from the right file until it fails.
+                char description[96] = {0};
+                char prompt[160];
+
+                if (rg_firmware_image_describe(dest_path, description, sizeof(description)))
+                    snprintf(prompt, sizeof(prompt), "%s\n\n%s", description, _("Reboot to flash?"));
+                else
+                    snprintf(prompt, sizeof(prompt), "%s", _("Reboot to flash?"));
+
+                if (rg_gui_confirm(_("Download complete!"), prompt, true))
                 {
                     if (rg_system_have_app(RG_UPDATER_APPLICATION))
                     {
                         if (rg_extension_match(dest_path, "img") &&
                             !rg_firmware_install_image(dest_path, RG_FIRMWARE_STAGE_PREPARE_UPDATE))
                         {
+                            // An image that does not verify is of no use to anyone, and leaving it on
+                            // the card means the factory app may pick it up on a later boot and fail
+                            // in the same way. Remove it so a retry starts clean.
+                            rg_storage_delete(dest_path);
                             return RG_DIALOG_REDRAW;
                         }
                         rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
                     }
                     else
-                        rg_gui_alert("Update failed!", "Firmware updater app not found!");
+                    {
+                        // No factory partition means there is nothing on this device that can flash
+                        // an image, and no amount of retrying will change that. The download is kept
+                        // so it can be flashed over USB, and the message says so instead of leaving
+                        // the user with "not found".
+                        rg_gui_alert(_("Cannot install update"),
+                                     _("This firmware has no factory partition, so it cannot flash an "
+                                       "image by itself.\n\nThe file was kept in /retro-go/firmware: "
+                                       "flash it over USB once, and updates will work from the device "
+                                       "after that."));
+                    }
                 }
             }
         }

@@ -20,6 +20,12 @@ static bool initialized;
 static bool player_started;
 static bool foreground;
 
+void media_clear_cache(void)
+{
+    // Safe before media_init(): the library knows whether it has ever been given a root
+    media_library_clear_cache();
+}
+
 void media_init(void)
 {
     if (initialized)

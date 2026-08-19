@@ -52,6 +52,10 @@ typedef struct
 {
     int max_redirections;
     int timeout_ms;
+    // Size of the buffer the HTTP client reads the socket into. It was hardcoded at 1 KB, which makes
+    // a bulk transfer pay the per-read cost (and, over TLS, per-record work) a thousand times per
+    // megabyte. 0 means use the default.
+    int buffer_size;
     // Perform POST request
     const void *post_data;
     int post_len;
@@ -68,6 +72,7 @@ typedef struct
     {                            \
         .max_redirections = 5,   \
         .timeout_ms = 30000,     \
+        .buffer_size = 4096,     \
         .post_data = NULL,       \
         .post_len = 0,           \
         .headers = NULL,         \

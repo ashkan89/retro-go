@@ -32,10 +32,29 @@
 #include <unistd.h>
 #endif
 
+#define SDMMC_CMD_STOP_TRANSMISSION     12
+#define SDMMC_CMD_SEND_STATUS           13
 #define SDMMC_CMD_READ_SINGLE_BLOCK     17
 #define SDMMC_CMD_READ_MULTIPLE_BLOCK   18
 #define SDMMC_CMD_WRITE_SINGLE_BLOCK    24
 #define SDMMC_CMD_WRITE_MULTIPLE_BLOCK  25
+
+#define SDCARD_MAX_RETRIES              3
+#define SDCARD_RECOVERY_TIMEOUT_MS      1000
+
+/**
+ * File reads are split into chunks of this size, each retried on its own.
+ *
+ * One `fread` becomes one multi-block transfer, so an unbounded read hands the card a burst that
+ * can span megabytes -- and a glitch anywhere in it loses the whole thing. Bounding the burst
+ * bounds what a retry has to repeat. 16 KB is small enough for that and large enough that the
+ * per-command overhead stays under the noise floor for ROM loading.
+ */
+#define FILE_IO_CHUNK_SIZE              0x4000
+#define FILE_IO_RETRIES                 3
+
+/* How many files may be open on the storage at once; see the note at the mount config. */
+#define RG_STORAGE_MAX_OPEN_FILES       8
 
 static bool disk_mounted = false;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
@@ -53,6 +72,91 @@ static wl_handle_t wl_handle = WL_INVALID_HANDLE;
     }
 
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
+static bool sdcard_is_data_cmd(uint32_t opcode)
+{
+    return opcode == SDMMC_CMD_READ_SINGLE_BLOCK || opcode == SDMMC_CMD_READ_MULTIPLE_BLOCK ||
+           opcode == SDMMC_CMD_WRITE_SINGLE_BLOCK || opcode == SDMMC_CMD_WRITE_MULTIPLE_BLOCK;
+}
+
+static bool sdcard_is_write_cmd(uint32_t opcode)
+{
+    return opcode == SDMMC_CMD_WRITE_SINGLE_BLOCK || opcode == SDMMC_CMD_WRITE_MULTIPLE_BLOCK;
+}
+
+static bool sdcard_is_multi_block_cmd(uint32_t opcode)
+{
+    return opcode == SDMMC_CMD_READ_MULTIPLE_BLOCK || opcode == SDMMC_CMD_WRITE_MULTIPLE_BLOCK;
+}
+
+static bool sdcard_is_transient_error(esp_err_t err)
+{
+    return err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC;
+}
+
+/**
+ * Put the card back in a known state after a failed data transfer, so that retrying is worthwhile.
+ *
+ * CMD18/CMD25 are open ended: the card keeps streaming (or accepting) blocks until CMD12 tells it
+ * to stop. Every error path inside the SPI host returns without sending that CMD12, so after a
+ * glitch the card is still in the middle of the old transfer. Re-issuing the failed command then
+ * reads the tail of that stream instead of a command response, which is why a single recoverable
+ * glitch used to poison every following read and surface as a file that "stops" at a random offset.
+ * Doing it in the right order -- stop, wait for ready, then retry -- is what every hardened SPI SD
+ * driver does (see carlk3/no-OS-FatFS-SD, sd_read_blocks) and what the SD spec asks for.
+ *
+ * Only ever called for data commands, which means the card is initialized and in the transfer
+ * state; running this during the mount handshake would confuse the initialization sequence.
+ */
+static void sdcard_recover(int slot, uint32_t timeout_ms, bool multi_block, bool is_write)
+{
+    // How long we are willing to wait for the card to say it is ready again. A read only has to
+    // stop streaming, which is immediate; a write may still be programming a block, which the
+    // spec allows to take a while. Keeping the read case short matters because a card that has
+    // been physically removed fails this way on every transfer, and a full timeout per attempt
+    // would turn "card pulled out" into seconds of stall per read.
+    const uint32_t ready_budget_ms = is_write ? timeout_ms : RG_MIN(timeout_ms, 250u);
+
+#if defined(RG_STORAGE_SDSPI_HOST)
+    // Only the SPI host needs this. The SDMMC host tags multi block transfers with an "auto stop"
+    // flag, so its hardware issues CMD12 itself whether the transfer succeeded or not and the card
+    // is never left mid-stream.
+    if (multi_block)
+    {
+        sdmmc_command_t stop = {
+            .opcode = SDMMC_CMD_STOP_TRANSMISSION,
+            .arg = 0,
+            .flags = SCF_CMD_AC | SCF_RSP_R1B,
+            .timeout_ms = timeout_ms,
+        };
+        // A card that had already finished rejects the command, which is harmless: all we need is
+        // for it to be stopped by the time we return.
+        esp_err_t err = SDCARD_DO_TRANSACTION(slot, &stop);
+        RG_LOGD("SD Card CMD12 during recovery returned 0x%x", err);
+        (void)err;
+    }
+#else
+    (void)multi_block;
+#endif
+
+    // Then poll until the card answers a status request. This is both the "is it done yet" check
+    // and a resync: the response to CMD13 is the first correctly framed byte after the abort.
+    int64_t deadline = rg_system_timer() + (int64_t)ready_budget_ms * 1000;
+    do
+    {
+        sdmmc_command_t status = {
+            .opcode = SDMMC_CMD_SEND_STATUS,
+            .arg = card_handle ? ((uint32_t)card_handle->rca << 16) : 0,
+            .flags = SCF_CMD_AC | SCF_RSP_R1,
+            .timeout_ms = timeout_ms,
+        };
+        if (SDCARD_DO_TRANSACTION(slot, &status) == ESP_OK)
+            return;
+        rg_task_delay(2);
+    } while (rg_system_timer() < deadline);
+
+    RG_LOGW("SD Card did not report ready during recovery");
+}
+
 static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
 {
     rg_indicator_t indicator = RG_INDICATOR_ACTIVITY_DISK;
@@ -64,10 +168,6 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
     rg_system_set_indicator(indicator, 1);
 
     esp_err_t ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
-    if (ret == ESP_ERR_NO_MEM)
-    {
-        // free some memory and try again?
-    }
 
     // The initial mount handshake already retries on these same transient errors
     // (see rg_storage_init below), but every transaction after that -- including the
@@ -76,15 +176,38 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
     // glitchy block read/write here used to surface as silent, undiagnosable truncation
     // or corruption further up the stack (e.g. a directory listing that stops early with
     // no error, or a short file read/write).
-    if (ret == ESP_ERR_TIMEOUT || ret == ESP_ERR_INVALID_RESPONSE || ret == ESP_ERR_INVALID_CRC)
+    if (sdcard_is_transient_error(ret))
     {
-        for (int attempt = 1; attempt <= 3 && ret != ESP_OK; ++attempt)
+        const bool is_data = sdcard_is_data_cmd(cmdinfo->opcode);
+        const bool is_multi = sdcard_is_multi_block_cmd(cmdinfo->opcode);
+        const bool is_write = sdcard_is_write_cmd(cmdinfo->opcode);
+        const uint32_t timeout_ms = cmdinfo->timeout_ms ?: SDCARD_RECOVERY_TIMEOUT_MS;
+
+        for (int attempt = 1; attempt <= SDCARD_MAX_RETRIES && ret != ESP_OK; ++attempt)
         {
-            RG_LOGW("SD Card transaction failed (0x%x), retry %d/3...\n", ret, attempt);
+            RG_LOGW("SD Card transaction failed (op=%d, 0x%x), retry %d/%d...\n", (int)cmdinfo->opcode, ret, attempt,
+                    SDCARD_MAX_RETRIES);
+            // Without this the retry talks over a card that is still streaming the failed transfer
+            // and is essentially guaranteed to fail too.
+            if (is_data)
+                sdcard_recover(slot, timeout_ms, is_multi, is_write);
+            else
+                rg_task_delay(2);
             ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
         }
         if (ret != ESP_OK)
-            RG_LOGE("SD Card transaction failed after retries (0x%x)\n", ret);
+            RG_LOGE("SD Card transaction failed after %d retries (op=%d, 0x%x)\n", SDCARD_MAX_RETRIES,
+                    (int)cmdinfo->opcode, ret);
+        else if (is_data)
+            RG_LOGI("SD Card recovered after a failed transfer (op=%d)\n", (int)cmdinfo->opcode);
+    }
+    else if (ret != ESP_OK && sdcard_is_data_cmd(cmdinfo->opcode))
+    {
+        // Not retriable, but the card can still be left mid-stream by an aborted multi block
+        // transfer. Stop it anyway so the *next* unrelated read isn't collateral damage.
+        if (sdcard_is_multi_block_cmd(cmdinfo->opcode))
+            sdcard_recover(slot, cmdinfo->timeout_ms ?: SDCARD_RECOVERY_TIMEOUT_MS, true,
+                           sdcard_is_write_cmd(cmdinfo->opcode));
     }
 
     rg_system_set_indicator(indicator, 0);
@@ -132,7 +255,10 @@ void rg_storage_init(void)
 
     esp_vfs_fat_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 4,
+        // The launcher alone can have several of these open at once (the media library scanner,
+        // the artwork worker, the audio reader and whatever the UI is doing), and running out
+        // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
+        .max_files = RG_STORAGE_MAX_OPEN_FILES,
         .allocation_unit_size = 0,
     };
 
@@ -173,7 +299,10 @@ void rg_storage_init(void)
 
     esp_vfs_fat_mount_config_t mount_config = {
         .format_if_mount_failed = false,
-        .max_files = 4,
+        // The launcher alone can have several of these open at once (the media library scanner,
+        // the artwork worker, the audio reader and whatever the UI is doing), and running out
+        // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
+        .max_files = RG_STORAGE_MAX_OPEN_FILES,
         .allocation_unit_size = 0,
     };
 
@@ -214,7 +343,7 @@ void rg_storage_init(void)
 
         esp_vfs_fat_mount_config_t mount_config = {
             .format_if_mount_failed = true, // if mount failed, it's probably because it's a clean install so the partition hasn't been formatted yet
-            .max_files = 4, // must be initialized, otherwise it will be 0, which doesn't make sense, and will trigger an ESP_ERR_NO_MEM error
+            .max_files = RG_STORAGE_MAX_OPEN_FILES, // must be initialized, otherwise it will be 0, which doesn't make sense, and will trigger an ESP_ERR_NO_MEM error
         };
 
         esp_err_t err = esp_vfs_fat_spiflash_mount(RG_STORAGE_ROOT, RG_STORAGE_FLASH_PARTITION, &mount_config, &wl_handle);
@@ -479,6 +608,49 @@ int64_t rg_storage_get_free_space(const char *path)
     return -1;
 }
 
+/**
+ * Read exactly `length` bytes starting at `offset`, in bounded chunks, retrying each one.
+ *
+ * Reads are addressed absolutely rather than sequentially because the stream position is not
+ * defined after a failed read: continuing from wherever it ended up would silently return the
+ * wrong bytes rather than an error. A file that is genuinely shorter than its directory entry
+ * claims, or a card that is really gone, fails every attempt and is reported with the offset it
+ * stopped at -- which used to be the one piece of information a caller never got.
+ */
+static bool file_read_at(FILE *fp, long offset, void *buffer, size_t length, const char *path)
+{
+    uint8_t *dest = buffer;
+    size_t done = 0;
+
+    while (done < length)
+    {
+        size_t chunk = RG_MIN(length - done, (size_t)FILE_IO_CHUNK_SIZE);
+        bool ok = false;
+
+        for (int attempt = 0; attempt <= FILE_IO_RETRIES && !ok; ++attempt)
+        {
+            if (attempt > 0)
+            {
+                RG_LOGW("Read at offset %d of '%s' failed, retry %d/%d", (int)(offset + done), path, attempt,
+                        FILE_IO_RETRIES);
+                clearerr(fp);
+                rg_task_delay(10);
+            }
+            ok = fseek(fp, offset + (long)done, SEEK_SET) == 0 && fread(dest + done, 1, chunk, fp) == chunk;
+        }
+
+        if (!ok)
+        {
+            RG_LOGE("Read of '%s' stopped at %d of %d bytes (errno %d)", path, (int)(done), (int)length, errno);
+            return false;
+        }
+
+        done += chunk;
+    }
+
+    return true;
+}
+
 bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, uint32_t flags)
 {
     RG_ASSERT_ARG(data_out && data_len);
@@ -497,9 +669,14 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
         return false;
     }
 
-    fseek(fp, 0, SEEK_END);
-    file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
+    long probed_size = (fseek(fp, 0, SEEK_END) == 0) ? ftell(fp) : -1;
+    if (probed_size < 0)
+    {
+        RG_LOGE("Could not determine the size of '%s' (%d)", path, errno);
+        fclose(fp);
+        return false;
+    }
+    file_size = (size_t)probed_size;
 
     if (flags & RG_FILE_USER_BUFFER)
     {
@@ -522,9 +699,8 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
         return false;
     }
 
-    if (!fread(output_buffer, output_buffer_size, 1, fp))
+    if (output_buffer_size && !file_read_at(fp, 0, output_buffer, output_buffer_size, path))
     {
-        RG_LOGE("File read failed (%d): '%s'", errno, path);
         fclose(fp);
         if (!(flags & RG_FILE_USER_BUFFER))
             free(output_buffer);
@@ -549,23 +725,65 @@ bool rg_storage_write_file(const char *path, const void *data_ptr, size_t data_l
     RG_ASSERT_ARG(data_ptr || !data_len);
     CHECK_PATH(path);
 
-    // TODO: If atomic is true we should write to a temp file and only replace the target on success
-    FILE *fp = fopen(path, "wb");
+    char temp_path[RG_PATH_MAX + 1];
+    const char *target = path;
+
+    // RG_FILE_ATOMIC_WRITE has been part of this function's documented contract, and half a dozen
+    // callers pass it, but nothing implemented it: every write went straight at the target, so an
+    // interrupted one (power loss, card pulled, card full) left the settings/playlist/cache file
+    // truncated instead of leaving the previous version intact.
+    bool atomic = (flags & RG_FILE_ATOMIC_WRITE) && (strlen(path) + 4 <= RG_PATH_MAX);
+
+    if ((flags & RG_FILE_ATOMIC_WRITE) && !atomic)
+        RG_LOGW("Path too long to write atomically, writing in place: '%s'", path);
+
+    if (atomic)
+    {
+        snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+        target = temp_path;
+    }
+
+    FILE *fp = fopen(target, "wb");
     if (!fp)
     {
-        RG_LOGE("Fopen failed (%d): '%s'", errno, path);
+        RG_LOGE("Fopen failed (%d): '%s'", errno, target);
         return false;
     }
 
-    if (data_len && !fwrite(data_ptr, data_len, 1, fp))
+    bool success = !data_len || fwrite(data_ptr, 1, data_len, fp) == data_len;
+
+    if (!success)
+        RG_LOGE("Fwrite failed (%d): '%s'", errno, target);
+    if (ferror(fp))
+        success = false;
+
+    // fclose is where buffered data finally reaches the card, so it is also where a full card or a
+    // dying one shows up. Not checking it reported a successful write for a file that never landed.
+    if (fclose(fp) != 0)
     {
-        RG_LOGE("Fwrite failed (%d): '%s'", errno, path);
-        fclose(fp);
-        return false;
+        RG_LOGE("Fclose failed (%d): '%s'", errno, target);
+        success = false;
     }
 
-    fclose(fp);
-    return true;
+    if (atomic)
+    {
+        // FatFs' rename refuses to overwrite an existing name, so the old file has to go first.
+        // Losing power in that window leaves the complete new data in the .tmp file, which is a
+        // recoverable state; what must never happen is the target being left half written.
+        if (success)
+        {
+            remove(path);
+            if (rename(temp_path, path) != 0)
+            {
+                RG_LOGE("Rename failed (%d): '%s' -> '%s'", errno, temp_path, path);
+                success = false;
+            }
+        }
+        if (!success)
+            remove(temp_path);
+    }
+
+    return success;
 }
 
 /**
@@ -673,11 +891,8 @@ bool rg_storage_unzip_file(const char *zip_path, const char *filter, void **data
     {
         size_t input_size = RG_MIN(read_buffer_size, stream_remaining);
         size_t output_size = output_buffer_size - output_buffer_pos;
-        if (fseek(fp, stream_offset, SEEK_SET) != 0 || fread(read_buffer, input_size, 1, fp) != 1)
-        {
-            RG_LOGE("Read error (%d): '%s'", errno, zip_path);
+        if (!file_read_at(fp, stream_offset, read_buffer, input_size, zip_path))
             goto _fail;
-        }
         stream_offset += input_size;
         stream_remaining -= input_size;
         status = tinfl_decompress(

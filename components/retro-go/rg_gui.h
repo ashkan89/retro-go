@@ -110,6 +110,14 @@ void rg_gui_init(void);
 void rg_gui_update_geometry(void);
 bool rg_gui_set_language_id(int index);
 void rg_gui_set_surface(rg_surface_t *surface);
+/* Register what is behind the GUI's overlays (the launcher passes the surface it renders into), so
+ * dialogs can be composited over it in one transfer instead of being painted onto the panel. */
+void rg_gui_set_backdrop(const rg_surface_t *surface);
+/* Composite a region offscreen and send it in one transfer. `seed` is the color to start from, or
+ * C_NONE to start from the registered backdrop. Returns false if it could not be set up, which is
+ * not an error: draw as usual in that case. */
+bool rg_gui_begin_overlay(int x_pos, int y_pos, int width, int height, rg_color_t seed);
+void rg_gui_end_overlay(void);
 bool rg_gui_set_font(int index);
 bool rg_gui_set_theme(const char *name);
 int rg_gui_get_font_height(void);
@@ -126,6 +134,46 @@ rg_rect_t rg_gui_draw_message_flags(int flags, const char *format, ...);
 rg_rect_t rg_gui_draw_message(const char *format, ...);
 void rg_gui_draw_rect(int x_pos, int y_pos, int width, int height, int border_size,
                       rg_color_t border_color, rg_color_t fill_color);
+void rg_gui_draw_line(int x1, int y1, int x2, int y2, rg_color_t color, int alpha);
+void rg_gui_draw_disc(int x_center, int y_center, int radius, rg_color_t color, int alpha);
+void rg_gui_draw_panel(int x_pos, int y_pos, int width, int height, int radius, rg_color_t fill_color,
+                       rg_color_t border_color, int alpha);
+void rg_gui_draw_shadow(int x_pos, int y_pos, int width, int height, int radius, int size);
+void rg_gui_draw_gradient(int x_pos, int y_pos, int width, int height, rg_color_t from, rg_color_t to,
+                          bool horizontal, int alpha);
+void rg_gui_draw_scrollbar(int x_pos, int y_pos, int height, int visible, int total, int offset);
+void rg_gui_draw_progress_bar(int x_pos, int y_pos, int width, int height, int percent, rg_color_t fill_color,
+                              rg_color_t track_color);
+void rg_gui_draw_battery_icon(int x_pos, int y_pos, int width, int height);
+void rg_gui_draw_wifi_icon(int x_pos, int y_pos, int width, int height);
+
+/* Color utilities. Alpha and scale are 0-255 to keep the math in integers. */
+rg_color_t rg_gui_blend_color(rg_color_t base, rg_color_t over, int alpha);
+rg_color_t rg_gui_scale_color(rg_color_t color, int scale);
+int rg_gui_color_luma(rg_color_t color);
+/* True when the GUI draws into a surface we can read back, which is what translucency needs.
+ * When it is false, blended draws fall back to compositing against the theme background. */
+bool rg_gui_can_blend(void);
+void rg_gui_fill_blend(int x_pos, int y_pos, int width, int height, rg_color_t color, int alpha);
+void rg_gui_dim_area(int x_pos, int y_pos, int width, int height, int scale);
+
+/* Accent-aware theme colors, resolved once when the theme is loaded (see rg_gui_set_theme). */
+typedef struct
+{
+    rg_color_t background;
+    rg_color_t surface;
+    rg_color_t surface_alt;
+    rg_color_t border;
+    rg_color_t divider;
+    rg_color_t text;
+    rg_color_t text_dim;
+    rg_color_t accent;
+    rg_color_t accent_dim;
+    rg_color_t highlight;
+    rg_color_t shadow;
+} rg_gui_palette_t;
+
+const rg_gui_palette_t *rg_gui_get_palette(void);
 void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resample, const rg_image_t *img);
 void rg_gui_draw_icons(void);
 void rg_gui_draw_hourglass(void); // This should be moved to system or display...

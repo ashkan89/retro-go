@@ -74,6 +74,9 @@ void media_library_set_root(const char *root);
 /** Load the on-disk index into RAM. Returns false when absent or incompatible. */
 bool media_library_load(void);
 
+/** Delete the derived index (library.idx) so it is rebuilt. Keeps stats.bin, which is user data. */
+void media_library_clear_cache(void);
+
 /** Start a background scan. `full` discards the existing index instead of updating it. */
 bool media_library_scan_start(bool full);
 void media_library_scan_stop(void);

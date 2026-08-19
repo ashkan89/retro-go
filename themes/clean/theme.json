@@ -1,0 +1,72 @@
+{
+    "description": "clean",
+    "website": "https://github.com/ashkan89/retro-go/",
+    "author": "retro-go",
+    "dialog": {
+        "__comment": "Global dialog colors. Colors may be given as RGB565 (0xFFFF) or RGB888 (0xFFFFFF). The accent/surface/divider keys drive the cards, header chips, selection pills and scrollbars; leave any of them out and it is derived from the keys above it.",
+        "background": "0x0D1618",
+        "foreground": "0xF7FDFC",
+        "border": "0x49605E",
+        "header": "0xF7FDFC",
+        "scrollbar": "0x2FD8B4",
+        "shadow": "0x000000",
+        "item_standard": "0xDDEDEB",
+        "item_disabled": "0x6A7676",
+        "item_message": "0xB5C4C2",
+        "item_value": "0x96A4A3",
+        "accent": "0x2FD8B4",
+        "accent_dim": "0x1A6053",
+        "highlight": "0xB0F0E2",
+        "surface": "0x2C3E3E",
+        "surface_alt": "0x12312E",
+        "divider": "0x42494B",
+        "text_dim": "0x849291"
+    },
+    "launcher_1": {
+        "__comment": "Launcher variant 1: white selection over the accent pill",
+        "background": "0x0A1113",
+        "foreground": "0xF7FDFC",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x929F9E",
+        "list_selected_bg": "transparent",
+        "list_selected_fg": "0xFFFFFF"
+    },
+    "launcher_2": {
+        "__comment": "Launcher variant 2: selection uses the theme's second color",
+        "background": "0x0A1113",
+        "foreground": "0xF7FDFC",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x899695",
+        "list_selected_bg": "transparent",
+        "list_selected_fg": "0x8AF0DC"
+    },
+    "launcher_3": {
+        "__comment": "Launcher variant 3: solid accent pill with dark text",
+        "background": "0x0A1113",
+        "foreground": "0xF7FDFC",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0x929F9E",
+        "list_selected_bg": "0x2FD8B4",
+        "list_selected_fg": "0x0D1618"
+    },
+    "launcher_4": {
+        "__comment": "Launcher variant 4: high contrast, white pill with black text",
+        "background": "0x0A1113",
+        "foreground": "0xF7FDFC",
+        "list_standard_bg": "transparent",
+        "list_standard_fg": "0xB1BFBE",
+        "list_selected_bg": "0xFFFFFF",
+        "list_selected_fg": "0x000000"
+    },
+    "media": {
+        "__comment": "Media player colors. Accents follow the album art when Dynamic theme is on.",
+        "background": "0x080E10",
+        "surface": "0x2C3E3E",
+        "text": "0xEAFBF8",
+        "text_dim": "0x849291",
+        "divider": "0x42494B",
+        "accent": "0x2FD8B4",
+        "accent_dim": "0x1F7B69",
+        "highlight": "0xB0F0E2"
+    }
+}

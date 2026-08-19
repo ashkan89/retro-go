@@ -149,6 +149,10 @@ static TaskHandle_t screen_timeout_owner;
 #endif
 static int64_t screen_last_activity = 0;
 static bool screen_timeout_wait_release = false;
+// Set while something long and uninterruptible is on screen (a firmware update, say). Those loops
+// draw progress but never read the gamepad, so the timeout would dim and then blank the screen
+// mid-operation with no way for the user to bring it back.
+static bool screen_timeout_inhibited = false;
 
 static void screen_timeout_tick(void);
 
@@ -721,7 +725,7 @@ static void enter_recovery_mode(void)
         {
         case 0:
             rg_settings_reset();
-            rg_storage_delete(RG_BASE_PATH_CACHE);
+            rg_system_clear_cache();
             break;
         case 1:
             rg_system_switch_app(RG_APP_FACTORY, 0, 0, 0);
@@ -1295,7 +1299,7 @@ void rg_system_tick(int busyTime)
 
 static bool screen_timeout_enabled(void)
 {
-    if (!app.initialized || !app.isLauncher)
+    if (!app.initialized || !app.isLauncher || screen_timeout_inhibited)
         return false;
 #if defined(ESP_PLATFORM)
     // Only the UI task drives the timeout; see the note next to screen_timeout_owner.
@@ -1330,6 +1334,28 @@ static void screen_timeout_wake(void)
 bool rg_system_screen_is_dimmed(void)
 {
     return screen_timeout_is_active();
+}
+
+void rg_system_set_screen_timeout_inhibit(bool inhibit)
+{
+    screen_timeout_inhibited = inhibit;
+
+    if (!inhibit)
+    {
+        // Start the idle countdown from now rather than from whenever the user last pressed a
+        // button, otherwise the screen dims the instant a long operation finishes.
+        screen_last_activity = rg_system_timer();
+        return;
+    }
+
+    // If the screen had already dimmed or switched off, bring it back: the caller is about to
+    // show progress on it. Waking dispatches a redraw, which the comment next to
+    // screen_timeout_owner explains must happen on the UI task only.
+#if defined(ESP_PLATFORM)
+    if (screen_timeout_owner && xTaskGetCurrentTaskHandle() != screen_timeout_owner)
+        return;
+#endif
+    screen_timeout_wake();
 }
 
 uint32_t rg_system_filter_screen_timeout_input(uint32_t joystick)
@@ -1460,6 +1486,29 @@ void rg_system_sleep(void)
 #else
     exit(0);
 #endif
+}
+
+/**
+ * Throw away everything that can be rebuilt from the card's actual contents.
+ *
+ * Everything under the shared cache folder goes: rom lists, CRC checksums, the saved clock, and any
+ * per-emulator cache files (RG_PATH_CACHE_FILE lands there too). Caches that belong to a component
+ * rather than to the firmware - the media player's library index, for one - are cleared by the app
+ * in response to RG_EVENT_CLEAR_CACHE, because only it knows where they live.
+ *
+ * Saves, save states, screenshots, cover art, themes, borders and settings are user data and are
+ * never touched here.
+ */
+void rg_system_clear_cache(void)
+{
+    RG_LOGI("Clearing caches...");
+
+    rg_storage_delete(RG_BASE_PATH_CACHE);
+    rg_storage_mkdir(RG_BASE_PATH_CACHE);
+
+    rg_system_event(RG_EVENT_CLEAR_CACHE, NULL);
+
+    rg_storage_commit();
 }
 
 void rg_system_restart(void)

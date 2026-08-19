@@ -16,6 +16,7 @@
 #include "browser.h"
 #include "gui.h"
 #include "media_tab.h"
+#include "splash.h"
 #include "webui.h"
 #include "updater.h"
 
@@ -52,9 +53,10 @@ static rg_gui_event_t toggle_tabs_cb(rg_gui_option_t *option, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
+/* Only the game list; menus and dialogs always scroll one row at a time (see rg_gui_draw_dialog). */
 static rg_gui_event_t scroll_mode_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
-    const char *modes[SCROLL_MODE_COUNT] = {_("Center"), _("Paging")};
+    const char *modes[SCROLL_MODE_COUNT] = {_("Centered"), _("Paging")};
     const int max = SCROLL_MODE_COUNT - 1;
 
     if (event == RG_DIALOG_PREV && --gui.scroll_mode < 0)
@@ -135,6 +137,17 @@ static rg_gui_event_t color_theme_cb(rg_gui_option_t *option, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t boot_animation_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    bool enabled = splash_enabled();
+
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+        splash_set_enabled((enabled = !enabled));
+
+    strcpy(option->value, enabled ? _("On") : _("Off"));
+    return RG_DIALOG_VOID;
+}
+
 static rg_gui_event_t startup_app_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     const char *modes[] = {_("Last game"), _("Launcher")};
@@ -180,6 +193,44 @@ static rg_gui_event_t webui_switch_cb(rg_gui_option_t *option, rg_gui_event_t ev
     return RG_DIALOG_VOID;
 }
 #endif
+
+static rg_gui_event_t scan_games_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        // Explicit rescan of every rom folder. The launcher normally trusts its cache, so this is
+        // what you reach for after copying new games onto the card.
+        rg_input_wait_for_key(RG_KEY_ANY, false, 1000);
+        #ifdef RG_ENABLE_NETWORKING
+        webui_stop();
+        #endif
+        applications_scan_all();
+        #ifdef RG_ENABLE_NETWORKING
+        if (rg_settings_get_number(NS_APP, SETTING_WEBUI, true))
+            webui_start();
+        #endif
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t reboot_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        if (rg_gui_confirm(_("Reboot"), _("Restart the console now?"), true))
+        {
+            gui_save_config();
+            rg_settings_commit();
+            // A software restart is not a cold boot as far as rg_system is concerned, so ask for the
+            // animation explicitly: rebooting is exactly when you want to see it.
+            splash_request();
+            rg_system_restart();
+        }
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
 
 static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
@@ -428,7 +479,10 @@ static void retro_loop(void)
             prev_joystick = 0;
             gui_event(TAB_IDLE, tab);
             next_idle_event = rg_system_timer() + 100000;
-            if (gui.idle_counter % 10 == 1)
+            // Once a second for the clock and status text, but on every idle tick (100ms) while
+            // something on screen is actually moving - that is what makes a long game name scroll
+            // instead of stepping once per second.
+            if (gui.idle_counter % 10 == 1 || gui_has_animation())
                 redraw_pending = true;
         }
         else if (gui.idle_counter)
@@ -481,6 +535,14 @@ void event_handler(int event, void *arg)
     // over the player.
     if (event == RG_EVENT_REDRAW && !media_is_foreground())
         gui_redraw();
+
+    // Caches the core knows nothing about: the media library index, and the rom lists we are
+    // holding in RAM (their files have just been deleted underneath us).
+    if (event == RG_EVENT_CLEAR_CACHE)
+    {
+        media_clear_cache();
+        applications_forget_lists();
+    }
 }
 
 static void options_handler(rg_gui_option_t *dest)
@@ -488,8 +550,9 @@ static void options_handler(rg_gui_option_t *dest)
     const rg_gui_option_t options[] = {
         {0, _("Color theme"),  "-", RG_DIALOG_FLAG_NORMAL, &color_theme_cb},
         {0, _("Preview"),      "-", RG_DIALOG_FLAG_NORMAL, &show_preview_cb},
-        {0, _("Scroll mode"),  "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
+        {0, _("List scrolling"), "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
         {0, _("Start screen"), "-", RG_DIALOG_FLAG_NORMAL, &start_screen_cb},
+        {0, _("Boot animation"), "-", RG_DIALOG_FLAG_NORMAL, &boot_animation_cb},
         {0, _("Screen dim"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_dim_timeout_cb},
         {0, _("Screen off"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_off_timeout_cb},
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
@@ -504,7 +567,9 @@ static void options_handler(rg_gui_option_t *dest)
 
 static void about_handler(rg_gui_option_t *dest)
 {
+    *dest++ = (rg_gui_option_t){0, _("Scan Game List"), NULL, RG_DIALOG_FLAG_NORMAL, &scan_games_cb};
     *dest++ = (rg_gui_option_t){0, _("Build CRC cache"), NULL, RG_DIALOG_FLAG_NORMAL, &prebuild_cache_cb};
+    *dest++ = (rg_gui_option_t){0, _("Reboot"), NULL, RG_DIALOG_FLAG_NORMAL, &reboot_cb};
     #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
     *dest++ = (rg_gui_option_t){0, _("Check for updates"), NULL, RG_DIALOG_FLAG_NORMAL, &updater_cb};
     #endif
@@ -534,6 +599,11 @@ void app_main(void)
         rg_storage_mkdir(RG_BASE_PATH_CONFIG);
         try_migrate();
     }
+
+    // After the storage check so the animation can report the card state, and before anything that
+    // touches the SD card: the scan below is the slow part of boot, and this is the only moment
+    // where showing something on screen costs nothing.
+    splash_show(app->isColdBoot);
 
 #ifdef ESP_PLATFORM
     // The launcher makes a lot of small allocations and it sometimes fills internal RAM, causing the SD Card driver to

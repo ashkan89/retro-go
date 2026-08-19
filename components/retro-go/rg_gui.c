@@ -11,12 +11,37 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include "rg_text.h"
+
 #include "bitmaps/image_hourglass.h"
 #include "fonts/fonts.h"
+
+/**
+ * Where drawing goes.
+ *
+ * `buffer` NULL means "straight to the panel" (an emulator's menu overlay). Otherwise every draw
+ * lands in that buffer, which may be the whole screen (the launcher and media player each own a
+ * surface) or a small window of it (a dialog composited offscreen, see begin_offscreen). Keeping
+ * the origin and stride here is what lets the same drawing code do both without knowing which.
+ */
+typedef struct
+{
+    uint16_t *buffer;
+    int left, top, width, height; // Screen coordinates covered by the buffer
+    int stride;                   // In pixels
+} rg_gui_target_t;
 
 static struct
 {
     uint16_t *screen_buffer, *draw_buffer;
+    rg_gui_target_t target;
+    uint16_t *composite_buffer;
+    size_t composite_buffer_size;
+    const rg_surface_t *backdrop;
+    rg_rect_t last_overlay;
+    rg_gui_target_t overlay_saved; // Target to restore when the public overlay ends
+    bool overlay_active;
+    int dialog_top; // First visible row of the dialog currently on screen
     size_t draw_buffer_size;
     int screen_width, screen_height;
     rg_margins_t margins;
@@ -30,7 +55,9 @@ static struct
         rg_color_t item_message;
         rg_color_t scrollbar;
         rg_color_t shadow;
+        rg_color_t item_value;
     } style;
+    rg_gui_palette_t palette;
     char theme_name[32];
     cJSON *theme_obj;
     const rg_font_t *font;
@@ -185,14 +212,44 @@ bool rg_gui_set_theme(const char *theme_name)
         RG_LOGI("Using built-in theme!\n");
     }
 
-    gui.style.box_background = rg_gui_get_theme_color("dialog", "background", C_NAVY);
-    gui.style.box_header = rg_gui_get_theme_color("dialog", "header", C_WHITE);
-    gui.style.box_border = rg_gui_get_theme_color("dialog", "border", C_DIM_GRAY);
-    gui.style.item_standard = rg_gui_get_theme_color("dialog", "item_standard", C_WHITE);
-    gui.style.item_disabled = rg_gui_get_theme_color("dialog", "item_disabled", C_GRAY);
-    gui.style.item_message = rg_gui_get_theme_color("dialog", "item_message", C_SILVER);
-    gui.style.scrollbar = rg_gui_get_theme_color("dialog", "scrollbar", C_WHITE);
-    gui.style.shadow = rg_gui_get_theme_color("dialog", "shadow", C_NONE);
+    // The classic keys keep their names and meaning so every existing theme still applies
+    gui.style.box_background = rg_gui_get_theme_color("dialog", "background", C_RGB(17, 18, 24));
+    gui.style.box_header = rg_gui_get_theme_color("dialog", "header", C_RGB(240, 243, 250));
+    gui.style.box_border = rg_gui_get_theme_color("dialog", "border", C_RGB(62, 66, 82));
+    gui.style.item_standard = rg_gui_get_theme_color("dialog", "item_standard", C_RGB(232, 236, 245));
+    gui.style.item_disabled = rg_gui_get_theme_color("dialog", "item_disabled", C_RGB(120, 126, 140));
+    gui.style.item_message = rg_gui_get_theme_color("dialog", "item_message", C_RGB(176, 182, 198));
+    gui.style.scrollbar = rg_gui_get_theme_color("dialog", "scrollbar", C_RGB(90, 170, 255));
+
+    // Everything below is derived from the keys above unless the theme says otherwise, so a
+    // theme written for an older version gets a coherent palette (its own background tinted for
+    // the surfaces, its own text dimmed for secondary text) instead of colors that clash with it.
+    rg_gui_palette_t *palette = &gui.palette;
+
+    palette->background = gui.style.box_background;
+    palette->text = gui.style.item_standard;
+    palette->border = gui.style.box_border;
+    palette->accent = rg_gui_get_theme_color("dialog", "accent", C_RGB(90, 170, 255));
+    palette->accent_dim =
+        rg_gui_get_theme_color("dialog", "accent_dim", rg_gui_blend_color(palette->background, palette->accent, 96));
+    palette->highlight =
+        rg_gui_get_theme_color("dialog", "highlight", rg_gui_blend_color(palette->text, C_WHITE, 140));
+    palette->surface =
+        rg_gui_get_theme_color("dialog", "surface", rg_gui_blend_color(palette->background, C_WHITE, 26));
+    palette->surface_alt =
+        rg_gui_get_theme_color("dialog", "surface_alt", rg_gui_blend_color(palette->background, palette->accent, 34));
+    palette->divider =
+        rg_gui_get_theme_color("dialog", "divider", rg_gui_blend_color(palette->background, C_WHITE, 62));
+    palette->text_dim = rg_gui_get_theme_color("dialog", "text_dim", gui.style.item_disabled);
+    // A shadow needs to be darker than the background to read as one, so the default is derived
+    // from it rather than being a fixed color. A theme can still opt out with "shadow": "none".
+    gui.style.shadow = rg_gui_get_theme_color("dialog", "shadow", rg_gui_scale_color(palette->background, 40));
+    palette->shadow = gui.style.shadow;
+
+    // Values sit next to their label and should read as secondary information, not as a second
+    // label competing with it.
+    gui.style.item_value = rg_gui_get_theme_color("dialog", "item_value",
+                                                  rg_gui_blend_color(palette->text, palette->background, 90));
 
     return true;
 }
@@ -255,7 +312,149 @@ bool rg_gui_set_font(int index)
 
 void rg_gui_set_surface(rg_surface_t *surface)
 {
+    // Whoever last drew a full frame into a surface is, by definition, what the panel is showing,
+    // so that surface also becomes the backdrop our overlays composite over. Setting the surface
+    // back to NULL (which every app does at the end of its redraw) deliberately does not clear it.
+    // A surface that is about to be freed must be dropped with rg_gui_set_backdrop(NULL) first.
+    if (surface)
+        rg_gui_set_backdrop(surface);
+
     gui.screen_buffer = surface ? surface->data : NULL;
+    gui.target = (rg_gui_target_t){
+        .buffer = gui.screen_buffer,
+        .left = 0,
+        .top = 0,
+        .width = gui.screen_width,
+        .height = gui.screen_height,
+        .stride = gui.screen_width,
+    };
+}
+
+/**
+ * Tell the GUI what is behind an overlay, so dialogs can be composited over it instead of being
+ * painted onto the panel piece by piece (which is what produces the flicker).
+ *
+ * The launcher passes the surface it renders into: its content is by definition what the panel is
+ * currently showing. An emulator has nothing to offer here - its frame lives in the display task's
+ * scaling pipeline - so it passes nothing and dialogs fall back to compositing over a flat plate.
+ */
+void rg_gui_set_backdrop(const rg_surface_t *surface)
+{
+    gui.backdrop = (surface && surface->width == gui.screen_width && surface->height == gui.screen_height &&
+                    (surface->format & RG_PIXEL_FORMAT) == RG_PIXEL_565_LE)
+                       ? surface
+                       : NULL;
+}
+
+/**
+ * Redirect drawing into a scratch buffer covering `rect`, pre-filled with what is behind it.
+ *
+ * `seed` is the color to fill it with; C_NONE means "use the registered backdrop, or a dark plate
+ * if there is none". A screen that paints its own background (the on-screen keyboard) has to pass
+ * that background color instead, because the backdrop describes the screen underneath it, not the
+ * one being drawn.
+ */
+static bool begin_offscreen(rg_rect_t rect, rg_color_t seed, rg_gui_target_t *saved)
+{
+    if (gui.target.buffer) // Already drawing into a buffer, nothing to composite
+        return false;
+
+    rect.left = RG_MAX(rect.left, 0);
+    rect.top = RG_MAX(rect.top, 0);
+    rect.width = RG_MIN(rect.width, gui.screen_width - rect.left);
+    rect.height = RG_MIN(rect.height, gui.screen_height - rect.top);
+
+    if (rect.width < 1 || rect.height < 1)
+        return false;
+
+    size_t pixels = (size_t)rect.width * rect.height;
+
+    if (pixels > gui.composite_buffer_size)
+    {
+        // Grow once and keep it: a dialog is redrawn on every keypress
+        uint16_t *buffer = rg_alloc(pixels * 2, MEM_SLOW);
+        if (!buffer)
+        {
+            // Not enough memory: fall back to drawing straight to the panel. It flickers, but a
+            // menu that works beats a menu that does not appear.
+            RG_LOGW("Failed to allocate %dx%d composite buffer", rect.width, rect.height);
+            return false;
+        }
+        free(gui.composite_buffer);
+        gui.composite_buffer = buffer;
+        gui.composite_buffer_size = pixels;
+    }
+
+    *saved = gui.target;
+    gui.target = (rg_gui_target_t){
+        .buffer = gui.composite_buffer,
+        .left = rect.left,
+        .top = rect.top,
+        .width = rect.width,
+        .height = rect.height,
+        .stride = rect.width,
+    };
+
+    if (seed != C_NONE)
+    {
+        for (size_t i = 0; i < pixels; ++i)
+            gui.composite_buffer[i] = seed;
+    }
+    else if (gui.backdrop)
+    {
+        const uint16_t *src = gui.backdrop->data;
+        int src_stride = gui.backdrop->stride / 2;
+        for (int y = 0; y < rect.height; ++y)
+            memcpy(gui.composite_buffer + y * rect.width, src + (rect.top + y) * src_stride + rect.left,
+                   rect.width * 2);
+    }
+    else
+    {
+        // No backdrop to composite over, so we provide one: a dark plate the card and its
+        // translucent edges can sit on. It is what makes the overlay look deliberate over a game
+        // frame rather than like a rectangle of garbage.
+        rg_color_t plate = rg_gui_blend_color(gui.style.box_background, C_BLACK, 110);
+        for (size_t i = 0; i < pixels; ++i)
+            gui.composite_buffer[i] = plate;
+    }
+
+    return true;
+}
+
+/* Send the composited window to the panel in a single transfer and restore the previous target. */
+static void end_offscreen(const rg_gui_target_t *saved)
+{
+    rg_gui_target_t done = gui.target;
+    gui.target = *saved;
+    rg_display_write_rect(done.left, done.top, done.width, done.height, done.stride * 2, done.buffer, 0);
+}
+
+/**
+ * Composite anything, not just a dialog: everything drawn until rg_gui_end_overlay() lands in a
+ * scratch buffer covering `rect` and reaches the panel as one transfer.
+ *
+ * Returns false when it could not be set up (not enough memory, or drawing already goes to a
+ * buffer), in which case the caller should just draw normally - the result is the same, only less
+ * smooth. Overlays do not nest.
+ */
+bool rg_gui_begin_overlay(int x_pos, int y_pos, int width, int height, rg_color_t seed)
+{
+    if (gui.overlay_active)
+        return false;
+
+    rg_rect_t rect = {get_horizontal_position(x_pos, width), get_vertical_position(y_pos, height), width, height};
+
+    gui.overlay_active = begin_offscreen(rect, seed, &gui.overlay_saved);
+    return gui.overlay_active;
+}
+
+void rg_gui_end_overlay(void)
+{
+    if (!gui.overlay_active)
+        return;
+
+    gui.overlay_active = false;
+    end_offscreen(&gui.overlay_saved);
 }
 
 rg_margins_t rg_gui_get_safe_area(void)
@@ -279,24 +478,39 @@ void rg_gui_copy_buffer(int left, int top, int width, int height, int stride, co
         return;
     }
 
-    if (gui.screen_buffer)
+    if (gui.target.buffer)
     {
         if (stride < width)
             stride = width * 2;
 
-        for (int y = 0; y < height; ++y)
+        // Clip to the target window. A dialog composited offscreen only owns its own rectangle, and
+        // text or an image that reaches past it must be cut, not wrapped onto the next row.
+        int skip_x = RG_MAX(gui.target.left - left, 0);
+        int skip_y = RG_MAX(gui.target.top - top, 0);
+        int max_width = (gui.target.left + gui.target.width) - (left + skip_x);
+        int max_height = (gui.target.top + gui.target.height) - (top + skip_y);
+        int copy_width = RG_MIN(width - skip_x, max_width);
+        int copy_height = RG_MIN(height - skip_y, max_height);
+
+        // Entirely outside the target window. This has to be checked before the copy below, because
+        // a negative width reaching memcpy() would be read as an enormous unsigned size.
+        if (copy_width <= 0 || copy_height <= 0)
+            return;
+
+        for (int y = 0; y < copy_height; ++y)
         {
-            uint16_t *dst = gui.screen_buffer + (top + y) * gui.screen_width + left;
-            const uint16_t *src = (void *)buffer + y * stride;
+            uint16_t *dst = gui.target.buffer + (top + skip_y + y - gui.target.top) * gui.target.stride +
+                            (left + skip_x - gui.target.left);
+            const uint16_t *src = (void *)buffer + (y + skip_y) * stride + skip_x * 2;
             if (transparency)
             {
-                for (int x = 0; x < width; ++x)
+                for (int x = 0; x < copy_width; ++x)
                     if (src[x] != C_TRANSPARENT)
                         dst[x] = src[x];
             }
             else
             {
-                memcpy(dst, src, width * 2);
+                memcpy(dst, src, copy_width * 2);
             }
         }
     }
@@ -397,6 +611,11 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
     if (!text || *text == 0)
         text = " ";
 
+    // Arabic and Persian need their letters joined and the line laid out right to left before any of
+    // the measuring below makes sense. Text with no right-to-left characters comes back unchanged,
+    // so this costs one scan of the string.
+    text = rg_text_shape(text);
+
     if (width == 0)
     {
         // Find the longest line to determine our box width
@@ -459,7 +678,12 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
         if (!(flags & RG_TEXT_DUMMY_DRAW))
             draw_buffer = get_draw_buffer(draw_width, line_height, color_bg);
 
-        while (x_offset < draw_width)
+        // The line break is left for the outer loop to consume. Letting this loop eat it as a
+        // zero-width glyph meant that after a blank line (two breaks in a row) it carried on and
+        // drew the *next* line on the same row, at the blank line's centering offset - which is
+        // half the box - and wrapped it early. A message with an empty line in it came out ragged
+        // and lost its last row off the bottom of the card.
+        while (x_offset < draw_width && *ptr != 0 && *ptr != '\n')
         {
             uint32_t bitmap[font_height];
             const char *prev_ptr = ptr;
@@ -488,9 +712,6 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
             }
 
             x_offset += width;
-
-            if (*ptr == 0 || *ptr == '\n')
-                break;
         }
 
         if (!(flags & RG_TEXT_DUMMY_DRAW))
@@ -500,6 +721,10 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
 
         if (!(flags & RG_TEXT_MULTILINE))
             break;
+
+        // Exactly one break per row, so an empty line stays an empty row
+        if (*ptr == '\n')
+            ptr++;
     }
 
     return (rg_rect_t){x_pos, y_pos, draw_width, y_offset};
@@ -541,6 +766,396 @@ void rg_gui_draw_rect(int x_pos, int y_pos, int width, int height, int border_si
     }
 }
 
+/* -------------------------------------------------------------------------------- */
+/* -- Color utilities and blended drawing                                        -- */
+/* -------------------------------------------------------------------------------- */
+
+static inline void unpack_565(rg_color_t color, int *r, int *g, int *b)
+{
+    *r = ((color >> 11) & 0x1F) << 3;
+    *g = ((color >> 5) & 0x3F) << 2;
+    *b = (color & 0x1F) << 3;
+}
+
+static inline rg_color_t pack_565(int r, int g, int b)
+{
+    r = RG_MIN(RG_MAX(r, 0), 255);
+    g = RG_MIN(RG_MAX(g, 0), 255);
+    b = RG_MIN(RG_MAX(b, 0), 255);
+    return (rg_color_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+rg_color_t rg_gui_blend_color(rg_color_t base, rg_color_t over, int alpha)
+{
+    if (base == C_NONE || base == C_TRANSPARENT)
+        return over;
+    if (over == C_NONE || over == C_TRANSPARENT)
+        return base;
+
+    int ar, ag, ab, br, bg, bb;
+    unpack_565(base, &ar, &ag, &ab);
+    unpack_565(over, &br, &bg, &bb);
+    alpha = RG_MIN(RG_MAX(alpha, 0), 255);
+    return pack_565(ar + ((br - ar) * alpha) / 255, ag + ((bg - ag) * alpha) / 255, ab + ((bb - ab) * alpha) / 255);
+}
+
+rg_color_t rg_gui_scale_color(rg_color_t color, int scale)
+{
+    int r, g, b;
+    unpack_565(color, &r, &g, &b);
+    return pack_565((r * scale) / 255, (g * scale) / 255, (b * scale) / 255);
+}
+
+int rg_gui_color_luma(rg_color_t color)
+{
+    int r, g, b;
+    unpack_565(color, &r, &g, &b);
+    return (r * 77 + g * 150 + b * 29) >> 8;
+}
+
+bool rg_gui_can_blend(void)
+{
+    // True whenever drawing lands in a buffer we can read back, which now includes a dialog being
+    // composited offscreen, not just an app that owns a surface.
+    return gui.target.buffer != NULL;
+}
+
+const rg_gui_palette_t *rg_gui_get_palette(void)
+{
+    return &gui.palette;
+}
+
+/**
+ * Fill one horizontal run of pixels, blending it into what is already there when possible.
+ *
+ * Everything in this file that needs translucency or a shape that is not a rectangle goes
+ * through here, so there is a single place that knows about the two very different targets we
+ * draw to: an in-memory surface (the launcher and the media player) which we can read back and
+ * therefore blend against, and the LCD itself (dialogs over a running game) which we cannot
+ * read. In the second case a blended color is composited against the theme background instead,
+ * which keeps the same design working without ever reading from the panel.
+ */
+static void fill_span(int x, int y, int width, rg_color_t color, int alpha)
+{
+    if (width <= 0 || color == C_NONE || alpha <= 0)
+        return;
+
+    if (y < 0 || y >= gui.screen_height)
+        return;
+
+    if (x < 0)
+        width += x, x = 0;
+    if (x + width > gui.screen_width)
+        width = gui.screen_width - x;
+    if (width <= 0)
+        return;
+
+    if (gui.target.buffer)
+    {
+        // Clip to the target window (see rg_gui_target_t)
+        if (y < gui.target.top || y >= gui.target.top + gui.target.height)
+            return;
+
+        int from = RG_MAX(x, gui.target.left);
+        int to = RG_MIN(x + width, gui.target.left + gui.target.width);
+
+        if (to <= from)
+            return;
+
+        uint16_t *dst = gui.target.buffer + (y - gui.target.top) * gui.target.stride + (from - gui.target.left);
+        width = to - from;
+
+        if (alpha >= 255)
+        {
+            for (int i = 0; i < width; ++i)
+                dst[i] = color;
+        }
+        else
+        {
+            for (int i = 0; i < width; ++i)
+                dst[i] = rg_gui_blend_color(dst[i], color, alpha);
+        }
+    }
+    else
+    {
+        rg_color_t solid = (alpha >= 255) ? color : rg_gui_blend_color(gui.style.box_background, color, alpha);
+        uint16_t *buffer = get_draw_buffer(width, 1, solid);
+        rg_display_write_rect(x, y, width, 1, 0, buffer, 0);
+    }
+}
+
+/* Same as fill_span but for a block of rows, batched into a single transfer when it can be. */
+static void fill_block(int x, int y, int width, int height, rg_color_t color, int alpha)
+{
+    if (width <= 0 || height <= 0 || color == C_NONE || alpha <= 0)
+        return;
+
+    if (!gui.target.buffer)
+    {
+        // One windowed transfer instead of one per row. A translucent fill can take this path too
+        // because without readback it resolves to a single solid color anyway.
+        rg_color_t solid = (alpha >= 255) ? color : rg_gui_blend_color(gui.style.box_background, color, alpha);
+        if (x < 0)
+            width += x, x = 0;
+        if (y < 0)
+            height += y, y = 0;
+        width = RG_MIN(width, gui.screen_width - x);
+        height = RG_MIN(height, gui.screen_height - y);
+        if (width <= 0 || height <= 0)
+            return;
+        uint16_t *buffer = get_draw_buffer(width, RG_MIN(height, 16), solid);
+        for (int row = 0; row < height; row += 16)
+            rg_display_write_rect(x, y + row, width, RG_MIN(height - row, 16), 0, buffer, 0);
+        return;
+    }
+
+    for (int row = 0; row < height; ++row)
+        fill_span(x, y + row, width, color, alpha);
+}
+
+void rg_gui_fill_blend(int x_pos, int y_pos, int width, int height, rg_color_t color, int alpha)
+{
+    fill_block(get_horizontal_position(x_pos, width), get_vertical_position(y_pos, height), width, height, color,
+               alpha);
+}
+
+void rg_gui_dim_area(int x_pos, int y_pos, int width, int height, int scale)
+{
+    if (!gui.target.buffer)
+        return;
+
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+
+    // Clipped to the target window rather than to the screen: this reads pixels back, so it must
+    // never step outside the buffer it is reading from.
+    int from_x = RG_MAX(x, gui.target.left);
+    int from_y = RG_MAX(y, gui.target.top);
+    int to_x = RG_MIN(x + width, gui.target.left + gui.target.width);
+    int to_y = RG_MIN(y + height, gui.target.top + gui.target.height);
+
+    for (int row = from_y; row < to_y; ++row)
+    {
+        uint16_t *dst = gui.target.buffer + (row - gui.target.top) * gui.target.stride + (from_x - gui.target.left);
+        for (int i = 0; i < to_x - from_x; ++i)
+            dst[i] = rg_gui_scale_color(dst[i], scale);
+    }
+}
+
+void rg_gui_draw_line(int x1, int y1, int x2, int y2, rg_color_t color, int alpha)
+{
+    // Plain Bresenham. Horizontal runs are handled as spans because that is what most of our
+    // lines are (rules, dividers, the splash grid).
+    if (y1 == y2)
+    {
+        fill_span(RG_MIN(x1, x2), y1, abs(x2 - x1) + 1, color, alpha);
+        return;
+    }
+
+    int dx = abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
+    int dy = -abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
+    int err = dx + dy;
+
+    while (true)
+    {
+        fill_span(x1, y1, 1, color, alpha);
+        if (x1 == x2 && y1 == y2)
+            break;
+        int err2 = err * 2;
+        if (err2 >= dy)
+            err += dy, x1 += sx;
+        if (err2 <= dx)
+            err += dx, y1 += sy;
+    }
+}
+
+void rg_gui_draw_disc(int x_center, int y_center, int radius, rg_color_t color, int alpha)
+{
+    if (radius <= 0)
+        return;
+
+    for (int dy = -radius; dy <= radius; ++dy)
+    {
+        int dx = (int)(sqrtf((float)(radius * radius - dy * dy)) + 0.5f);
+        fill_span(x_center - dx, y_center + dy, dx * 2 + 1, color, alpha);
+    }
+}
+
+/* How many pixels the given row of a rounded corner is inset by. */
+static int corner_inset(int radius, int row)
+{
+    if (radius <= 0 || row >= radius)
+        return 0;
+    // Row -1 is asked for when measuring the step above the first row of a corner: it is the row
+    // just outside the shape, so it is inset all the way (and sqrtf() must not see a negative).
+    if (row < 0)
+        return radius;
+    float dy = radius - row - 0.5f;
+    int dx = (int)(sqrtf((float)(radius * radius) - dy * dy) + 0.5f);
+    return RG_MAX(radius - dx, 0);
+}
+
+/**
+ * A rounded card: the shape every panel, pill and chip in the UI is built from.
+ *
+ * Corner pixels are simply not drawn rather than filled with a background color, so a card can
+ * be laid over a game frame, a photo background or another panel and its corners keep whatever
+ * was behind them. That is also why there is no rounded-rect erase: nothing here ever needs to
+ * know what it is covering.
+ */
+static void draw_panel_abs(int x, int y, int width, int height, int radius, rg_color_t fill_color,
+                           rg_color_t border_color, int alpha)
+{
+    if (width <= 0 || height <= 0)
+        return;
+
+    radius = RG_MIN(radius, RG_MIN(width, height) / 2);
+
+    bool has_border = border_color != C_NONE && border_color != fill_color;
+
+    for (int row = 0; row < height; ++row)
+    {
+        int corner_row = (row < radius) ? row : ((row >= height - radius) ? (height - 1 - row) : -1);
+
+        // The straight middle section is one block, the rounded ends go row by row
+        if (corner_row < 0)
+        {
+            int rows = height - radius - row;
+            if (has_border)
+            {
+                fill_block(x, y + row, 1, rows, border_color, alpha);
+                fill_block(x + width - 1, y + row, 1, rows, border_color, alpha);
+                fill_block(x + 1, y + row, width - 2, rows, fill_color, alpha);
+            }
+            else
+            {
+                fill_block(x, y + row, width, rows, fill_color, alpha);
+            }
+            row += rows - 1;
+            continue;
+        }
+
+        int inset = corner_inset(radius, corner_row);
+        int span_x = x + inset;
+        int span_w = width - inset * 2;
+
+        if (span_w <= 0)
+            continue;
+
+        if (!has_border)
+        {
+            fill_span(span_x, y + row, span_w, fill_color, alpha);
+            continue;
+        }
+
+        // Thickness of the border at the ends of this row: one pixel on the straight parts, and
+        // as many as the corner steps in by, so the outline stays closed around the curve.
+        int step = corner_inset(radius, corner_row - 1) - inset;
+        int edge = RG_MAX(step, 1);
+
+        if (corner_row == 0 || span_w <= edge * 2)
+        {
+            fill_span(span_x, y + row, span_w, border_color, alpha);
+            continue;
+        }
+
+        fill_span(span_x, y + row, edge, border_color, alpha);
+        fill_span(span_x + span_w - edge, y + row, edge, border_color, alpha);
+        fill_span(span_x + edge, y + row, span_w - edge * 2, fill_color, alpha);
+    }
+}
+
+/* Resolving the position exactly once, here, is what lets the shapes below take (and clip)
+ * genuinely negative coordinates: a panel can hang off the top or left edge of the screen without
+ * a plain negative y being read as "measured from the bottom". */
+void rg_gui_draw_panel(int x_pos, int y_pos, int width, int height, int radius, rg_color_t fill_color,
+                       rg_color_t border_color, int alpha)
+{
+    draw_panel_abs(get_horizontal_position(x_pos, width), get_vertical_position(y_pos, height), width, height, radius,
+                   fill_color, border_color, alpha);
+}
+
+/**
+ * Drop shadow for a card, drawn as a few translucent rings around it.
+ *
+ * When we can read the target it really is a soft shadow. When we cannot (a dialog over a game)
+ * the rings composite against the theme background, which still reads as a shadow on the dark
+ * chrome the dialogs use, and it costs nothing when the theme sets "shadow": "none".
+ */
+void rg_gui_draw_shadow(int x_pos, int y_pos, int width, int height, int radius, int size)
+{
+    rg_color_t color = gui.palette.shadow;
+
+    if (color == C_NONE || size <= 0)
+        return;
+
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+
+    for (int i = size; i >= 1; --i)
+    {
+        // Offset down-right by one so the light appears to come from the top-left
+        draw_panel_abs(x - i + 1, y - i + 2, width + i * 2, height + i * 2, radius + i, color, C_NONE, 90 / i);
+    }
+}
+
+void rg_gui_draw_gradient(int x_pos, int y_pos, int width, int height, rg_color_t from, rg_color_t to,
+                          bool horizontal, int alpha)
+{
+    if (width <= 0 || height <= 0)
+        return;
+
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+    int steps = RG_MAX((horizontal ? width : height) - 1, 1);
+
+    if (horizontal)
+    {
+        for (int i = 0; i < width; ++i)
+            fill_block(x + i, y, 1, height, rg_gui_blend_color(from, to, (i * 255) / steps), alpha);
+    }
+    else
+    {
+        for (int i = 0; i < height; ++i)
+            fill_span(x, y + i, width, rg_gui_blend_color(from, to, (i * 255) / steps), alpha);
+    }
+}
+
+void rg_gui_draw_scrollbar(int x_pos, int y_pos, int height, int visible, int total, int offset)
+{
+    if (total <= visible || height < 8)
+        return;
+
+    int x = get_horizontal_position(x_pos, 3);
+    int y = get_vertical_position(y_pos, height);
+    int thumb = RG_MAX((height * visible) / total, 8);
+    int travel = height - thumb;
+    int position = (travel * RG_MAX(offset, 0)) / RG_MAX(total - visible, 1);
+
+    // The thumb uses the theme's own "scrollbar" key (which defaults to the accent), so a theme
+    // that already chose a scrollbar color keeps it.
+    draw_panel_abs(x, y, 3, height, 1, gui.palette.divider, C_NONE, 200);
+    draw_panel_abs(x, y + RG_MIN(position, travel), 3, thumb, 1, gui.style.scrollbar, C_NONE, 255);
+}
+
+void rg_gui_draw_progress_bar(int x_pos, int y_pos, int width, int height, int percent, rg_color_t fill_color,
+                              rg_color_t track_color)
+{
+    if (width <= 2 || height <= 0)
+        return;
+
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+    int radius = height / 2;
+    int filled = (width * RG_MIN(RG_MAX(percent, 0), 100)) / 100;
+
+    draw_panel_abs(x, y, width, height, radius, track_color, C_NONE, 255);
+    if (filled > radius * 2)
+        draw_panel_abs(x, y, filled, height, radius, fill_color, C_NONE, 255);
+    else if (filled > 0)
+        fill_block(x, y, filled, height, fill_color, 255);
+}
+
 void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resample, const rg_image_t *img)
 {
     if (img && resample && (width && height) && (width != img->width || height != img->height))
@@ -562,75 +1177,151 @@ void rg_gui_draw_image(int x_pos, int y_pos, int width, int height, bool resampl
     }
 }
 
+/**
+ * Battery indicator: a rounded cell with a contact tip, filled to the charge level.
+ *
+ * The fill color is a semantic charge-level indicator (green/amber/red) and is intentionally NOT
+ * theme-driven, so a low-battery warning stays universally readable regardless of which color
+ * theme is active. Only the chrome around it follows the theme.
+ */
+void rg_gui_draw_battery_icon(int x_pos, int y_pos, int width, int height)
+{
+    const rg_gui_palette_t *pal = &gui.palette;
+    rg_battery_t battery = rg_input_read_battery();
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+    int level = RG_MIN(RG_MAX((int)battery.level, 0), 100);
+    int body_width = RG_MAX(width - 2, 6);
+    int tip_height = RG_MAX(height / 2, 3);
+
+    rg_color_t fill = (level > 40) ? C_RGB(76, 210, 128) : ((level > 15) ? C_RGB(250, 190, 64) : C_RGB(244, 82, 82));
+    rg_color_t border = battery.charging ? pal->accent : pal->text_dim;
+
+    // Blink the charge (not the shell) when it is nearly empty: the outline stays visible so the
+    // icon never looks like it disappeared, but the empty cell is impossible to miss.
+    bool blink = !battery.charging && level <= 10 && ((rg_system_timer() / 500000) & 1);
+
+    rg_gui_draw_panel(x, y, body_width, height, 2, rg_gui_scale_color(pal->background, 128), border, 210);
+    rg_gui_draw_panel(x + body_width, y + (height - tip_height) / 2, 2, tip_height, 1, border, C_NONE, 255);
+
+    int inner_width = body_width - 4;
+    int filled = (inner_width * level) / 100;
+
+    if (!blink && filled > 0)
+        rg_gui_draw_panel(x + 2, y + 2, RG_MAX(filled, 1), height - 4, 1, fill, C_NONE, 255);
+
+    if (battery.charging)
+    {
+        // A little lightning bolt, drawn as a zig-zag so it scales with the icon height
+        int cx = x + body_width / 2;
+        int top = y + 2, bottom = y + height - 3, middle = y + height / 2;
+        for (int i = 0; i < 2; ++i)
+        {
+            rg_gui_draw_line(cx + 1 + i, top, cx - 1 + i, middle, C_WHITE, 255);
+            rg_gui_draw_line(cx - 1 + i, middle, cx + 1 + i, middle, C_WHITE, 255);
+            rg_gui_draw_line(cx + 1 + i, middle, cx - 1 + i, bottom, C_WHITE, 255);
+        }
+    }
+}
+
+/* Wi-Fi indicator: three bars, lit according to the signal we actually got from the driver. */
+void rg_gui_draw_wifi_icon(int x_pos, int y_pos, int width, int height)
+{
+    const rg_gui_palette_t *pal = &gui.palette;
+    rg_network_t network = rg_network_get_info();
+    int x = get_horizontal_position(x_pos, width);
+    int y = get_vertical_position(y_pos, height);
+    int bars = 3;
+    int bar_width = RG_MAX((width - (bars - 1) * 2) / bars, 2);
+    int strength = 0;
+
+    if (network.state == RG_NETWORK_CONNECTED)
+    {
+        // rssi is 0 when the driver does not report it, in which case we show full bars rather
+        // than pretending the link is bad.
+        strength = (network.rssi == 0 || network.rssi >= -60) ? 3 : (network.rssi >= -70 ? 2 : 1);
+    }
+    else if (network.state == RG_NETWORK_CONNECTING)
+    {
+        // Sweep while associating so a failing connection does not look like a connected one
+        strength = (int)((rg_system_timer() / 300000) % (bars + 1));
+    }
+
+    for (int i = 0; i < bars; ++i)
+    {
+        int bar_height = (height * (i + 2)) / (bars + 1);
+        bool lit = i < strength;
+        rg_gui_draw_panel(x + i * (bar_width + 2), y + height - bar_height, bar_width, bar_height, 1,
+                          lit ? pal->accent : pal->divider, C_NONE, lit ? 255 : 170);
+    }
+}
+
 void rg_gui_draw_icons(void)
 {
+    const rg_gui_palette_t *pal = &gui.palette;
     rg_battery_t battery = rg_input_read_battery();
     rg_network_t network = rg_network_get_info();
-    rg_rect_t txt = TEXT_RECT("00:00", 0);
-    int bar_height = txt.height;
+    bool show_network = network.state > RG_NETWORK_DISCONNECTED;
+    rg_rect_t clock_text = TEXT_RECT("00:00", 0);
+
+    int bar_height = clock_text.height;
     int icon_height = RG_MAX(8, bar_height - 4);
-    int icon_top = RG_MAX(0, (bar_height - icon_height - 1) / 2);
+    // Kept at 3 or more: the chip below is drawn three pixels higher, and a negative y would be
+    // interpreted as an offset from the bottom of the screen.
+    int icon_top = RG_MAX(3, (bar_height - icon_height) / 2);
+    int battery_width = icon_height * 2;
+    int wifi_width = icon_height;
+    int gap = 6;
+    int total = 0;
+
+    if (battery.present)
+        total += battery_width + 2 + gap;
+    if (show_network)
+        total += wifi_width + gap;
+    if (gui.show_clock)
+        total += clock_text.width + gap;
+
+    if (total == 0)
+        return;
+
+    total -= gap;
+
     int right = gui.margins.right;
+
+    // A translucent chip keeps the cluster readable over a theme background image. It is only
+    // drawn where we can blend (the launcher); the in-game status bar is already a solid band and
+    // a chip there would just be a lighter rectangle inside a black one.
+    if (rg_gui_can_blend())
+    {
+        // The cluster ends one gap short of the right margin (every item reserves a trailing gap),
+        // so the chip has to start two gaps out to sit centered on it.
+        int chip_height = icon_height + 6;
+        rg_gui_draw_panel(-(right + total + gap * 2), icon_top - 3, total + gap * 2, chip_height, chip_height / 2,
+                          pal->surface, C_NONE, 150);
+    }
 
     if (battery.present)
     {
-        right += 22;
-
-        int width = 16;
-        int height = icon_height;
-        int width_fill = width / 100.f * battery.level;
-        int x_pos = -right;
-        int y_pos = icon_top;
-
-        // The fill color is a semantic charge-level indicator (green/orange/red) and is
-        // intentionally NOT theme-driven, so a low-battery warning stays universally readable
-        // regardless of which color theme is active.
-        rg_color_t color_fill = (battery.level > 20 ? (battery.level > 40 ? C_FOREST_GREEN : C_ORANGE) : C_RED);
-        rg_color_t color_border = gui.style.box_border;
-        rg_color_t color_empty = gui.style.box_background;
-
-        rg_gui_draw_rect(x_pos, y_pos, width + 2, height, 1, color_border, C_NONE);
-        rg_gui_draw_rect(x_pos + width + 2, y_pos + 2, 2, height - 4, 1, color_border, C_NONE);
-        rg_gui_draw_rect(x_pos + 1, y_pos + 1, width_fill, height - 2, 0, 0, color_fill);
-        rg_gui_draw_rect(x_pos + 1 + width_fill, y_pos + 1, width - width_fill, height - 2, 0, 0, color_empty);
+        right += battery_width + 2 + gap;
+        rg_gui_draw_battery_icon(-right, icon_top, battery_width + 2, icon_height);
     }
 
-    if (network.state > RG_NETWORK_DISCONNECTED)
+    if (show_network)
     {
-        right += 22;
-
-        int width = 16;
-        int height = icon_height;
-        int seg_width = (width - 2 - 2) / 3;
-        int seg_height = height / 3;
-        int x_pos = -right;
-        int y_pos = icon_top + height;
-
-        // Connected/disconnected fill stays a semantic green/none indicator, same reasoning
-        // as the battery fill above.
-        rg_color_t color_fill = (network.state == RG_NETWORK_CONNECTED) ? C_GREEN : C_NONE;
-        rg_color_t color_border = (network.state == RG_NETWORK_CONNECTED) ? gui.style.item_standard : gui.style.box_border;
-
-        rg_gui_draw_rect(x_pos, y_pos - seg_height * 1, seg_width, seg_height * 1, 1, color_border, color_fill);
-        x_pos += seg_width + 2;
-        rg_gui_draw_rect(x_pos, y_pos - seg_height * 2, seg_width, seg_height * 2, 1, color_border, color_fill);
-        x_pos += seg_width + 2;
-        rg_gui_draw_rect(x_pos, y_pos - seg_height * 3, seg_width, seg_height * 3, 1, color_border, color_fill);
+        right += wifi_width + gap;
+        rg_gui_draw_wifi_icon(-right, icon_top, wifi_width, icon_height);
     }
 
     if (gui.show_clock)
     {
-        right += txt.width + 4;
-
-        int x_pos = -right;
-        int y_pos = 0;
         char buffer[12];
         time_t time_sec = time(NULL);
         struct tm *time = localtime(&time_sec);
 
+        right += clock_text.width + gap;
         sprintf(buffer, "%02d:%02d", time->tm_hour, time->tm_min);
-        rg_gui_draw_text(x_pos, y_pos, 0, buffer, gui.style.item_standard,
-                         gui.screen_buffer ? C_TRANSPARENT : gui.style.box_background, 0);
+        rg_gui_draw_text(-right, 0, clock_text.width, buffer, pal->text,
+                         rg_gui_can_blend() ? C_TRANSPARENT : gui.style.box_background, RG_TEXT_ALIGN_CENTER);
     }
 }
 
@@ -664,8 +1355,15 @@ void rg_gui_draw_status_bars(void)
         snprintf(footer, max_len, "Retro-Go %s", app->version);
 
     // FIXME: Respect gui.margins (draw black background full screen_width, but pad the text if needed)
-    rg_gui_draw_text(0, RG_GUI_TOP, gui.screen_width, header, gui.style.item_standard, gui.style.box_background, 0);
-    rg_gui_draw_text(0, RG_GUI_BOTTOM, gui.screen_width, footer, gui.style.item_standard, gui.style.box_background, 0);
+    const rg_gui_palette_t *pal = &gui.palette;
+    int bar_height = TEXT_RECT("ABC", 0).height;
+
+    // Slim bands in the surface color with an accent hairline on the inner edge: the same chrome
+    // the launcher and the player use, so the overlay does not look like a different program.
+    rg_gui_draw_text(0, RG_GUI_TOP, gui.screen_width, header, pal->text, pal->surface, 0);
+    rg_gui_fill_blend(0, bar_height, gui.screen_width, 1, pal->accent, 130);
+    rg_gui_draw_text(0, RG_GUI_BOTTOM, gui.screen_width, footer, pal->text_dim, pal->surface, 0);
+    rg_gui_fill_blend(0, gui.screen_height - bar_height - 1, gui.screen_width, 1, pal->divider, 255);
 
     rg_gui_draw_icons();
 }
@@ -681,23 +1379,42 @@ static size_t get_dialog_items_count(const rg_gui_option_t *options)
     return opt - options;
 }
 
+/* A row whose label is nothing but dashes is the idiom the option arrays use for a separator.
+ * We recognize both that and the explicit flag, and draw a hairline instead of the dashes. */
+static bool is_separator_row(const rg_gui_option_t *option)
+{
+    if ((option->flags & RG_DIALOG_FLAG_TYPE_MASK) == (RG_DIALOG_FLAG_SEPARATOR & RG_DIALOG_FLAG_TYPE_MASK))
+        return true;
+
+    const char *label = option->label;
+    if (!label || option->value || strlen(label) < 3)
+        return false;
+    while (*label == '-')
+        label++;
+    return *label == 0;
+}
+
 rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, size_t options_count,
                              int sel) // const rg_rect_t *rect,
 {
     RG_ASSERT_ARG(options || options_count == 0);
 
+    const rg_gui_palette_t *pal = &gui.palette;
     const int sep_width = TEXT_RECT(": ", 0).width;
     const int font_height = gui.font_height;
-    const int max_box_width = 0.82f * gui.screen_width;
-    const int max_box_height = 0.82f * gui.screen_height;
-    const int box_padding = 6;
-    const int row_padding_y = 0; // now handled by draw_text
-    const int row_padding_x = 8;
+    const int text_height = font_height + 2; // rg_gui_draw_text pads a pixel above and below
+    const int max_box_width = 0.86f * gui.screen_width;
+    const int max_box_height = 0.86f * gui.screen_height;
+    const int box_padding = 7;
+    const int box_radius = 7;
+    const int row_padding_x = 7;
+    const int title_height = title ? text_height + 6 : 0;
+    const int title_gap = title ? 5 : 0;
     const int max_inner_width = max_box_width - sep_width - (row_padding_x + box_padding) * 2;
 
     int box_x, box_y;
     int box_width = box_padding * 2;
-    int box_height = box_padding * 2 + (title ? font_height + 6 : 0);
+    int box_height = box_padding * 2 + title_height + title_gap;
     int inner_width = TEXT_RECT(title, 0).width;
     int col1_width = -1;
     int col2_width = -1;
@@ -725,7 +1442,7 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
             col2_width = RG_MAX(col2_width, value.width);
         }
 
-        row_height[i] = RG_MAX(label.height, value.height) + row_padding_y * 2;
+        row_height[i] = RG_MAX(label.height, value.height);
         box_height += row_height[i];
     }
 
@@ -742,42 +1459,85 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
     box_x = (gui.screen_width - box_width) / 2;
     box_y = (gui.screen_height - box_height) / 2;
 
+    // Everything below is painted into a scratch buffer and sent to the panel as a single transfer
+    // (see begin_offscreen). Drawing a card straight to the LCD means the user watches it being
+    // built row by row on every keypress, which is exactly the flicker this avoids.
+    //
+    // The shadow needs to know what is behind the card, so it is only drawn when there is a
+    // backdrop to composite over; otherwise the card sits on the flat plate begin_offscreen makes.
+    int shadow_size = gui.backdrop ? 3 : 0;
+    int margin = shadow_size ? shadow_size + 2 : 0;
+    rg_rect_t overlay = {box_x - margin, box_y - margin, box_width + margin * 2, box_height + margin * 2 + 1};
+    rg_gui_target_t saved_target;
+
+    // Union with the previous overlay, so a dialog that just got narrower does not leave a strip of
+    // its old self on screen.
+    if (gui.last_overlay.width > 0)
+    {
+        int left = RG_MIN(overlay.left, gui.last_overlay.left);
+        int top = RG_MIN(overlay.top, gui.last_overlay.top);
+        int right = RG_MAX(overlay.left + overlay.width, gui.last_overlay.left + gui.last_overlay.width);
+        int bottom = RG_MAX(overlay.top + overlay.height, gui.last_overlay.top + gui.last_overlay.height);
+        overlay = (rg_rect_t){left, top, right - left, bottom - top};
+    }
+
+    bool composited = begin_offscreen(overlay, C_NONE, &saved_target);
+
+    if (composited)
+        gui.last_overlay = overlay;
+
+    if (shadow_size)
+        rg_gui_draw_shadow(box_x, box_y, box_width, box_height, box_radius, shadow_size);
+    rg_gui_draw_panel(box_x, box_y, box_width, box_height, box_radius, gui.style.box_background, pal->border,
+                      255);
+    rg_gui_fill_blend(box_x + box_radius, box_y + 1, box_width - box_radius * 2, 1,
+                      rg_gui_blend_color(pal->border, C_WHITE, 70), 255);
+
     int x = box_x + box_padding;
     int y = box_y + box_padding;
 
     if (title)
     {
-        int width = inner_width + row_padding_x * 2;
-        rg_gui_draw_text(x, y, width, title, gui.style.box_header, gui.style.box_background, RG_TEXT_ALIGN_CENTER);
-        rg_gui_draw_rect(x, y + font_height, width, 6, 0, 0, gui.style.box_background);
-        y += font_height + 6;
+        // Header chip: inset from the card so its own rounded corners never fight the card's, with
+        // an accent bar on the leading edge to anchor it.
+        int chip_width = inner_width + row_padding_x * 2;
+        rg_gui_draw_panel(x, y, chip_width, title_height, 4, pal->surface_alt, C_NONE, 255);
+        rg_gui_draw_panel(x, y + 2, 3, title_height - 4, 1, pal->accent, C_NONE, 255);
+        rg_gui_draw_text(x + 7, y + (title_height - text_height) / 2, chip_width - 14, title, gui.style.box_header,
+                         pal->surface_alt, RG_TEXT_ALIGN_CENTER);
+        y += title_height + title_gap;
     }
 
-    int list_top_i = 0;
+    int list_top = y;
+    int list_height = (box_y + box_height - box_padding) - list_top;
     int list_end_i = 0;
 
-    // Find top of page that contains selection
-    for (int yy = y, i = 0; i <= sel && i < options_count; i++)
+    // Menus scroll one row at a time: the selection walks to the edge of the card and the list then
+    // follows it by a single row. Paging (which is what this used to do) is right for a game list
+    // you skim, but wrong for a menu, where jumping a whole page loses your place.
+    //
+    // min_top is the highest row that still leaves the selection visible; the remembered scroll
+    // position is simply clamped into [min_top, sel], which moves it by exactly one row when the
+    // selection steps off either edge.
+    int min_top = sel;
+    for (int i = sel, used = 0; i >= 0; --i)
     {
-        yy += row_height[i];
-        if (yy >= box_y + box_height)
-        {
-            if (sel < i)
-                break;
-            yy = y + row_height[i];
-            list_top_i = i;
-        }
+        used += row_height[i];
+        if (used > list_height)
+            break;
+        min_top = i;
     }
+
+    int list_top_i = RG_MIN(RG_MAX(gui.dialog_top, min_top), RG_MAX(sel, 0));
+    gui.dialog_top = list_top_i;
 
     for (int i = list_top_i; i < options_count; i++)
     {
-        uint16_t color, fg, bg;
-        int xx = x + row_padding_x;
-        int yy = y + row_padding_y;
-        int height = 8;
-
         int option_type = options[i].flags & RG_DIALOG_FLAG_TYPE_MASK;
         int option_mode = options[i].flags & RG_DIALOG_FLAG_MODE_MASK;
+        int row_width = inner_width + row_padding_x * 2;
+        int height = row_height[i];
+        rg_color_t color;
 
         if (option_mode == RG_DIALOG_FLAG_NORMAL)
             color = gui.style.item_standard;
@@ -786,11 +1546,9 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
         else
             color = gui.style.item_disabled;
 
-        bool highlight = option_mode != RG_DIALOG_FLAG_SKIP && i == sel;
-        fg = highlight ? gui.style.box_background : color;
-        bg = highlight ? color : gui.style.box_background;
-
-        if (y + row_height[i] >= box_y + box_height)
+        // The first row of a page is always drawn even if it is taller than the space left: a long
+        // message is better clipped at the card edge than replaced by an empty card.
+        if (i > list_top_i && y + height > box_y + box_height - box_padding)
             break;
 
         list_end_i = i;
@@ -798,68 +1556,60 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
         if (option_mode == RG_DIALOG_FLAG_HIDDEN)
             continue;
 
-        if (false && option_type == (RG_DIALOG_FLAG_SEPARATOR & RG_DIALOG_FLAG_TYPE_MASK))
+        bool highlight = option_mode != RG_DIALOG_FLAG_SKIP && i == sel;
+        rg_color_t fg = highlight ? pal->highlight : color;
+        rg_color_t bg = highlight ? pal->accent_dim : gui.style.box_background;
+        rg_color_t value_fg = highlight ? pal->highlight : gui.style.item_value;
+
+        if (highlight)
         {
-            // FIXME: Draw a nice dim line...
+            // Selection pill plus a leading accent bar. The text below is drawn with the pill color
+            // as its background, so the two always match seamlessly even on the LCD path where we
+            // cannot read back what is underneath.
+            rg_gui_draw_panel(x, y, row_width, height, RG_MIN(4, height / 2), pal->accent_dim, C_NONE, 255);
+            rg_gui_draw_panel(x, y + 1, 3, height - 2, 1, pal->accent, C_NONE, 255);
+        }
+
+        if (is_separator_row(&options[i]))
+        {
+            rg_gui_fill_blend(x + row_padding_x, y + height / 2, inner_width, 1, pal->divider, 255);
         }
         else if (options[i].value)
         {
-            rg_gui_draw_text(xx, yy, col1_width, options[i].label, fg, bg, 0);
-            rg_gui_draw_text(xx + col1_width, yy, sep_width, ": ", fg, bg, 0);
-            height = rg_gui_draw_text(xx + col1_width + sep_width, yy, col2_width, options[i].value, fg, bg,
-                                      RG_TEXT_MULTILINE)
-                         .height;
-            if ((height / font_height) >= 2) // Multiline value, must fill sep and label
-                rg_gui_draw_rect(xx, yy + font_height + 1, inner_width - col2_width, height - font_height, 0, 0, bg);
+            int text_x = x + row_padding_x;
+            rg_gui_draw_text(text_x, y, col1_width, options[i].label, fg, bg, 0);
+            rg_gui_draw_text(text_x + col1_width, y, sep_width, "  ", fg, bg, 0);
+            // Values start at a fixed column, which is what lines them up; right-aligning them on top
+            // of that only pushed each one out to the far edge, leaving a gap after its label. On rows
+            // that are information rather than a setting (the About screen's version, date, target and
+            // website) that reads as text that has been shoved to the right.
+            int value_height = rg_gui_draw_text(text_x + col1_width + sep_width, y, col2_width,
+                                                options[i].value, value_fg, bg, RG_TEXT_MULTILINE)
+                                   .height;
+            if ((value_height / text_height) >= 2) // Multiline value, must fill sep and label
+                rg_gui_fill_blend(text_x, y + text_height, inner_width - col2_width, value_height - text_height, bg,
+                                  255);
         }
         else
         {
             uint32_t flags = RG_TEXT_MULTILINE;
             if (options[i].flags & RG_DIALOG_FLAG_ALIGN_CENTER)
                 flags |= RG_TEXT_ALIGN_CENTER;
-            height = rg_gui_draw_text(xx, yy, inner_width, options[i].label, fg, bg, flags).height;
+            else if (option_type == (RG_DIALOG_FLAG_MESSAGE & RG_DIALOG_FLAG_TYPE_MASK))
+                flags |= RG_TEXT_ALIGN_CENTER;
+            rg_gui_draw_text(x + row_padding_x, y, inner_width, options[i].label, fg, bg, flags);
         }
 
-        rg_gui_draw_rect(x, yy, row_padding_x, height, 0, 0, bg);
-        rg_gui_draw_rect(xx + inner_width, yy, row_padding_x, height, 0, 0, bg);
-        rg_gui_draw_rect(x, y, inner_width + row_padding_x * 2, row_padding_y, 0, 0, bg);
-        rg_gui_draw_rect(x, yy + height, inner_width + row_padding_x * 2, row_padding_y, 0, 0, bg);
-
-        y += height + row_padding_y * 2;
+        y += height;
     }
 
-    if (y < (box_y + box_height))
-    {
-        rg_gui_draw_rect(box_x, y, box_width, (box_y + box_height) - y, 0, 0, gui.style.box_background);
-    }
+    // The scrollbar lives in the card's right-hand padding, so a long list never loses text width
+    // to it and short lists show nothing at all.
+    rg_gui_draw_scrollbar(box_x + box_width - box_padding + 1, list_top, list_height, list_end_i - list_top_i + 1,
+                          options_count, list_top_i);
 
-    // Draw box border
-    rg_gui_draw_rect(box_x, box_y, box_width, box_height, box_padding, gui.style.box_background, C_NONE);
-    rg_gui_draw_rect(box_x - 1, box_y - 1, box_width + 2, box_height + 2, 1, gui.style.box_border, C_NONE);
-
-    // Draw box shadow (invisible by default: themes that don't set "dialog.shadow"
-    // get gui.style.shadow == C_NONE, so this draws nothing and existing themes are
-    // unaffected; themes that opt in get a subtle bottom-right drop shadow).
-    rg_gui_draw_rect(box_x + 4, box_y + box_height, box_width, 4, 0, C_NONE, gui.style.shadow); // Bottom
-    rg_gui_draw_rect(box_x + box_width, box_y + 4, 4, box_height, 0, C_NONE, gui.style.shadow); // Right
-
-    // Basic scroll indicators are overlayed at the end...
-    if (list_top_i > 0)
-    {
-        int x = box_x + box_width - 10;
-        int y = box_y + box_padding + 2;
-        rg_gui_draw_rect(x + 0, y - 0, 6, 2, 0, 0, gui.style.scrollbar);
-        rg_gui_draw_rect(x + 1, y - 2, 4, 2, 0, 0, gui.style.scrollbar);
-        rg_gui_draw_rect(x + 2, y - 4, 2, 2, 0, 0, gui.style.scrollbar);
-    }
-    if (list_end_i + 1 < options_count)
-    {
-        int x = box_x + box_width - 10;
-        int y = box_y + box_height - 6;
-        rg_gui_draw_rect(x + 0, y - 4, 6, 2, 0, 0, gui.style.scrollbar);
-        rg_gui_draw_rect(x + 1, y - 2, 4, 2, 0, 0, gui.style.scrollbar);
-        rg_gui_draw_rect(x + 2, y - 0, 2, 2, 0, 0, gui.style.scrollbar);
-    }
+    if (composited)
+        end_offscreen(&saved_target);
 
     return (rg_rect_t){box_x, box_y, box_width, box_height};
 }
@@ -942,6 +1692,10 @@ intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, 
     bool redraw = false;
     int sel = RG_MIN(RG_MAX(0, selected_index), options_count - 1);
     int sel_old = -1;
+
+    // Fresh dialog: start at the top of the list, and forget the window the previous overlay used
+    gui.dialog_top = 0;
+    gui.last_overlay = (rg_rect_t){0};
 
     rg_gui_draw_status_bars();
     rg_gui_draw_dialog(title, options, options_count, sel);
@@ -1033,7 +1787,10 @@ intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, 
             }
             if (event == RG_DIALOG_REDRAW)
             {
+                // The app has just repainted the whole screen, so the region our overlay owned is
+                // gone: there is nothing left to clean up, and the card is about to be drawn again.
                 rg_display_force_redraw();
+                gui.last_overlay = (rg_rect_t){0};
                 rg_gui_draw_status_bars();
             }
             redraw = true;
@@ -1051,6 +1808,7 @@ intptr_t rg_gui_dialog(const char *title, const rg_gui_option_t *options_const, 
 
     rg_input_wait_for_key(joystick, false, 1000);
     rg_display_force_redraw();
+    gui.last_overlay = (rg_rect_t){0};
     // free(shadow_options);
     free(shadow_text_buffer);
 
@@ -1153,13 +1911,15 @@ cleanup:
 void rg_gui_draw_input_screen(const char *title, const char *message, const char *input_buffer,
                               const rg_keyboard_layout_t *current_layout, int cursor_pos, bool partial_redraw)
 {
+    const rg_gui_palette_t *pal = &gui.palette;
+    const int text_height = gui.font_height + 2;
     const int key_width = gui.screen_width / 10 - 4;
-    const int key_height = 20;
+    const int key_height = RG_MAX(text_height + 8, 18);
     const int keyboard_width = current_layout->columns * key_width;
     const int keyboard_height = current_layout->rows * key_height;
     const int keyboard_x = (gui.screen_width - keyboard_width) / 2;
-    const int keyboard_y = gui.screen_height - keyboard_height - 40;
-    const int input_box_height = 30;
+    const int keyboard_y = gui.screen_height - keyboard_height - text_height - 10;
+    const int input_box_height = text_height + 10;
     const int input_box_y = keyboard_y - input_box_height - 10;
     char text_buffer[200];
 
@@ -1168,58 +1928,74 @@ void rg_gui_draw_input_screen(const char *title, const char *message, const char
 
     if (!partial_redraw)
     {
-        // Clear background using same method as rg_gui_draw_dialog
         rg_gui_draw_rect(0, 0, gui.screen_width, gui.screen_height, 0, C_NONE, gui.style.box_background);
 
-        // Draw title similar to dialog title
+        // Header chip, the same one the dialogs use, so this screen belongs to the same UI
         if (title)
-            rg_gui_draw_text(0, 10, gui.screen_width, title, gui.style.box_header, gui.style.box_background,
-                             RG_TEXT_ALIGN_CENTER);
+        {
+            int chip_height = text_height + 6;
+            rg_gui_draw_panel(keyboard_x, 8, keyboard_width, chip_height, 4, pal->surface_alt, C_NONE, 255);
+            rg_gui_draw_panel(keyboard_x, 10, 3, chip_height - 4, 1, pal->accent, C_NONE, 255);
+            rg_gui_draw_text(keyboard_x + 7, 8 + (chip_height - text_height) / 2, keyboard_width - 14, title,
+                             gui.style.box_header, pal->surface_alt, RG_TEXT_ALIGN_CENTER);
+        }
 
-        // Draw message similar to dialog message
         if (message)
-            rg_gui_draw_text(0, title ? 35 : 10, gui.screen_width, message, gui.style.item_message,
+            rg_gui_draw_text(0, title ? text_height + 20 : 10, gui.screen_width, message, gui.style.item_message,
                              gui.style.box_background, RG_TEXT_ALIGN_CENTER);
 
-        // Draw input box with same styling as dialog
-        rg_gui_draw_rect(keyboard_x, input_box_y, keyboard_width, input_box_height, 2, gui.style.box_border, C_WHITE);
-
-        // Draw instructions at bottom like dialog
-        snprintf(text_buffer, sizeof(text_buffer), "A=Type  B=Backspace  SELECT=%3s  START=OK  MENU/OPT=Cancel",
+        snprintf(text_buffer, sizeof(text_buffer), "A Type   B Erase   SELECT %s   START OK   MENU Cancel",
                  current_layout->label);
-        rg_gui_draw_text(0, gui.screen_height - 15, gui.screen_width, text_buffer, gui.style.item_message,
+        rg_gui_draw_text(0, gui.screen_height - text_height - 3, gui.screen_width, text_buffer, pal->text_dim,
                          gui.style.box_background, RG_TEXT_ALIGN_CENTER);
     }
+
+    // Input field: dark, with an accent outline, because it is the one thing on screen that is
+    // being edited right now. Composited for the same reason as the keypad below.
+    rg_gui_target_t saved_target;
+    bool composited = begin_offscreen((rg_rect_t){keyboard_x, input_box_y, keyboard_width, input_box_height},
+                                      gui.style.box_background, &saved_target);
+
+    rg_gui_draw_panel(keyboard_x, input_box_y, keyboard_width, input_box_height, 4, pal->surface, pal->accent, 255);
 
     // Draw input buffer text and blinking cursor
     // static uint32_t blink_timer = 0;
     static bool show_cursor = true;
     snprintf(text_buffer, sizeof(text_buffer), "%s%s", input_buffer, show_cursor ? "_" : " ");
-    rg_gui_draw_text(keyboard_x + 5, input_box_y + 5, keyboard_width - 10, text_buffer, C_BLACK, C_WHITE, 0);
+    rg_gui_draw_text(keyboard_x + 6, input_box_y + (input_box_height - text_height) / 2, keyboard_width - 12,
+                     text_buffer, pal->text, pal->surface, 0);
 
-    // Draw keyboard pad
-    rg_gui_draw_virtual_keyboard(keyboard_x, keyboard_y, current_layout, cursor_pos, true);
+    if (composited)
+        end_offscreen(&saved_target);
+
+    rg_gui_draw_virtual_keyboard(keyboard_x, keyboard_y, current_layout, cursor_pos, partial_redraw);
 }
 
 void rg_gui_draw_virtual_keyboard(int x_pos, int y_pos, const rg_keyboard_layout_t *current_layout, int cursor_pos,
                                   bool partial_redraw)
 {
+    const rg_gui_palette_t *pal = &gui.palette;
+    const int text_height = gui.font_height + 2;
     const int key_width = gui.screen_width / 10 - 4;
-    const int key_height = 20;
+    const int key_height = RG_MAX(text_height + 8, 18);
     const int keyboard_width = current_layout->columns * key_width;
     const int keyboard_height = current_layout->rows * key_height;
     const int keyboard_x = get_horizontal_position(x_pos, keyboard_width);
     const int keyboard_y = get_vertical_position(y_pos, keyboard_height);
     const char *layout_ptr = current_layout->layout;
 
-    if (!partial_redraw)
-    {
-        // Draw keyboard container with same border style as dialog
-        rg_gui_draw_rect(keyboard_x - 2, keyboard_y - 2, keyboard_width + 4, keyboard_height + 4, 2,
-                         gui.style.box_border, gui.style.box_background);
-    }
+    // The whole keypad is composited and sent in one transfer: it is redrawn on every keypress, and
+    // forty little panels going out one at a time is very visible. It seeds from the screen's own
+    // background rather than the backdrop, because this screen painted that background itself.
+    rg_gui_target_t saved_target;
+    bool composited = begin_offscreen(
+        (rg_rect_t){keyboard_x - 4, keyboard_y - 4, keyboard_width + 8, keyboard_height + 8},
+        gui.style.box_background, &saved_target);
 
-    // Draw keyboard keys
+    if (composited || !partial_redraw)
+        rg_gui_draw_panel(keyboard_x - 3, keyboard_y - 3, keyboard_width + 6, keyboard_height + 6, 5, pal->surface,
+                          pal->divider, 255);
+
     for (int row = 0; row < current_layout->rows; row++)
     {
         for (int col = 0; col < current_layout->columns; col++)
@@ -1229,13 +2005,11 @@ void rg_gui_draw_virtual_keyboard(int x_pos, int y_pos, const rg_keyboard_layout
             int y = keyboard_y + row * key_height;
 
             bool is_selected = (cursor_pos == key_idx);
-            // Use same color scheme as dialog items
-            rg_color_t bg_color = is_selected ? gui.style.item_standard : gui.style.box_background;
-            rg_color_t fg_color = is_selected ? gui.style.box_background : gui.style.item_standard;
-            rg_color_t border_color = is_selected ? gui.style.item_standard : gui.style.box_border;
+            rg_color_t bg_color = is_selected ? pal->accent : pal->surface_alt;
+            rg_color_t fg_color = is_selected ? gui.style.box_background : pal->text;
 
-            // Draw key with same border style as dialog
-            rg_gui_draw_rect(x + 1, y + 1, key_width - 2, key_height - 2, 1, border_color, bg_color);
+            rg_gui_draw_panel(x + 1, y + 1, key_width - 2, key_height - 2, 2, bg_color,
+                              is_selected ? pal->highlight : C_NONE, 255);
 
             // Draw key character
             char key_str[5] = {0, 0, 0, 0, 0};
@@ -1245,9 +2019,13 @@ void rg_gui_draw_virtual_keyboard(int x_pos, int y_pos, const rg_keyboard_layout
             else
                 rg_utf8_encode(key_str, key);
 
-            rg_gui_draw_text(x + 2, y + 2, key_width - 4, key_str, fg_color, bg_color, RG_TEXT_ALIGN_CENTER);
+            rg_gui_draw_text(x + 3, y + (key_height - text_height) / 2, key_width - 6, key_str, fg_color, bg_color,
+                             RG_TEXT_ALIGN_CENTER);
         }
     }
+
+    if (composited)
+        end_offscreen(&saved_target);
 }
 
 static const rg_keyboard_layout_t keyboard_layouts[] = {
@@ -2521,7 +3299,7 @@ void rg_gui_about_menu(void)
         case 3:
             if (rg_gui_confirm(_("Reset all settings?"), NULL, false))
             {
-                rg_storage_delete(RG_BASE_PATH_CACHE);
+                rg_system_clear_cache();
                 rg_settings_reset();
                 rg_system_restart();
                 return;
@@ -2619,8 +3397,14 @@ void rg_gui_debug_menu(void)
         rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, RG_BOOT_RECOVERY);
         break;
     case 0x002:
-        rg_storage_delete(RG_BASE_PATH_CACHE);
-        rg_system_restart();
+        // Everything cached anywhere on the card, not just this folder: rom lists, checksums, the
+        // media library index, per-emulator cache files. It restarts because half the app is holding
+        // data that just went away.
+        if (rg_gui_confirm(_("Clear cache"), _("Delete all cached data and restart?"), true))
+        {
+            rg_system_clear_cache();
+            rg_system_restart();
+        }
         break;
     case 0x003:
         rg_emu_screenshot(RG_STORAGE_ROOT "/screenshot.png", 0, 0);
@@ -2645,7 +3429,7 @@ static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t eve
     if (event == RG_DIALOG_FOCUS_GAINED)
     {
         rg_image_t *preview = NULL;
-        rg_color_t color = C_BLUE;
+        rg_color_t color = gui.palette.accent;
         size_t margin = 0; // TEXT_RECT("ABC", 0).height;
         size_t border = 3;
         char buffer[100];
@@ -2660,15 +3444,19 @@ static rg_gui_event_t slot_select_cb(rg_gui_option_t *option, rg_gui_event_t eve
         else
         {
             snprintf(buffer, sizeof(buffer), "Slot %d is empty", slot->id);
-            color = C_RED;
+            color = C_RGB(240, 90, 90);
         }
-        // The border stays a semantic used/empty (blue/red) indicator; the rest of this
-        // overlay's chrome follows the active theme like every other dialog.
+        // The frame stays a semantic used/empty indicator (accent when there is a state to load,
+        // red when there is not); the label chip follows the theme like every other dialog.
+        int text_height = gui.font_height * 2 + 4;
+        int chip_height = text_height + 8;
+        int chip_width = gui.screen_width - border * 2 - 16;
         rg_gui_draw_image(0, margin, gui.screen_width, gui.screen_height - margin * 2, true, preview);
         rg_gui_draw_rect(0, margin, gui.screen_width, gui.screen_height - margin * 2, border, color, C_NONE);
-        rg_gui_draw_rect(border, margin + border, gui.screen_width - border * 2, gui.font_height * 2 + 6, 0,
-                         gui.style.box_background, gui.style.box_background);
-        rg_gui_draw_text(border + 60, margin + border + 5, gui.screen_width - border * 2 - 120, buffer,
+        rg_gui_draw_shadow(border + 8, margin + border + 6, chip_width, chip_height, 5, 2);
+        rg_gui_draw_panel(border + 8, margin + border + 6, chip_width, chip_height, 5, gui.style.box_background, color,
+                          255);
+        rg_gui_draw_text(border + 18, margin + border + 6 + (chip_height - text_height) / 2, chip_width - 20, buffer,
                          gui.style.item_standard, gui.style.box_background,
                          RG_TEXT_ALIGN_CENTER | RG_TEXT_BIGGER | RG_TEXT_NO_PADDING);
         rg_surface_free(preview);

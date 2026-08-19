@@ -1,3 +1,264 @@
+# Retro-Go 3.7.0 (unreleased)
+
+## SD card reliability
+
+- All: A failed block read or write now stops the card's open-ended transfer before retrying.
+  CMD18/CMD25 keep the card streaming until a CMD12 tells it to stop, and every error path inside
+  the SPI host returns without sending one - so after a glitch the card was still mid-transfer and
+  the retry read the tail of the old stream instead of a command response. One recoverable glitch
+  therefore poisoned every read that followed, surfacing as a file that "stops" at a random offset.
+  The card is now stopped, polled with CMD13 until it reports ready, and only then asked again. The
+  SDMMC host tags multi-block transfers with auto-stop and does this in hardware, so it is the SPI
+  host that gets the treatment
+- All: The wait for the card to come back is capped at 250 ms for reads and the full timeout only
+  for writes, which may still be programming a block. A card that has been physically removed fails
+  this way on every transfer, and a full timeout per attempt turned "card pulled out" into seconds
+  of stall per read
+- All: `rg_storage_read_file()` and the zip reader split their reads into 16 KB chunks, each retried
+  on its own. One `fread` becomes one multi-block transfer, so an unbounded read handed the card a
+  burst that could span megabytes and lost the whole thing to a glitch anywhere inside it. Each
+  chunk is addressed absolutely rather than sequentially, because the stream position is undefined
+  after a failed read and continuing from it would return the wrong bytes rather than an error
+- All: A read that fails every attempt is reported with the offset it stopped at and the length it
+  wanted, which distinguishes a file that is genuinely shorter than its directory entry claims from
+  a card that read badly. `rg_storage_read_file()` also fails cleanly now if it cannot determine the
+  file's size, instead of carrying on with a garbage length
+- All: `RG_FILE_ATOMIC_WRITE` finally does something. It has been part of `rg_storage_write_file()`'s
+  documented contract and several callers pass it, but nothing implemented it: every write went
+  straight at the target, so an interrupted one (power loss, card pulled, card full) left the
+  settings, playlist or cache file truncated instead of leaving the previous version intact. The
+  data now goes to a `.tmp` file that replaces the target only once it is completely written
+- All: `rg_storage_write_file()` checks the result of `fwrite`, `ferror` and `fclose`. `fclose` is
+  where buffered data finally reaches the card, so it is also where a full or dying card shows up;
+  not checking it reported a successful write for a file that never landed
+- All: The number of files that may be open at once went from 4 to 8. The launcher alone can have
+  several going (the media library scanner, the artwork worker, the audio reader and whatever the UI
+  is doing), and running out surfaced to the caller as a plain "could not open". Each slot costs
+  about half a KB
+
+## Firmware updates - reads, watchdog and the screen
+
+- All: A checksum mismatch reported itself as "Out of memory while verifying". The error string was
+  pre-loaded with that text and the mismatch branch never reassigned it, so every genuine bad image
+  named the wrong cause
+- All: The update image is read 4 KB at a time instead of 16 KB. One read of that size is one
+  multi-block transfer covering that many sectors and the whole burst is lost if the card glitches
+  anywhere inside it; 4 KB is one flash sector, which is also the erase granularity, so nothing
+  downstream wants a larger unit. Each read is retried up to three times, by absolute offset, so a
+  transient failure no longer costs the whole update
+- All: An image that has already passed verification is not read again. An update used to CRC the
+  whole file twice - once when the factory app asked whether an update was pending, once when it
+  installed it - which is several more megabytes of card transfers and another chance to hit a
+  glitch. The image is identified by path, size and mtime, so replacing the file invalidates the
+  entry
+- All: Verifying, erasing and writing now tick the system monitor. Without it the watchdog decided
+  the app had hung three seconds in and drew "App unresponsive" over the progress dialog - and
+  holding MENU at that point killed the update
+- All: The progress dialog is only redrawn when the percentage on it would actually change. At 4 KB
+  a chunk the verify loop runs about 2000 times for an 8 MB image, and redrawing every time cost
+  more than the verification itself - on the boards that share one SPI bus between the card and the
+  screen it was contending with the very reads it was reporting on
+- All: The screen no longer dims and switches off in the middle of an update. Verifying and
+  installing take minutes and neither reads the gamepad, so the inactivity timeout blanked the panel
+  partway through a firmware write, looking exactly like a device that had died. New
+  `rg_system_set_screen_timeout_inhibit()` holds the screen awake across a long operation that draws
+  progress but never polls input, wakes it if it had already gone, and restarts the idle countdown
+  from the moment the operation ends rather than from the last button press
+- All: An image that is present but corrupt now logs why it was rejected. It used to fail silently,
+  which made it indistinguishable from having no image at all - the screen just said "No update
+  available"
+- All: The update path's buffers are allocated with `MEM_NOPANIC`, so a large image on a device that
+  is short on memory reports a failure instead of aborting the app
+
+## Launcher - game lists, scanning and boot
+
+- Launcher: Rom lists are cached on the card (`/retro-go/cache/roms_<system>.list`) and read back
+  instead of walking the folders again. A tab opens instantly, and the game count is shown on the
+  carousel before a tab has ever been opened - no more tabs stuck on "Loading..." until you enter
+  them. The cache records the folders it came from with their timestamps, so a folder that changed
+  is rescanned on its own
+- Launcher: New **Scan Game List** action in the menu rescans every rom folder and rewrites the
+  caches. This is what to use after copying new games onto the card; it does not trust the cached
+  timestamps (FAT does not always update a directory's when a file is added)
+- Launcher: New **Reboot** action in the menu, which restarts the console and shows the boot
+  animation on the way back up (a software restart is not a cold boot, so the animation is
+  requested explicitly rather than being skipped)
+- Launcher: The boot animation is about twice as long, with each beat given room to read: the scene
+  settles, the mark drops and switches on, the wordmark comes up, the highlight crosses it
+- Launcher: *Scroll mode* is now *List scrolling* and applies only to the game list. Menus and
+  dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
+  the list by one line and keeps your place
+
+## Text layout
+
+- All: Dialog values are left-aligned again. They already start at a fixed column, which is what
+  lines them up; right-aligning them on top of that pushed each one out to the far edge and left a
+  gap after its label, which on rows that are information rather than a setting - the About screen's
+  version, date, target and website - reads as text shoved to the right
+- All: `rg_gui_draw_text()` mishandled a blank line in multi-line text. The glyph loop swallowed the
+  line break as a zero-width glyph and carried on, so the line *after* an empty one was drawn on the
+  same row, starting at the empty line's centering offset (half the box) and wrapping early - which
+  read as text pushed over to the right - and the last row fell off the bottom of the card. The break
+  is now left to the outer loop, one per row, so an empty line stays an empty row
+
+## Update diagnostics
+
+- All: A failed read while verifying an image is retried once before giving up (a single bad read
+  over SPI is usually a glitch, not a damaged file), and the message now names the offset it stopped
+  at, which distinguishes a file that is genuinely short from a card that read badly once
+- Launcher: A download checks the card has room for the image first, and after closing the file it
+  checks `ferror`/`fclose` and compares the size the card actually stored against what was written.
+  Running out of space used to leave a file whose size looked right but whose contents stopped early,
+  surfacing much later as an unexplained verification failure
+- Launcher: The confirmation before flashing now shows the image's own name, version and target from
+  its footer. A release built for an older partition layout is indistinguishable from the right file
+  until it fails, and the version is the only thing that gives it away
+
+## Text direction and update diagnostics
+
+- All: A byte-order mark no longer flips a line to right-to-left. U+FEFF lives inside the Arabic
+  presentation forms block, so a name coming from a text file saved by an editor that writes a BOM
+  (Notepad, for one) was enough to make English text take the right-to-left path. Formatting
+  characters (BOM, ZWSP, ZWNJ, ZWJ, word joiners) now carry no direction at all, and reordering only
+  happens when a line actually contains an Arabic or Hebrew *letter* - digits, marks and punctuation
+  from those blocks are not reason enough
+- All: A zero-width non-joiner is no longer treated as left-to-right, which had been splitting every
+  Persian word containing one (they are everywhere) into separate runs
+- All: Punctuation, symbols, arrows and box drawing are neutral rather than strong left-to-right, so
+  they no longer decide a line's direction on their own; CJK and Hangul are now classified as
+  left-to-right instead of falling through to that catch-all
+- All: Text that is not valid UTF-8 (a filename in a legacy code page) is returned untouched instead
+  of being decoded as garbage, reordered and re-encoded
+- All: "Image checksum failed" no longer covers up a read error, and the alert now shows the computed
+  CRC, the CRC from the image's footer, and the number of bytes covered. Those three numbers separate
+  a corrupted transfer (a different value each attempt) from an image whose own footer is wrong (the
+  same value every time, and reproducible on a PC)
+- Launcher: An image that fails verification is deleted, so a retry starts clean and the factory app
+  cannot pick the bad file up on a later boot
+
+## Network throughput
+
+- All: TCP was configured to keep only 5760 bytes in flight (`CONFIG_LWIP_TCP_WND_DEFAULT`, the IDF
+  default), which caps a transfer at about one window per round trip - roughly 28 KB/s at a 200 ms
+  RTT, which is what a firmware download from a CDN was actually getting. The esp32-s3 targets now
+  use a 32 KB window, with the Wi-Fi receive buffers and block-ack window raised to match so the
+  driver does not become the next bottleneck. Those buffers are placed in PSRAM
+  (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) so the extra window does not come out of the internal RAM
+  the SD driver and emulators need
+- All: Wi-Fi power save is now switched off while connected. `esp_wifi` defaults to
+  `WIFI_PS_MIN_MODEM`, where the radio sleeps between beacons and every round trip pays up to a
+  beacon interval of latency - the second half of why downloads crawled. Wi-Fi on this device is only
+  ever on because the user asked for something over the network, so throughput is the better trade
+- All: The HTTP client's socket buffer went from 1 KB to 4 KB by default, and is now settable per
+  request (`rg_http_cfg_t.buffer_size`); the firmware download asks for 16 KB and reads it in 32 KB
+  chunks. A megabyte no longer costs a thousand small reads, each with its own TLS record work
+
+## Firmware update fixes
+
+- All: Every failure while writing flash now says what went wrong. `write_flash_range()` had five
+  silent `return false` paths (out of memory, unaligned range, erase failed, image read failed, flash
+  write failed): the install aborted, the caller had nothing to report, and the user was left with a
+  screen that said only that the update had failed. Each one now returns a reason that is shown and
+  logged
+- Launcher: Downloading an update now deletes the firmware images already in `/retro-go/firmware`
+  first. Nothing ever cleaned them up, so every update left another few megabytes behind - which
+  wastes space a 4 MB image may need (a truncated download then fails its checksum), and leaves stale
+  images where the factory app looks for the one to apply
+- Factory: The pending image is chosen newest-first instead of taking whatever the directory listed
+  first, so an old image cannot win over the one just downloaded. It also shows which file it is
+  checking, because verifying an image means a full CRC pass plus comparing every partition against
+  flash - seconds per file, and previously silent
+- All: Clearing the panel (`rg_display_clear`) now drops the GUI's backdrop. A dialog composited over
+  a surface that no longer matches the screen would show the screen that used to be there, which is
+  exactly what happens during an update, where each stage clears the screen first
+- Launcher: A device whose firmware has no factory partition cannot flash an image by itself. Instead
+  of "Firmware updater app not found!" it now says so, and says what to do: the downloaded file is
+  kept in `/retro-go/firmware`, flash it over USB once and updates work from the device afterwards
+
+## Caches and the updater
+
+- All: **Clear cache** (debug menu) and **Reset settings** now clear every cache on the card, not
+  just the shared cache folder: rom lists, CRC checksums, the saved clock, per-emulator cache files,
+  and the media player's library index. It goes through one new entry point, `rg_system_clear_cache()`,
+  which also raises `RG_EVENT_CLEAR_CACHE` so an app can drop caches the core knows nothing about
+- All: What is *not* cleared is user data, deliberately: saves, save states, screenshots, cover art,
+  themes, borders, playlists, and the media player's favourites, play counts, resume positions and
+  saved network locations (that is why the player keeps `stats.bin` separate from `library.idx`)
+- Launcher: Clearing the cache also drops the rom lists held in RAM, so nothing stale is written
+  back over the files that were just deleted
+- Launcher: A firmware download can be cancelled. The download loop polls input on every chunk, so
+  buttons respond while it runs (and a keypress wakes the screen again once it has dimmed or switched
+  off - before, nothing was reading the gamepad, which is what wakes it). **B** asks whether to stop;
+  confirming deletes the partial file and returns to the menu
+- Launcher: The download card is composited through the new overlay API instead of keeping a
+  full-screen scratch surface of its own, which saves ~150 KB and removes a case where it could be
+  mistaken for the screen's backdrop
+
+## Interface - flicker and fonts
+
+- All: Dialogs, messages, the on-screen keyboard and its input field are composited into an
+  offscreen buffer and sent to the panel in a single transfer. Before, every card was painted
+  straight to the LCD piece by piece on every keypress, which is what made menus flicker while
+  scrolling. Where the app owns a surface (the launcher, the media player), the overlay is
+  composited over that surface, so a dialog now sits over the real background with its translucency
+  and shadow intact; where it does not (a game), the card sits on a flat plate instead
+- All: `rg_gui` drawing now goes through a target with its own origin, stride and clip rectangle,
+  which is what lets the same drawing code paint the screen, an app surface, or a small window of
+  the screen
+- All: New **Sans 12** font, and the existing Sans font is now named **Sans 15**. Both carry the
+  Arabic block and the Arabic presentation forms
+- All: Persian and Arabic text now renders properly: `rg_text_shape()` joins each letter into its
+  contextual form (isolated/initial/medial/final), builds the required lam-alef ligatures, and lays
+  the line out right to left while numbers and Latin words inside it keep reading left to right.
+  Text with no right-to-left characters is returned untouched, so it costs one string scan
+
+## Interface
+
+- All: New drawing primitives in `rg_gui`: rounded cards, translucent fills, soft drop shadows,
+  gradients, lines, discs, scrollbars and progress bars. Translucency composites against the
+  surface when there is one to read back (launcher, media player, boot screen) and against the
+  theme background when there is not (dialogs over a running game), so one set of code draws the
+  same design in both places
+- All: Dialogs redrawn as rounded cards with a drop shadow, a header chip with an accent bar, a
+  selection pill instead of an inverted row, values right-aligned in a dimmer color, real
+  separators instead of a row of dashes, and a scrollbar in the card's gutter in place of the
+  little arrows
+- All: Status icons redrawn. The battery is a rounded cell with a contact tip, a charge bar that
+  keeps its green/amber/red meaning, a lightning bolt while charging and a blink when nearly
+  empty; Wi-Fi is a three-bar meter driven by the actual RSSI, sweeping while it associates. Over
+  a theme background image the cluster sits on a translucent chip so it stays readable
+- All: The on-screen keyboard (Wi-Fi passwords, renames) now has rounded keys, an accent-filled
+  selected key and a dark input field with an accent outline
+- All: Save-slot previews get a rounded label chip; the frame still shows at a glance whether the
+  slot holds a state
+- Launcher: The browser is laid out in columns - a slim header band with the system logo and name,
+  the list on the left with a scrollbar, and the cover/save preview in a card of its own on the
+  right. Covers no longer float on top of the game names
+- Launcher: Selected row drawn as a pill with a leading accent bar, and a name too long to fit
+  scrolls (one character at a time, after a pause) while it is selected
+- Launcher: Hint bar along the bottom showing what the buttons do, with the item counter on the
+  right
+- Launcher: The system carousel shows the logo and banner on a translucent card, the systems as
+  pills at the bottom, and the battery/clock cluster it was missing
+- Launcher: Backgrounds get a scrim behind the header and footer so text stays readable over any
+  theme artwork, and the flat no-image background gets a soft accent gradient
+- Launcher: Animated boot screen on cold boot - a synthwave horizon with a scrolling grid, a
+  striped sun, twinkling stars, the console mark dropping in and switching on, and the wordmark
+  with a specular sweep. It is drawn from shapes rather than a bitmap, so it costs no flash and
+  fits every panel size. Any button skips it, and it can be turned off in
+  *Options > Launcher options > Boot animation*
+- Launcher: Update download progress uses the same card and bar as the rest of the UI
+- Theming: `theme.json`'s `dialog` section gains `accent`, `accent_dim`, `highlight`, `surface`,
+  `surface_alt`, `divider`, `text_dim` and `item_value`. All are optional and derived from the
+  existing keys when absent, so older themes keep working; colors may now be written as RGB888
+  (`0x5AAAFF`) as well as RGB565
+- Theming: All 13 bundled themes rewritten with a full palette each, one hue per theme - Art Book
+  Next (indigo), Commic Book (magenta), GBZ (lime), Super Lopez (orange), base (monochrome), basic
+  (cyan), box (amber), classic (navy), clean (mint), default (azure), noir (crimson), pixel
+  (violet) and tv (yellow on midnight blue). Each also gets its own `media` section and four
+  distinct launcher variants (white-on-accent, second colour, solid accent pill, high contrast),
+  and every theme's `description` is now its folder name
+
 # Retro-Go 3.6.0 (2026-08-09)
 
 ## Media Player (new)

@@ -127,6 +127,7 @@ typedef enum
     RG_EVENT_REDRAW       = RG_EVENT_TYPE_SYSTEM | 3,
     RG_EVENT_SPEEDUP      = RG_EVENT_TYPE_SYSTEM | 4,
     RG_EVENT_SCREENSHOT   = RG_EVENT_TYPE_SYSTEM | 5,
+    RG_EVENT_CLEAR_CACHE  = RG_EVENT_TYPE_SYSTEM | 6,
     RG_EVENT_SHUTDOWN     = RG_EVENT_TYPE_POWER | 1,
     RG_EVENT_SLEEP        = RG_EVENT_TYPE_POWER | 2,
 } rg_event_t;
@@ -221,6 +222,9 @@ void rg_system_panic(const char *context, const char *message) __attribute__((no
 void rg_system_shutdown(void) __attribute__((noreturn));
 void rg_system_sleep(void) __attribute__((noreturn));
 void rg_system_restart(void) __attribute__((noreturn));
+/* Delete every cached file on the storage: the shared cache folder, plus whatever the running app
+ * caches of its own (it is told through RG_EVENT_CLEAR_CACHE). User data is never touched. */
+void rg_system_clear_cache(void);
 void rg_system_exit(void) __attribute__((noreturn));
 void rg_system_switch_app(const char *part, const char *name, const char *args, uint32_t flags) __attribute__((noreturn));
 bool rg_system_have_app(const char *app);
@@ -245,6 +249,8 @@ uint32_t rg_system_filter_screen_timeout_input(uint32_t joystick);
 // True while the inactivity timeout has dimmed or switched off the backlight. Long-running
 // full-screen apps can use this to stop rendering into a display nobody can see.
 bool rg_system_screen_is_dimmed(void);
+/* Hold the screen awake across a long operation that draws progress but never reads the gamepad. */
+void rg_system_set_screen_timeout_inhibit(bool inhibit);
 void rg_system_vlog(int level, const char *context, const char *format, va_list va);
 void rg_system_log(int level, const char *context, const char *format, ...) __attribute__((format(printf,3,4)));
 bool rg_system_save_trace(const char *filename, bool append);
