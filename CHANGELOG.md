@@ -1,5 +1,75 @@
 # Retro-Go 3.7.0 (unreleased)
 
+## SD card reliability
+
+- All: A failed block read or write now stops the card's open-ended transfer before retrying.
+  CMD18/CMD25 keep the card streaming until a CMD12 tells it to stop, and every error path inside
+  the SPI host returns without sending one - so after a glitch the card was still mid-transfer and
+  the retry read the tail of the old stream instead of a command response. One recoverable glitch
+  therefore poisoned every read that followed, surfacing as a file that "stops" at a random offset.
+  The card is now stopped, polled with CMD13 until it reports ready, and only then asked again. The
+  SDMMC host tags multi-block transfers with auto-stop and does this in hardware, so it is the SPI
+  host that gets the treatment
+- All: The wait for the card to come back is capped at 250 ms for reads and the full timeout only
+  for writes, which may still be programming a block. A card that has been physically removed fails
+  this way on every transfer, and a full timeout per attempt turned "card pulled out" into seconds
+  of stall per read
+- All: `rg_storage_read_file()` and the zip reader split their reads into 16 KB chunks, each retried
+  on its own. One `fread` becomes one multi-block transfer, so an unbounded read handed the card a
+  burst that could span megabytes and lost the whole thing to a glitch anywhere inside it. Each
+  chunk is addressed absolutely rather than sequentially, because the stream position is undefined
+  after a failed read and continuing from it would return the wrong bytes rather than an error
+- All: A read that fails every attempt is reported with the offset it stopped at and the length it
+  wanted, which distinguishes a file that is genuinely shorter than its directory entry claims from
+  a card that read badly. `rg_storage_read_file()` also fails cleanly now if it cannot determine the
+  file's size, instead of carrying on with a garbage length
+- All: `RG_FILE_ATOMIC_WRITE` finally does something. It has been part of `rg_storage_write_file()`'s
+  documented contract and several callers pass it, but nothing implemented it: every write went
+  straight at the target, so an interrupted one (power loss, card pulled, card full) left the
+  settings, playlist or cache file truncated instead of leaving the previous version intact. The
+  data now goes to a `.tmp` file that replaces the target only once it is completely written
+- All: `rg_storage_write_file()` checks the result of `fwrite`, `ferror` and `fclose`. `fclose` is
+  where buffered data finally reaches the card, so it is also where a full or dying card shows up;
+  not checking it reported a successful write for a file that never landed
+- All: The number of files that may be open at once went from 4 to 8. The launcher alone can have
+  several going (the media library scanner, the artwork worker, the audio reader and whatever the UI
+  is doing), and running out surfaced to the caller as a plain "could not open". Each slot costs
+  about half a KB
+
+## Firmware updates - reads, watchdog and the screen
+
+- All: A checksum mismatch reported itself as "Out of memory while verifying". The error string was
+  pre-loaded with that text and the mismatch branch never reassigned it, so every genuine bad image
+  named the wrong cause
+- All: The update image is read 4 KB at a time instead of 16 KB. One read of that size is one
+  multi-block transfer covering that many sectors and the whole burst is lost if the card glitches
+  anywhere inside it; 4 KB is one flash sector, which is also the erase granularity, so nothing
+  downstream wants a larger unit. Each read is retried up to three times, by absolute offset, so a
+  transient failure no longer costs the whole update
+- All: An image that has already passed verification is not read again. An update used to CRC the
+  whole file twice - once when the factory app asked whether an update was pending, once when it
+  installed it - which is several more megabytes of card transfers and another chance to hit a
+  glitch. The image is identified by path, size and mtime, so replacing the file invalidates the
+  entry
+- All: Verifying, erasing and writing now tick the system monitor. Without it the watchdog decided
+  the app had hung three seconds in and drew "App unresponsive" over the progress dialog - and
+  holding MENU at that point killed the update
+- All: The progress dialog is only redrawn when the percentage on it would actually change. At 4 KB
+  a chunk the verify loop runs about 2000 times for an 8 MB image, and redrawing every time cost
+  more than the verification itself - on the boards that share one SPI bus between the card and the
+  screen it was contending with the very reads it was reporting on
+- All: The screen no longer dims and switches off in the middle of an update. Verifying and
+  installing take minutes and neither reads the gamepad, so the inactivity timeout blanked the panel
+  partway through a firmware write, looking exactly like a device that had died. New
+  `rg_system_set_screen_timeout_inhibit()` holds the screen awake across a long operation that draws
+  progress but never polls input, wakes it if it had already gone, and restarts the idle countdown
+  from the moment the operation ends rather than from the last button press
+- All: An image that is present but corrupt now logs why it was rejected. It used to fail silently,
+  which made it indistinguishable from having no image at all - the screen just said "No update
+  available"
+- All: The update path's buffers are allocated with `MEM_NOPANIC`, so a large image on a device that
+  is short on memory reports a failure instead of aborting the app
+
 ## Launcher - game lists, scanning and boot
 
 - Launcher: Rom lists are cached on the card (`/retro-go/cache/roms_<system>.list`) and read back
