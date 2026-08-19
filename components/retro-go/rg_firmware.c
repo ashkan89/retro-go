@@ -106,17 +106,29 @@ cleanup:
     return success;
 }
 
-static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc, bool show_progress)
+/**
+ * CRC the image and compare it against its footer. Returns NULL on success, or the reason it failed.
+ *
+ * A short read used to be reported as a checksum mismatch, which sends anyone debugging a bad update
+ * after the wrong problem; and the two numbers that identify the problem in one step were only ever
+ * written to the log. `computed_out` is optional.
+ */
+static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc, bool show_progress,
+                                    uint32_t *computed_out)
 {
     uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
     uint32_t crc = 0;
     size_t remaining = image_size;
-    bool success = false;
+    static char read_error[80]; // The message carries the offset, which is the useful part
+    const char *error = "Out of memory while verifying.";
 
     if (!buffer)
-        return false;
+        return error;
     if (fseek(fp, 0, SEEK_SET) != 0)
+    {
+        error = "Could not seek in the image file.";
         goto cleanup;
+    }
 
     if (show_progress)
         rg_display_clear(C_BLACK);
@@ -124,8 +136,25 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc,
     while (remaining > 0)
     {
         size_t chunk = RG_MIN(remaining, FLASH_CHUNK_SIZE);
+        size_t offset = image_size - remaining;
+
+        // One retry, because a single failed read over SPI is usually a glitch rather than a
+        // damaged file, and losing a whole update to it would be a poor trade. A file that is
+        // genuinely shorter than its directory entry claims fails both times.
         if (fread(buffer, 1, chunk, fp) != chunk)
-            goto cleanup;
+        {
+            RG_LOGW("Read failed at offset %d, retrying", (int)offset);
+            clearerr(fp);
+            if (fseek(fp, offset, SEEK_SET) != 0 || fread(buffer, 1, chunk, fp) != chunk)
+            {
+                RG_LOGE("Short read at offset %d of %d", (int)offset, (int)image_size);
+                snprintf(read_error, sizeof(read_error),
+                         "Could not read the image file\npast %d of %d bytes.", (int)offset,
+                         (int)image_size);
+                error = read_error;
+                goto cleanup;
+            }
+        }
 
         crc = rg_crc32(crc, buffer, chunk);
         remaining -= chunk;
@@ -133,13 +162,17 @@ static bool verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc,
             draw_firmware_message("Verifying image...\n%d%%", (int)((image_size - remaining) * 100 / image_size));
     }
 
-    success = crc == expected_crc;
-    if (!success)
-        RG_LOGE("Image CRC mismatch: got %08X expected %08X", (int)crc, (int)expected_crc);
+    if (crc == expected_crc)
+        error = NULL;
+    else
+        RG_LOGE("Image CRC mismatch: got %08X expected %08X over %d bytes", (int)crc, (int)expected_crc,
+                (int)image_size);
 
 cleanup:
+    if (computed_out)
+        *computed_out = crc;
     free(buffer);
-    return success;
+    return error;
 }
 
 static int read_partition_table(FILE *fp, image_partition_t *partitions, int max_partitions)
@@ -331,7 +364,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
         goto cleanup;
 
     image_size = stat.size - IMAGE_FOOTER_SIZE;
-    if (!verify_image_crc(fp, image_size, footer.crc, false))
+    if (verify_image_crc(fp, image_size, footer.crc, false, NULL) != NULL)
         goto cleanup;
 
     partitions = calloc(MAX_IMAGE_PARTITIONS, sizeof(*partitions));
@@ -396,6 +429,35 @@ cleanup:
 }
 #endif
 
+/**
+ * Read an image's footer into a one-line description: "name version (target)".
+ *
+ * Worth showing before an update is applied: a release built for an older partition layout looks
+ * exactly like the right file otherwise, and the only visible difference is its version.
+ */
+bool rg_firmware_image_describe(const char *path, char *out, size_t out_len)
+{
+    image_footer_t footer = {0};
+    rg_stat_t stat = rg_storage_stat(path);
+    FILE *fp;
+
+    if (!out || out_len < 8)
+        return false;
+
+    out[0] = 0;
+
+    if (!stat.is_file || !(fp = fopen(path, "rb")))
+        return false;
+
+    bool success = read_image_footer(fp, stat.size, &footer);
+    fclose(fp);
+
+    if (success)
+        snprintf(out, out_len, "%s %s (%s)", footer.name, footer.version, footer.target);
+
+    return success;
+}
+
 bool rg_firmware_install_image(const char *path, uint32_t flags)
 {
 #ifndef ESP_PLATFORM
@@ -440,9 +502,16 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 
     size_t image_size = stat.size - IMAGE_FOOTER_SIZE;
 
-    if (!verify_image_crc(fp, image_size, footer.crc, true))
+    uint32_t computed_crc = 0;
+    if ((error = verify_image_crc(fp, image_size, footer.crc, true, &computed_crc)))
     {
-        rg_gui_alert("Update failed!", "Image checksum failed.");
+        // The numbers go on screen because they separate the two possible causes in one step: a
+        // transfer that corrupted the file gives a different value on every attempt, while a file
+        // that matches on a PC but not here points at the image's own footer.
+        char message[192];
+        snprintf(message, sizeof(message), "%s\n\nComputed %08X\nExpected %08X\nOver %d bytes", error,
+                 (int)computed_crc, (int)footer.crc, (int)image_size);
+        rg_gui_alert("Update failed!", message);
         goto cleanup;
     }
 

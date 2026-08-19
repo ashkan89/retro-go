@@ -111,6 +111,18 @@ static const arabic_forms_t *find_forms(uint32_t codepoint)
     return NULL;
 }
 
+/**
+ * Zero-width formatting characters, which carry no direction of their own.
+ *
+ * U+FEFF matters most: it is the byte-order mark that editors like Notepad put at the start of a
+ * text file, and it lives inside the Arabic presentation forms block. Treating it as a
+ * right-to-left character was enough to flip an English line that came from such a file.
+ */
+static bool is_format_char(uint32_t c)
+{
+    return (c >= 0x200B && c <= 0x200E) || (c >= 0x2060 && c <= 0x2064) || c == 0xFEFF;
+}
+
 /* Marks and vowel signs: they sit on top of a letter and must not break a join. */
 static bool is_transparent(uint32_t c)
 {
@@ -121,17 +133,39 @@ static bool is_transparent(uint32_t c)
 
 static bool is_rtl_char(uint32_t c)
 {
+    if (is_format_char(c))
+        return false;
+
     return (c >= 0x0590 && c <= 0x05FF) ||   // Hebrew
            (c >= 0x0600 && c <= 0x06FF) ||   // Arabic
            (c >= 0x0750 && c <= 0x077F) ||   // Arabic Supplement
            (c >= 0x08A0 && c <= 0x08FF) ||   // Arabic Extended-A
            (c >= 0xFB1D && c <= 0xFDFF) ||   // Hebrew and Arabic presentation forms
-           (c >= 0xFE70 && c <= 0xFEFF) ||   // Arabic presentation forms-B
+           (c >= 0xFE70 && c <= 0xFEFE) ||   // Arabic presentation forms-B (FEFF is the BOM)
            c == 0x200F;                      // RLM
+}
+
+/* A letter, as opposed to a digit, a mark or punctuation that merely lives in an RTL block. Only a
+ * letter is reason enough to reorder a line. */
+static bool is_rtl_letter(uint32_t c)
+{
+    if (!is_rtl_char(c) || c == 0x200F)
+        return false;
+    if ((c >= 0x0660 && c <= 0x0669) || (c >= 0x06F0 && c <= 0x06F9)) // Arabic-Indic digits
+        return false;
+    if (c == 0x060C || c == 0x061B || c == 0x061F || c == 0x066A || c == 0x066B || c == 0x066C)
+        return false; // Arabic punctuation
+    return !is_transparent(c);
 }
 
 static int classify(uint32_t c)
 {
+    // Zero-width formatting characters take their direction from their surroundings. A zero-width
+    // non-joiner is everywhere in Persian, so calling it "left to right" would split every word it
+    // appears in into separate runs.
+    if (is_format_char(c))
+        return CLASS_NEUTRAL;
+
     if (is_rtl_char(c))
     {
         // Arabic-Indic and Persian digits are written left to right like any other number
@@ -142,8 +176,12 @@ static int classify(uint32_t c)
     if (c >= '0' && c <= '9')
         return CLASS_DIGIT;
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= 0x00C0 && c <= 0x024F) ||
-        (c >= 0x0370 && c <= 0x052F) || c >= 0x1E00)
+        (c >= 0x0370 && c <= 0x052F) || (c >= 0x1E00 && c <= 0x1FFF) ||   // Latin, Greek, Cyrillic
+        (c >= 0x2E80 && c <= 0xA4CF) || (c >= 0xAC00 && c <= 0xD7FF) ||   // CJK, Hangul
+        (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF21 && c <= 0xFF5A))     // Compatibility, fullwidth
         return CLASS_LTR;
+    // Everything else - punctuation, symbols, arrows, box drawing - is neutral, which is what
+    // Unicode calls it and what keeps it from deciding a line's direction on its own.
     return CLASS_NEUTRAL;
 }
 
@@ -412,9 +450,6 @@ const char *rg_text_shape(const char *text)
 
     uint32_t chars[MAX_CHARS];
     int count = 0;
-    const char *lines[MAX_CHARS];
-
-    (void)lines;
 
     // Shape and reorder one line at a time: a line break resets the direction, and reversing across
     // one would move text onto the wrong line.
@@ -423,21 +458,36 @@ const char *rg_text_shape(const char *text)
 
     while (*ptr && (out - output) < MAX_BYTES - 8)
     {
+        bool has_rtl_letter = false;
+
         count = 0;
         while (*ptr && *ptr != '\n' && count < MAX_CHARS)
-            chars[count++] = rg_utf8_decode(&ptr);
+        {
+            int decoded = rg_utf8_decode(&ptr);
 
-        count = shape_arabic(chars, count);
-        reorder_bidi(chars, count);
+            // Not valid UTF-8: most likely a filename in some legacy code page. Reordering bytes we
+            // cannot read would garble it, and re-encoding them would change them, so the string is
+            // returned exactly as it came in.
+            if (decoded < 0)
+                return text;
+
+            chars[count++] = (uint32_t)decoded;
+            has_rtl_letter |= is_rtl_letter((uint32_t)decoded);
+        }
+
+        // A line with no right-to-left letter needs neither shaping nor reordering. Digits, marks and
+        // a byte-order mark all live in right-to-left blocks without being a reason to touch it.
+        if (has_rtl_letter)
+        {
+            count = shape_arabic(chars, count);
+            reorder_bidi(chars, count);
+        }
 
         for (int i = 0; i < count && (out - output) < MAX_BYTES - 8; ++i)
             out += rg_utf8_encode(out, chars[i]);
 
         if (*ptr == '\n')
-        {
             *out++ = *ptr++;
-            // Consume any remaining characters of an over-long line so the newline stays in sync
-        }
     }
 
     *out = 0;

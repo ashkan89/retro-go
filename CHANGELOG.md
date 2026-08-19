@@ -19,6 +19,53 @@
   dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
   the list by one line and keeps your place
 
+## Text layout
+
+- All: Dialog values are left-aligned again. They already start at a fixed column, which is what
+  lines them up; right-aligning them on top of that pushed each one out to the far edge and left a
+  gap after its label, which on rows that are information rather than a setting - the About screen's
+  version, date, target and website - reads as text shoved to the right
+- All: `rg_gui_draw_text()` mishandled a blank line in multi-line text. The glyph loop swallowed the
+  line break as a zero-width glyph and carried on, so the line *after* an empty one was drawn on the
+  same row, starting at the empty line's centering offset (half the box) and wrapping early - which
+  read as text pushed over to the right - and the last row fell off the bottom of the card. The break
+  is now left to the outer loop, one per row, so an empty line stays an empty row
+
+## Update diagnostics
+
+- All: A failed read while verifying an image is retried once before giving up (a single bad read
+  over SPI is usually a glitch, not a damaged file), and the message now names the offset it stopped
+  at, which distinguishes a file that is genuinely short from a card that read badly once
+- Launcher: A download checks the card has room for the image first, and after closing the file it
+  checks `ferror`/`fclose` and compares the size the card actually stored against what was written.
+  Running out of space used to leave a file whose size looked right but whose contents stopped early,
+  surfacing much later as an unexplained verification failure
+- Launcher: The confirmation before flashing now shows the image's own name, version and target from
+  its footer. A release built for an older partition layout is indistinguishable from the right file
+  until it fails, and the version is the only thing that gives it away
+
+## Text direction and update diagnostics
+
+- All: A byte-order mark no longer flips a line to right-to-left. U+FEFF lives inside the Arabic
+  presentation forms block, so a name coming from a text file saved by an editor that writes a BOM
+  (Notepad, for one) was enough to make English text take the right-to-left path. Formatting
+  characters (BOM, ZWSP, ZWNJ, ZWJ, word joiners) now carry no direction at all, and reordering only
+  happens when a line actually contains an Arabic or Hebrew *letter* - digits, marks and punctuation
+  from those blocks are not reason enough
+- All: A zero-width non-joiner is no longer treated as left-to-right, which had been splitting every
+  Persian word containing one (they are everywhere) into separate runs
+- All: Punctuation, symbols, arrows and box drawing are neutral rather than strong left-to-right, so
+  they no longer decide a line's direction on their own; CJK and Hangul are now classified as
+  left-to-right instead of falling through to that catch-all
+- All: Text that is not valid UTF-8 (a filename in a legacy code page) is returned untouched instead
+  of being decoded as garbage, reordered and re-encoded
+- All: "Image checksum failed" no longer covers up a read error, and the alert now shows the computed
+  CRC, the CRC from the image's footer, and the number of bytes covered. Those three numbers separate
+  a corrupted transfer (a different value each attempt) from an image whose own footer is wrong (the
+  same value every time, and reproducible on a PC)
+- Launcher: An image that fails verification is deleted, so a retry starts clean and the factory app
+  cannot pick the bad file up on a later boot
+
 ## Network throughput
 
 - All: TCP was configured to keep only 5760 bytes in flight (`CONFIG_LWIP_TCP_WND_DEFAULT`, the IDF

@@ -678,7 +678,12 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
         if (!(flags & RG_TEXT_DUMMY_DRAW))
             draw_buffer = get_draw_buffer(draw_width, line_height, color_bg);
 
-        while (x_offset < draw_width)
+        // The line break is left for the outer loop to consume. Letting this loop eat it as a
+        // zero-width glyph meant that after a blank line (two breaks in a row) it carried on and
+        // drew the *next* line on the same row, at the blank line's centering offset - which is
+        // half the box - and wrapped it early. A message with an empty line in it came out ragged
+        // and lost its last row off the bottom of the card.
+        while (x_offset < draw_width && *ptr != 0 && *ptr != '\n')
         {
             uint32_t bitmap[font_height];
             const char *prev_ptr = ptr;
@@ -707,9 +712,6 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
             }
 
             x_offset += width;
-
-            if (*ptr == 0 || *ptr == '\n')
-                break;
         }
 
         if (!(flags & RG_TEXT_DUMMY_DRAW))
@@ -719,6 +721,10 @@ rg_rect_t rg_gui_draw_text(int x_pos, int y_pos, int width, const char *text, //
 
         if (!(flags & RG_TEXT_MULTILINE))
             break;
+
+        // Exactly one break per row, so an empty line stays an empty row
+        if (*ptr == '\n')
+            ptr++;
     }
 
     return (rg_rect_t){x_pos, y_pos, draw_width, y_offset};
@@ -1573,10 +1579,13 @@ rg_rect_t rg_gui_draw_dialog(const char *title, const rg_gui_option_t *options, 
             int text_x = x + row_padding_x;
             rg_gui_draw_text(text_x, y, col1_width, options[i].label, fg, bg, 0);
             rg_gui_draw_text(text_x + col1_width, y, sep_width, "  ", fg, bg, 0);
-            int value_height =
-                rg_gui_draw_text(text_x + col1_width + sep_width, y, col2_width, options[i].value, value_fg, bg,
-                                 RG_TEXT_MULTILINE | RG_TEXT_ALIGN_RIGHT)
-                    .height;
+            // Values start at a fixed column, which is what lines them up; right-aligning them on top
+            // of that only pushed each one out to the far edge, leaving a gap after its label. On rows
+            // that are information rather than a setting (the About screen's version, date, target and
+            // website) that reads as text that has been shoved to the right.
+            int value_height = rg_gui_draw_text(text_x + col1_width + sep_width, y, col2_width,
+                                                options[i].value, value_fg, bg, RG_TEXT_MULTILINE)
+                                   .height;
             if ((value_height / text_height) >= 2) // Multiline value, must fill sep and label
                 rg_gui_fill_blend(text_x, y + text_height, inner_width - col2_width, value_height - text_height, bg,
                                   255);

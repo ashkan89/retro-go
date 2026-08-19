@@ -197,6 +197,26 @@ static bool download_file(const char *url, const char *filename, int expected_si
         return false;
     }
 
+    // A firmware image is megabytes and the card may not have room for it. Finding that out now
+    // beats finding out later: a write that runs out of space leaves a file whose size looks
+    // right but whose contents stop early, which then surfaces as a verification failure with no
+    // obvious cause.
+    int64_t free_space = rg_storage_get_free_space(filename);
+    int needed = req->content_length > 0 ? req->content_length : expected_size;
+
+    if (free_space >= 0 && needed > 0 && free_space < (int64_t)needed + 64 * 1024)
+    {
+        char message[128];
+        snprintf(message, sizeof(message), "Needs %d KB, only %d KB free on the card.", needed / 1024,
+                 (int)(free_space / 1024));
+        fclose(fp);
+        rg_storage_delete(filename);
+        rg_network_http_close(req);
+        free(buffer);
+        rg_gui_alert("Download failed!", message);
+        return false;
+    }
+
     int content_length = req->content_length > 0 ? req->content_length : expected_size;
     start_time = last_draw = rg_system_timer();
     draw_download_progress(0, content_length, 0);
@@ -253,7 +273,25 @@ static bool download_file(const char *url, const char *filename, int expected_si
 
     rg_network_http_close(req);
     free(buffer);
-    fclose(fp);
+
+    // fclose is where a buffered write finally reaches the card, so it is also where running out
+    // of space shows up. Checking it (and the size that ended up on the card) is the difference
+    // between reporting a bad download now and a mysterious bad image later.
+    bool write_error = ferror(fp) != 0;
+    if (fclose(fp) != 0)
+        write_error = true;
+
+    rg_stat_t written_stat = rg_storage_stat(filename);
+
+    if (!cancelled && (write_error || (int)written_stat.size != written))
+    {
+        char message[128];
+        snprintf(message, sizeof(message), "The card stored %d of %d bytes.", (int)written_stat.size,
+                 written);
+        rg_storage_delete(filename);
+        rg_gui_alert("Download failed!", message);
+        return false;
+    }
 
     if (cancelled)
     {
@@ -353,13 +391,27 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                 purge_stale_images(dest_path);
             if (download_file(release->assets[sel].url, dest_path, release->assets[sel].size))
             {
-                if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
+                // The version from the image's own footer, because a release built for an older
+                // partition layout is indistinguishable from the right file until it fails.
+                char description[96] = {0};
+                char prompt[160];
+
+                if (rg_firmware_image_describe(dest_path, description, sizeof(description)))
+                    snprintf(prompt, sizeof(prompt), "%s\n\n%s", description, _("Reboot to flash?"));
+                else
+                    snprintf(prompt, sizeof(prompt), "%s", _("Reboot to flash?"));
+
+                if (rg_gui_confirm(_("Download complete!"), prompt, true))
                 {
                     if (rg_system_have_app(RG_UPDATER_APPLICATION))
                     {
                         if (rg_extension_match(dest_path, "img") &&
                             !rg_firmware_install_image(dest_path, RG_FIRMWARE_STAGE_PREPARE_UPDATE))
                         {
+                            // An image that does not verify is of no use to anyone, and leaving it on
+                            // the card means the factory app may pick it up on a later boot and fail
+                            // in the same way. Remove it so a retry starts clean.
+                            rg_storage_delete(dest_path);
                             return RG_DIALOG_REDRAW;
                         }
                         rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
