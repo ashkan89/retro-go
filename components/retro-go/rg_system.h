@@ -249,6 +249,8 @@ uint32_t rg_system_filter_screen_timeout_input(uint32_t joystick);
 // True while the inactivity timeout has dimmed or switched off the backlight. Long-running
 // full-screen apps can use this to stop rendering into a display nobody can see.
 bool rg_system_screen_is_dimmed(void);
+/* Hold the screen awake across a long operation that draws progress but never reads the gamepad. */
+void rg_system_set_screen_timeout_inhibit(bool inhibit);
 void rg_system_vlog(int level, const char *context, const char *format, va_list va);
 void rg_system_log(int level, const char *context, const char *format, ...) __attribute__((format(printf,3,4)));
 bool rg_system_save_trace(const char *filename, bool append);

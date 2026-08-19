@@ -22,7 +22,17 @@
 #define PARTITION_ENTRY_SIZE      32
 #define MAX_IMAGE_PARTITIONS      32
 #define FLASH_SECTOR_SIZE         0x1000
-#define FLASH_CHUNK_SIZE          0x4000
+/**
+ * How much is read from the card (and written to flash) at a time.
+ *
+ * One `fread` of this size becomes one CMD18 multi-block read covering that many sectors, and the
+ * whole burst is lost if the card glitches anywhere inside it. 4 KB is one flash sector, which is
+ * also the erase granularity, so nothing downstream wants a bigger unit. This used to be 16 KB,
+ * which made each read four times as long a window to survive and four times as expensive to retry.
+ */
+#define FLASH_CHUNK_SIZE          0x1000
+/* A failed read is retried this many times; see the comment in verify_image_crc(). */
+#define READ_RETRY_COUNT          3
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #define BOOTLOADER_OFFSET 0x1000
@@ -60,9 +70,36 @@ static uint32_t read_le32(const uint8_t *data)
     return data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24);
 }
 
+/**
+ * Read exactly `length` bytes from `offset`, retrying a short read.
+ *
+ * Every read here is by absolute offset rather than sequential, because after a failed read the
+ * stream position is not defined and continuing from it would silently CRC the wrong bytes.
+ *
+ * A single failed block read over SPI is usually a recoverable glitch rather than a damaged file,
+ * and losing a whole update to one would be a poor trade. The storage layer already stops the
+ * card's open-ended transfer and waits for it to report ready before retrying (see
+ * sdcard_recover() in rg_storage.c), so a failure that reaches this function has genuinely failed
+ * several times over -- but re-seeking and asking once more is nearly free and covers the case
+ * where the card just needed a moment. A file that is genuinely shorter than its directory entry
+ * claims fails every attempt.
+ */
 static bool read_exact(FILE *fp, long offset, void *buffer, size_t length)
 {
-    return fseek(fp, offset, SEEK_SET) == 0 && fread(buffer, 1, length, fp) == length;
+    for (int attempt = 0; attempt <= READ_RETRY_COUNT; ++attempt)
+    {
+        if (attempt > 0)
+        {
+            RG_LOGW("Read of %d bytes at offset %d failed, retry %d/%d", (int)length, (int)offset, attempt,
+                    READ_RETRY_COUNT);
+            clearerr(fp);
+            rg_task_delay(10);
+        }
+        if (fseek(fp, offset, SEEK_SET) == 0 && fread(buffer, 1, length, fp) == length)
+            return true;
+    }
+    RG_LOGE("Could not read %d bytes at offset %d", (int)length, (int)offset);
+    return false;
 }
 
 static rg_rect_t draw_firmware_message(const char *format, ...)
@@ -79,7 +116,7 @@ static rg_rect_t draw_firmware_message(const char *format, ...)
 
 static bool read_image_footer(FILE *fp, size_t file_size, image_footer_t *footer)
 {
-    uint8_t *data = rg_alloc(IMAGE_FOOTER_SIZE, MEM_FAST);
+    uint8_t *data = rg_alloc(IMAGE_FOOTER_SIZE, MEM_FAST | MEM_NOPANIC);
     bool success = false;
 
     if (!data)
@@ -107,6 +144,41 @@ cleanup:
 }
 
 /**
+ * Remembers the last image that passed verification.
+ *
+ * An update reads the image several times over: the factory app asks whether an update is pending
+ * (which CRCs the whole file), then installs it (which CRCs it again), and each pass is another
+ * few megabytes of card reads and another chance to hit a transfer glitch. Identity is the path
+ * plus the size and mtime, so replacing the file invalidates the entry.
+ */
+static struct
+{
+    char path[RG_PATH_MAX + 1];
+    size_t size;
+    time_t mtime;
+    bool valid;
+} verified_image;
+
+static bool image_already_verified(const char *path, const rg_stat_t *stat)
+{
+    return verified_image.valid && verified_image.size == stat->size && verified_image.mtime == stat->mtime &&
+           strcmp(verified_image.path, path) == 0;
+}
+
+static void remember_verified_image(const char *path, const rg_stat_t *stat)
+{
+    snprintf(verified_image.path, sizeof(verified_image.path), "%s", path);
+    verified_image.size = stat->size;
+    verified_image.mtime = stat->mtime;
+    verified_image.valid = true;
+}
+
+static void forget_verified_image(void)
+{
+    verified_image.valid = false;
+}
+
+/**
  * CRC the image and compare it against its footer. Returns NULL on success, or the reason it failed.
  *
  * A short read used to be reported as a checksum mismatch, which sends anyone debugging a bad update
@@ -116,19 +188,15 @@ cleanup:
 static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc, bool show_progress,
                                     uint32_t *computed_out)
 {
-    uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
+    uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
     uint32_t crc = 0;
     size_t remaining = image_size;
     static char read_error[80]; // The message carries the offset, which is the useful part
-    const char *error = "Out of memory while verifying.";
+    const char *error;
+    int last_percent = -1;
 
     if (!buffer)
-        return error;
-    if (fseek(fp, 0, SEEK_SET) != 0)
-    {
-        error = "Could not seek in the image file.";
-        goto cleanup;
-    }
+        return "Out of memory while verifying.";
 
     if (show_progress)
         rg_display_clear(C_BLACK);
@@ -138,35 +206,50 @@ static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expect
         size_t chunk = RG_MIN(remaining, FLASH_CHUNK_SIZE);
         size_t offset = image_size - remaining;
 
-        // One retry, because a single failed read over SPI is usually a glitch rather than a
-        // damaged file, and losing a whole update to it would be a poor trade. A file that is
-        // genuinely shorter than its directory entry claims fails both times.
-        if (fread(buffer, 1, chunk, fp) != chunk)
+        if (!read_exact(fp, offset, buffer, chunk))
         {
-            RG_LOGW("Read failed at offset %d, retrying", (int)offset);
-            clearerr(fp);
-            if (fseek(fp, offset, SEEK_SET) != 0 || fread(buffer, 1, chunk, fp) != chunk)
-            {
-                RG_LOGE("Short read at offset %d of %d", (int)offset, (int)image_size);
-                snprintf(read_error, sizeof(read_error),
-                         "Could not read the image file\npast %d of %d bytes.", (int)offset,
-                         (int)image_size);
-                error = read_error;
-                goto cleanup;
-            }
+            RG_LOGE("Short read at offset %d of %d", (int)offset, (int)image_size);
+            snprintf(read_error, sizeof(read_error), "Could not read the image file\npast %d of %d bytes.",
+                     (int)offset, (int)image_size);
+            error = read_error;
+            goto cleanup;
         }
 
         crc = rg_crc32(crc, buffer, chunk);
         remaining -= chunk;
+
+        // Tells the system monitor we are alive. Without it the watchdog decides the app has hung
+        // three seconds in and starts drawing "App unresponsive" over the progress dialog -- and
+        // holding MENU at that point kills the update.
+        rg_system_tick(0);
+
+        // Only when the number on screen would actually change. At 4 KB a chunk this loop runs
+        // ~2000 times for a 8 MB image, and redrawing the dialog every time costs more than the
+        // verification itself (and on the boards that share one SPI bus between the card and the
+        // screen, it is contending with the very reads it is reporting on).
         if (show_progress)
-            draw_firmware_message("Verifying image...\n%d%%", (int)((image_size - remaining) * 100 / image_size));
+        {
+            int percent = (int)((image_size - remaining) * 100 / image_size);
+            if (percent != last_percent)
+            {
+                draw_firmware_message("Verifying image...\n%d%%", percent);
+                last_percent = percent;
+            }
+        }
     }
 
     if (crc == expected_crc)
+    {
         error = NULL;
+    }
     else
+    {
+        // Note this was the bug that made every genuine checksum mismatch report itself as an
+        // out-of-memory failure: `error` was pre-loaded with that string and never reassigned here.
         RG_LOGE("Image CRC mismatch: got %08X expected %08X over %d bytes", (int)crc, (int)expected_crc,
                 (int)image_size);
+        error = "The image failed its checksum.";
+    }
 
 cleanup:
     if (computed_out)
@@ -177,7 +260,7 @@ cleanup:
 
 static int read_partition_table(FILE *fp, image_partition_t *partitions, int max_partitions)
 {
-    uint8_t *table = rg_alloc(PARTITION_TABLE_SIZE, MEM_FAST);
+    uint8_t *table = rg_alloc(PARTITION_TABLE_SIZE, MEM_FAST | MEM_NOPANIC);
     int count = 0;
 
     if (!table)
@@ -223,26 +306,25 @@ static int read_partition_table(FILE *fp, image_partition_t *partitions, int max
 #ifdef ESP_PLATFORM
 static bool flash_range_matches(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size)
 {
-    uint8_t *file_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
-    uint8_t *flash_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
+    uint8_t *file_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
+    uint8_t *flash_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
     uint32_t checked = 0;
     bool matches = false;
 
     if (!file_buffer || !flash_buffer)
         goto cleanup;
-    if (fseek(fp, file_offset, SEEK_SET) != 0)
-        goto cleanup;
 
     while (checked < size)
     {
         size_t chunk = RG_MIN(size - checked, FLASH_CHUNK_SIZE);
-        if (fread(file_buffer, 1, chunk, fp) != chunk)
+        if (!read_exact(fp, file_offset + checked, file_buffer, chunk))
             goto cleanup;
         if (esp_flash_read(esp_flash_default_chip, flash_buffer, flash_offset + checked, chunk) != ESP_OK)
             goto cleanup;
         if (memcmp(file_buffer, flash_buffer, chunk) != 0)
             goto cleanup;
         checked += chunk;
+        rg_system_tick(0);
     }
 
     matches = true;
@@ -263,8 +345,9 @@ cleanup:
 static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size,
                                      const char *label)
 {
-    uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
+    uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
     uint32_t written = 0;
+    int last_percent = -1;
     esp_err_t err;
 
     if (!buffer)
@@ -286,7 +369,12 @@ static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t fl
 
     for (uint32_t erased = 0; erased < size; erased += FLASH_SECTOR_SIZE)
     {
-        draw_firmware_message("Erasing %s...\n%d%%", label, (int)(erased * 100 / size));
+        int percent = (int)(erased * 100 / size);
+        if (percent != last_percent)
+        {
+            draw_firmware_message("Erasing %s...\n%d%%", label, percent);
+            last_percent = percent;
+        }
         err = esp_flash_erase_region(esp_flash_default_chip, flash_offset + erased, FLASH_SECTOR_SIZE);
         if (err != ESP_OK)
         {
@@ -294,21 +382,17 @@ static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t fl
             free(buffer);
             return "Flash erase failed.";
         }
+        rg_system_tick(0);
         rg_task_delay(1);
     }
 
-    if (fseek(fp, file_offset, SEEK_SET) != 0)
-    {
-        free(buffer);
-        return "Could not seek in the image file.";
-    }
-
     rg_display_clear(C_BLACK);
+    last_percent = -1;
 
     while (written < size)
     {
         size_t chunk = RG_MIN(size - written, FLASH_CHUNK_SIZE);
-        if (fread(buffer, 1, chunk, fp) != chunk)
+        if (!read_exact(fp, file_offset + written, buffer, chunk))
         {
             RG_LOGE("Short read from the image at offset %d", (int)(file_offset + written));
             free(buffer);
@@ -324,7 +408,13 @@ static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t fl
         }
 
         written += chunk;
-        draw_firmware_message("Writing %s...\n%d%%", label, (int)(written * 100 / size));
+        int percent = (int)(written * 100 / size);
+        if (percent != last_percent)
+        {
+            draw_firmware_message("Writing %s...\n%d%%", label, percent);
+            last_percent = percent;
+        }
+        rg_system_tick(0);
         rg_task_delay(1);
     }
 
@@ -345,6 +435,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     image_partition_t *partitions = NULL;
     const esp_partition_t *running = esp_ota_get_running_partition();
     rg_stat_t stat = rg_storage_stat(path);
+    const char *error;
     FILE *fp = NULL;
     bool has_factory = false;
     bool has_launcher = false;
@@ -358,14 +449,35 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     fp = fopen(path, "rb");
     if (!fp)
         return false;
+
+    // Every read below is on the card, and the whole check takes seconds per image. Nothing in
+    // here polls the gamepad, so without this the screen dims and then blanks partway through
+    // with no way for the user to bring it back.
+    rg_system_set_screen_timeout_inhibit(true);
+
     if (!read_image_footer(fp, stat.size, &footer))
         goto cleanup;
     if (strcasecmp(footer.target, RG_TARGET_NAME) != 0)
         goto cleanup;
 
     image_size = stat.size - IMAGE_FOOTER_SIZE;
-    if (verify_image_crc(fp, image_size, footer.crc, false, NULL) != NULL)
+    if (image_already_verified(path, &stat))
+    {
+        RG_LOGI("'%s' already passed verification, not re-reading it", path);
+    }
+    else if ((error = verify_image_crc(fp, image_size, footer.crc, false, NULL)) != NULL)
+    {
+        // Say why. This used to fail silently, so an image that was present but corrupt was
+        // indistinguishable from no image at all ("No update available") to anyone looking at
+        // the screen.
+        RG_LOGE("'%s' failed verification: %s", path, error);
+        forget_verified_image();
         goto cleanup;
+    }
+    else
+    {
+        remember_verified_image(path, &stat);
+    }
 
     partitions = calloc(MAX_IMAGE_PARTITIONS, sizeof(*partitions));
     if (!partitions)
@@ -422,6 +534,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     }
 
 cleanup:
+    rg_system_set_screen_timeout_inhibit(false);
     free(partitions);
     if (fp)
         fclose(fp);
@@ -489,6 +602,12 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
         return false;
     }
 
+    // Held for the whole install. Erasing and writing several megabytes of flash takes minutes,
+    // and none of it reads the gamepad, so the screen would otherwise dim after 30 seconds and
+    // switch off 10 seconds later -- in the middle of a firmware write, looking exactly like a
+    // device that has died.
+    rg_system_set_screen_timeout_inhibit(true);
+
     if (!read_image_footer(fp, stat.size, &footer))
     {
         rg_gui_alert("Update failed!", "Not a Retro-Go image.");
@@ -502,17 +621,29 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 
     size_t image_size = stat.size - IMAGE_FOOTER_SIZE;
 
-    uint32_t computed_crc = 0;
-    if ((error = verify_image_crc(fp, image_size, footer.crc, true, &computed_crc)))
+    // The caller (the factory app) usually just verified this exact file to decide it had an
+    // update to apply. Reading all of it a second time buys nothing and is another few megabytes
+    // of card transfers to survive.
+    if (image_already_verified(path, &stat))
     {
-        // The numbers go on screen because they separate the two possible causes in one step: a
-        // transfer that corrupted the file gives a different value on every attempt, while a file
-        // that matches on a PC but not here points at the image's own footer.
-        char message[192];
-        snprintf(message, sizeof(message), "%s\n\nComputed %08X\nExpected %08X\nOver %d bytes", error,
-                 (int)computed_crc, (int)footer.crc, (int)image_size);
-        rg_gui_alert("Update failed!", message);
-        goto cleanup;
+        RG_LOGI("'%s' already passed verification, skipping the second pass", path);
+    }
+    else
+    {
+        uint32_t computed_crc = 0;
+        if ((error = verify_image_crc(fp, image_size, footer.crc, true, &computed_crc)))
+        {
+            // The numbers go on screen because they separate the two possible causes in one step: a
+            // transfer that corrupted the file gives a different value on every attempt, while a file
+            // that matches on a PC but not here points at the image's own footer.
+            char message[192];
+            snprintf(message, sizeof(message), "%s\n\nComputed %08X\nExpected %08X\nOver %d bytes", error,
+                     (int)computed_crc, (int)footer.crc, (int)image_size);
+            forget_verified_image();
+            rg_gui_alert("Update failed!", message);
+            goto cleanup;
+        }
+        remember_verified_image(path, &stat);
     }
 
     partitions = calloc(MAX_IMAGE_PARTITIONS, sizeof(*partitions));
@@ -606,6 +737,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     success = true;
 
 cleanup:
+    rg_system_set_screen_timeout_inhibit(false);
     free(partitions);
     fclose(fp);
     return success;
