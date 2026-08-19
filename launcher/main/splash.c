@@ -21,15 +21,17 @@
 
 #define SETTING_BOOT_ANIMATION "BootAnimation"
 
-/* Timeline, in milliseconds from the first frame. */
-#define T_LOGO_IN    180  // the device mark starts dropping in
-#define T_LOGO_DONE  620  // ...and has landed
-#define T_TEXT_IN    600  // wordmark starts to fade up
-#define T_TEXT_DONE  980
-#define T_SHINE      1050 // highlight sweeps across the wordmark
-#define T_SHINE_DONE 1500
-#define T_HOLD       1620 // everything is on screen, hold it for a beat
-#define T_FADE_DONE  1860 // faded out, launcher takes over
+/* Timeline, in milliseconds from the first frame. Paced so each beat is readable on its own: the
+ * scene settles, the mark drops and switches on, the wordmark comes up, the highlight crosses it,
+ * and only then does it hand over. */
+#define T_LOGO_IN    280  // the device mark starts dropping in
+#define T_LOGO_DONE  1040 // ...and has landed
+#define T_TEXT_IN    1020 // wordmark starts to fade up
+#define T_TEXT_DONE  1620
+#define T_SHINE      1780 // highlight sweeps across the wordmark
+#define T_SHINE_DONE 2560
+#define T_HOLD       2960 // everything is on screen, hold it for a beat
+#define T_FADE_DONE  3380 // faded out, launcher takes over
 
 #define FRAME_MS   30
 #define STAR_COUNT 40
@@ -243,9 +245,24 @@ static void draw_device(int center_x, int center_y, int body_w, int body_h, floa
 /* Entry point                                                                              */
 /* -------------------------------------------------------------------------------------- */
 
+#define SETTING_SPLASH_PENDING "BootAnimationPending"
+
 bool splash_enabled(void)
 {
     return rg_settings_get_number(NS_APP, SETTING_BOOT_ANIMATION, 1) != 0;
+}
+
+/**
+ * Ask for the animation on the next boot.
+ *
+ * rg_system_init() only reports a cold boot when the reset reason is not ESP_RST_SW, so a reboot we
+ * trigger ourselves would otherwise skip the animation - which is the one thing the user asked for
+ * when they chose Reboot.
+ */
+void splash_request(void)
+{
+    rg_settings_set_number(NS_APP, SETTING_SPLASH_PENDING, 1);
+    rg_settings_commit();
 }
 
 void splash_set_enabled(bool enabled)
@@ -255,8 +272,18 @@ void splash_set_enabled(bool enabled)
 
 void splash_show(bool cold_boot)
 {
-    // Only on a cold boot: coming back from an emulator, the user is waiting to get to their list
-    if (!cold_boot || !splash_enabled())
+    bool requested = rg_settings_get_number(NS_APP, SETTING_SPLASH_PENDING, 0) != 0;
+
+    if (requested)
+    {
+        // One-shot: consume it now so a crash mid-animation cannot make it loop
+        rg_settings_set_number(NS_APP, SETTING_SPLASH_PENDING, 0);
+        rg_settings_commit();
+    }
+
+    // Only on a cold boot or an explicit reboot: coming back from an emulator, the user is waiting
+    // to get to their list, not to watch a logo.
+    if ((!cold_boot && !requested) || !splash_enabled())
         return;
 
     // Anything held down at boot skips it, so it can never get in the way
@@ -307,7 +334,7 @@ void splash_show(bool cold_boot)
 
         float scene_in = ease_out_cubic(phase(now_ms, 0, T_LOGO_DONE));
         float landing = ease_out_back(phase(now_ms, T_LOGO_IN, T_LOGO_DONE));
-        float power = ease_out_cubic(phase(now_ms, T_LOGO_DONE - 120, T_LOGO_DONE + 260));
+        float power = ease_out_cubic(phase(now_ms, T_LOGO_DONE - 160, T_LOGO_DONE + 420));
         float text_in = ease_out_cubic(phase(now_ms, T_TEXT_IN, T_TEXT_DONE));
 
         draw_sky(width, horizon, height);
@@ -347,7 +374,7 @@ void splash_show(bool cold_boot)
             }
 
             // Underline that grows out from the middle, tying the mark to the accent color
-            int rule_w = (int)(mark.width * 0.44f * clampf((float)(now_ms - T_TEXT_DONE) / 260.0f, 0.0f, 1.0f));
+            int rule_w = (int)(mark.width * 0.44f * clampf((float)(now_ms - T_TEXT_DONE) / 420.0f, 0.0f, 1.0f));
             if (rule_w > 1)
                 rg_gui_draw_panel((width - rule_w) / 2, mark.top + mark.height + 2, rule_w, 2, 1, pal->accent, C_NONE,
                                   255);
@@ -384,6 +411,9 @@ void splash_show(bool cold_boot)
     }
 
     rg_display_sync(true);
+    // The GUI keeps the last full-screen surface as the backdrop for its overlays, so it has to let
+    // go of this one before we free it.
+    rg_gui_set_backdrop(NULL);
     rg_surface_free(surface);
     rg_display_clear(C_BLACK);
 

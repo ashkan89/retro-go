@@ -713,7 +713,7 @@ void gui_draw_header(tab_t *tab, int offset)
 
     if (!txt_left[0] && tab->initialized)
     {
-        snprintf(count, sizeof(count), "%d %s", tab->listbox.length % 100000, _("items"));
+        snprintf(count, sizeof(count), _("%d items"), tab->listbox.length % 100000);
         txt_left = count;
     }
 

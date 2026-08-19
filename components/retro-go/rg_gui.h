@@ -110,6 +110,9 @@ void rg_gui_init(void);
 void rg_gui_update_geometry(void);
 bool rg_gui_set_language_id(int index);
 void rg_gui_set_surface(rg_surface_t *surface);
+/* Register what is behind the GUI's overlays (the launcher passes the surface it renders into), so
+ * dialogs can be composited over it in one transfer instead of being painted onto the panel. */
+void rg_gui_set_backdrop(const rg_surface_t *surface);
 bool rg_gui_set_font(int index);
 bool rg_gui_set_theme(const char *name);
 int rg_gui_get_font_height(void);

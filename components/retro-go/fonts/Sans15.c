@@ -2,13 +2,13 @@
 
 // File generated with font_converter.py (https://github.com/ashkan89/retro-go/tree/dev/tools)
 
-// Font           : Media Sans
+// Font           : Sans 15
 // Point Size     : 15
 // Memory usage   : 23962 bytes
 // Characters     : 1312 (32-255, 1536-1791, 64336-65023, 65136-65279)
 
-const rg_font_t font_MediaSans15 = {
-    .name = "Media Sans",
+const rg_font_t font_Sans15 = {
+    .name = "Sans 15",
     .type = 1,
     .width = 0,
     .height = 19,

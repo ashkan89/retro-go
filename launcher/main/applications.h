@@ -41,6 +41,8 @@ typedef struct retro_app_s
     size_t files_capacity;
     size_t files_count;
     rg_bucket_t *filenames;
+    int cached_count; // Entries the cache file knows about, -1 until we have looked
+    bool cached;      // files[] is populated (from the cache or by a scan)
     bool use_crc_covers;
     bool initialized;
     bool available;
@@ -49,6 +51,8 @@ typedef struct retro_app_s
 typedef struct tab_s tab_t;
 
 void applications_init(void);
+/* Rescan every rom folder and rewrite the caches. Interactive: shows progress and can be aborted. */
+void applications_scan_all(void);
 void application_show_file_menu(retro_file_t *file, bool simplified);
 bool application_get_file_crc32(retro_file_t *file);
 bool application_path_to_file(const char *path, retro_file_t *out_file);

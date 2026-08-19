@@ -77,6 +77,7 @@ static void draw_download_progress(int received, int total, int speed)
 
     if (!surface || surface->width != screen_w || surface->height != screen_h)
     {
+        rg_gui_set_backdrop(NULL); // The GUI may still be holding this surface as its backdrop
         rg_surface_free(surface);
         surface = rg_surface_create(screen_w, screen_h, RG_PIXEL_565_LE, MEM_SLOW);
     }

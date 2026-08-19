@@ -1,5 +1,42 @@
 # Retro-Go 3.7.0 (unreleased)
 
+## Launcher - game lists, scanning and boot
+
+- Launcher: Rom lists are cached on the card (`/retro-go/cache/roms_<system>.list`) and read back
+  instead of walking the folders again. A tab opens instantly, and the game count is shown on the
+  carousel before a tab has ever been opened - no more tabs stuck on "Loading..." until you enter
+  them. The cache records the folders it came from with their timestamps, so a folder that changed
+  is rescanned on its own
+- Launcher: New **Scan Game List** action in the menu rescans every rom folder and rewrites the
+  caches. This is what to use after copying new games onto the card; it does not trust the cached
+  timestamps (FAT does not always update a directory's when a file is added)
+- Launcher: New **Reboot** action in the menu, which restarts the console and shows the boot
+  animation on the way back up (a software restart is not a cold boot, so the animation is
+  requested explicitly rather than being skipped)
+- Launcher: The boot animation is about twice as long, with each beat given room to read: the scene
+  settles, the mark drops and switches on, the wordmark comes up, the highlight crosses it
+- Launcher: *Scroll mode* is now *List scrolling* and applies only to the game list. Menus and
+  dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
+  the list by one line and keeps your place
+
+## Interface - flicker and fonts
+
+- All: Dialogs, messages, the on-screen keyboard and its input field are composited into an
+  offscreen buffer and sent to the panel in a single transfer. Before, every card was painted
+  straight to the LCD piece by piece on every keypress, which is what made menus flicker while
+  scrolling. Where the app owns a surface (the launcher, the media player), the overlay is
+  composited over that surface, so a dialog now sits over the real background with its translucency
+  and shadow intact; where it does not (a game), the card sits on a flat plate instead
+- All: `rg_gui` drawing now goes through a target with its own origin, stride and clip rectangle,
+  which is what lets the same drawing code paint the screen, an app surface, or a small window of
+  the screen
+- All: New **Sans 12** font, and the existing Sans font is now named **Sans 15**. Both carry the
+  Arabic block and the Arabic presentation forms
+- All: Persian and Arabic text now renders properly: `rg_text_shape()` joins each letter into its
+  contextual form (isolated/initial/medial/final), builds the required lam-alef ligatures, and lays
+  the line out right to left while numbers and Latin words inside it keep reading left to right.
+  Text with no right-to-left characters is returned untouched, so it costs one string scan
+
 ## Interface
 
 - All: New drawing primitives in `rg_gui`: rounded cards, translucent fills, soft drop shadows,

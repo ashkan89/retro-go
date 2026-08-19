@@ -53,9 +53,10 @@ static rg_gui_event_t toggle_tabs_cb(rg_gui_option_t *option, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
+/* Only the game list; menus and dialogs always scroll one row at a time (see rg_gui_draw_dialog). */
 static rg_gui_event_t scroll_mode_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
-    const char *modes[SCROLL_MODE_COUNT] = {_("Center"), _("Paging")};
+    const char *modes[SCROLL_MODE_COUNT] = {_("Centered"), _("Paging")};
     const int max = SCROLL_MODE_COUNT - 1;
 
     if (event == RG_DIALOG_PREV && --gui.scroll_mode < 0)
@@ -192,6 +193,44 @@ static rg_gui_event_t webui_switch_cb(rg_gui_option_t *option, rg_gui_event_t ev
     return RG_DIALOG_VOID;
 }
 #endif
+
+static rg_gui_event_t scan_games_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        // Explicit rescan of every rom folder. The launcher normally trusts its cache, so this is
+        // what you reach for after copying new games onto the card.
+        rg_input_wait_for_key(RG_KEY_ANY, false, 1000);
+        #ifdef RG_ENABLE_NETWORKING
+        webui_stop();
+        #endif
+        applications_scan_all();
+        #ifdef RG_ENABLE_NETWORKING
+        if (rg_settings_get_number(NS_APP, SETTING_WEBUI, true))
+            webui_start();
+        #endif
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t reboot_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        if (rg_gui_confirm(_("Reboot"), _("Restart the console now?"), true))
+        {
+            gui_save_config();
+            rg_settings_commit();
+            // A software restart is not a cold boot as far as rg_system is concerned, so ask for the
+            // animation explicitly: rebooting is exactly when you want to see it.
+            splash_request();
+            rg_system_restart();
+        }
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
 
 static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
@@ -503,7 +542,7 @@ static void options_handler(rg_gui_option_t *dest)
     const rg_gui_option_t options[] = {
         {0, _("Color theme"),  "-", RG_DIALOG_FLAG_NORMAL, &color_theme_cb},
         {0, _("Preview"),      "-", RG_DIALOG_FLAG_NORMAL, &show_preview_cb},
-        {0, _("Scroll mode"),  "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
+        {0, _("List scrolling"), "-", RG_DIALOG_FLAG_NORMAL, &scroll_mode_cb},
         {0, _("Start screen"), "-", RG_DIALOG_FLAG_NORMAL, &start_screen_cb},
         {0, _("Boot animation"), "-", RG_DIALOG_FLAG_NORMAL, &boot_animation_cb},
         {0, _("Screen dim"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_dim_timeout_cb},
@@ -520,7 +559,9 @@ static void options_handler(rg_gui_option_t *dest)
 
 static void about_handler(rg_gui_option_t *dest)
 {
+    *dest++ = (rg_gui_option_t){0, _("Scan Game List"), NULL, RG_DIALOG_FLAG_NORMAL, &scan_games_cb};
     *dest++ = (rg_gui_option_t){0, _("Build CRC cache"), NULL, RG_DIALOG_FLAG_NORMAL, &prebuild_cache_cb};
+    *dest++ = (rg_gui_option_t){0, _("Reboot"), NULL, RG_DIALOG_FLAG_NORMAL, &reboot_cb};
     #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
     *dest++ = (rg_gui_option_t){0, _("Check for updates"), NULL, RG_DIALOG_FLAG_NORMAL, &updater_cb};
     #endif

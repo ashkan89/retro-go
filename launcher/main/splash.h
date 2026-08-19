@@ -8,3 +8,6 @@ void splash_show(bool cold_boot);
 
 bool splash_enabled(void);
 void splash_set_enabled(bool enabled);
+
+/* Show the animation on the next boot even though it will be a software restart. */
+void splash_request(void);
