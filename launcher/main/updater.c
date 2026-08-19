@@ -23,6 +23,16 @@ typedef struct
     size_t assets_count;
 } release_t;
 
+/**
+ * How much is read from the socket and written to the card at a time.
+ *
+ * Bigger means fewer FatFs transactions and fewer trips through the HTTP client per megabyte, but
+ * the read only returns once the whole chunk has arrived, and the cancel button is polled between
+ * chunks - so this is also the worst-case delay before B is noticed. 32 KB is a tenth of a second at
+ * a healthy rate and just over a second on a bad link.
+ */
+#define DOWNLOAD_CHUNK_SIZE (32 * 1024)
+
 static void format_size(char *out, size_t out_len, int bytes, bool speed)
 {
     if (bytes < 0)
@@ -160,13 +170,19 @@ static bool download_file(const char *url, const char *filename, int expected_si
     RG_LOGI("Downloading: '%s' to '%s'", url, filename);
     rg_gui_draw_message("Connecting...");
 
-    if (!(req = rg_network_http_open(url, NULL)))
+    // A firmware image is megabytes, so this asks for a transfer sized for that: a 16 KB socket
+    // buffer inside the HTTP client and 64 KB reads out of it. The old 1 KB/16 KB pair meant
+    // thousands of small reads (and, over TLS, thousands of record boundaries) per megabyte.
+    rg_http_cfg_t http_cfg = RG_HTTP_DEFAULT_CONFIG();
+    http_cfg.buffer_size = 16 * 1024;
+
+    if (!(req = rg_network_http_open(url, &http_cfg)))
     {
         rg_gui_alert("Download failed!", "Connection failed!");
         return false;
     }
 
-    if (!(buffer = malloc(16 * 1024)))
+    if (!(buffer = malloc(DOWNLOAD_CHUNK_SIZE)))
     {
         rg_network_http_close(req);
         rg_gui_alert("Download failed!", "Out of memory!");
@@ -191,7 +207,7 @@ static bool download_file(const char *url, const char *filename, int expected_si
     bool cancelled = false;
     uint32_t prev_keys = rg_input_read_gamepad();
 
-    while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
+    while ((len = rg_network_http_read(req, buffer, DOWNLOAD_CHUNK_SIZE)) > 0)
     {
         rg_system_tick(0);
         received += len;

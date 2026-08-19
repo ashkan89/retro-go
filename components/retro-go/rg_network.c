@@ -225,6 +225,16 @@ bool rg_network_wifi_start(void)
         TRY(esp_wifi_set_mode(WIFI_MODE_STA));
         TRY(esp_wifi_set_config(WIFI_IF_STA, &config));
         TRY(esp_wifi_start());
+        // esp_wifi defaults to WIFI_PS_MIN_MODEM, where the radio sleeps between beacons. That adds
+        // up to a beacon interval of latency to every round trip, which is brutal for TCP and was a
+        // large part of why a firmware download crawled along at 20 KB/s. Wi-Fi here is only ever on
+        // because the user asked for something over the network, so throughput wins over the idle
+        // power that sleeping would have saved.
+        //
+        // Not fatal: a driver that refuses the request still gives a working (if slower) connection,
+        // and failing the whole connect over it would be a poor trade.
+        if ((err = esp_wifi_set_ps(WIFI_PS_NONE)) != ESP_OK)
+            RG_LOGW("Could not disable Wi-Fi power save: 0x%x", err);
     }
     return true;
 fail:
@@ -363,7 +373,7 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
     req->config = cfg ? *cfg : (rg_http_cfg_t)RG_HTTP_DEFAULT_CONFIG();
     req->client = esp_http_client_init(&(esp_http_client_config_t){
         .url = url,
-        .buffer_size = 1024,
+        .buffer_size = req->config.buffer_size > 0 ? req->config.buffer_size : 4096,
         .buffer_size_tx = 1024,
         .method = req->config.post_data ? HTTP_METHOD_POST : HTTP_METHOD_GET,
         .timeout_ms = req->config.timeout_ms,

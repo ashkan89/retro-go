@@ -184,3 +184,22 @@ CONFIG_USB_HOST_HUBS_SUPPORTED=y
 # component using driver/i2s_std.h is ever added here, re-enable this to get the diagnostic
 # back (the real fix is migrating i2s.c, which needs to be validated on hardware).
 CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y
+
+#
+# Network throughput
+#
+# The defaults let TCP hold only one 5760-byte window in flight, so a transfer is capped at roughly
+# one window per round trip: about 28 KB/s at a 200 ms RTT, which is what a firmware download from a
+# CDN was actually getting. A 32 KB window lifts that ceiling by ~6x. The Wi-Fi receive buffers and
+# the block-ack window are raised to match, otherwise the driver becomes the next bottleneck.
+#
+# SPIRAM_TRY_ALLOCATE_WIFI_LWIP puts these buffers in PSRAM, so the extra window costs external
+# memory rather than the internal RAM the SD card driver and the emulators need. Every target that
+# sets this block has PSRAM; do not copy it to one that does not.
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=48
+CONFIG_ESP_WIFI_RX_BA_WIN=16
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

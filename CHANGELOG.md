@@ -19,6 +19,23 @@
   dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
   the list by one line and keeps your place
 
+## Network throughput
+
+- All: TCP was configured to keep only 5760 bytes in flight (`CONFIG_LWIP_TCP_WND_DEFAULT`, the IDF
+  default), which caps a transfer at about one window per round trip - roughly 28 KB/s at a 200 ms
+  RTT, which is what a firmware download from a CDN was actually getting. The esp32-s3 targets now
+  use a 32 KB window, with the Wi-Fi receive buffers and block-ack window raised to match so the
+  driver does not become the next bottleneck. Those buffers are placed in PSRAM
+  (`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP`) so the extra window does not come out of the internal RAM
+  the SD driver and emulators need
+- All: Wi-Fi power save is now switched off while connected. `esp_wifi` defaults to
+  `WIFI_PS_MIN_MODEM`, where the radio sleeps between beacons and every round trip pays up to a
+  beacon interval of latency - the second half of why downloads crawled. Wi-Fi on this device is only
+  ever on because the user asked for something over the network, so throughput is the better trade
+- All: The HTTP client's socket buffer went from 1 KB to 4 KB by default, and is now settable per
+  request (`rg_http_cfg_t.buffer_size`); the firmware download asks for 16 KB and reads it in 32 KB
+  chunks. A megabyte no longer costs a thousand small reads, each with its own TLS record work
+
 ## Firmware update fixes
 
 - All: Every failure while writing flash now says what went wrong. `write_flash_range()` had five
