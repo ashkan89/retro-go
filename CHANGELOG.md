@@ -19,6 +19,25 @@
   dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
   the list by one line and keeps your place
 
+## Caches and the updater
+
+- All: **Clear cache** (debug menu) and **Reset settings** now clear every cache on the card, not
+  just the shared cache folder: rom lists, CRC checksums, the saved clock, per-emulator cache files,
+  and the media player's library index. It goes through one new entry point, `rg_system_clear_cache()`,
+  which also raises `RG_EVENT_CLEAR_CACHE` so an app can drop caches the core knows nothing about
+- All: What is *not* cleared is user data, deliberately: saves, save states, screenshots, cover art,
+  themes, borders, playlists, and the media player's favourites, play counts, resume positions and
+  saved network locations (that is why the player keeps `stats.bin` separate from `library.idx`)
+- Launcher: Clearing the cache also drops the rom lists held in RAM, so nothing stale is written
+  back over the files that were just deleted
+- Launcher: A firmware download can be cancelled. The download loop polls input on every chunk, so
+  buttons respond while it runs (and a keypress wakes the screen again once it has dimmed or switched
+  off - before, nothing was reading the gamepad, which is what wakes it). **B** asks whether to stop;
+  confirming deletes the partial file and returns to the menu
+- Launcher: The download card is composited through the new overlay API instead of keeping a
+  full-screen scratch surface of its own, which saves ~150 KB and removes a case where it could be
+  mistaken for the screen's backdrop
+
 ## Interface - flicker and fonts
 
 - All: Dialogs, messages, the on-screen keyboard and its input field are composited into an

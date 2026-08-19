@@ -39,6 +39,8 @@ static struct
     size_t composite_buffer_size;
     const rg_surface_t *backdrop;
     rg_rect_t last_overlay;
+    rg_gui_target_t overlay_saved; // Target to restore when the public overlay ends
+    bool overlay_active;
     int dialog_top; // First visible row of the dialog currently on screen
     size_t draw_buffer_size;
     int screen_width, screen_height;
@@ -425,6 +427,34 @@ static void end_offscreen(const rg_gui_target_t *saved)
     rg_gui_target_t done = gui.target;
     gui.target = *saved;
     rg_display_write_rect(done.left, done.top, done.width, done.height, done.stride * 2, done.buffer, 0);
+}
+
+/**
+ * Composite anything, not just a dialog: everything drawn until rg_gui_end_overlay() lands in a
+ * scratch buffer covering `rect` and reaches the panel as one transfer.
+ *
+ * Returns false when it could not be set up (not enough memory, or drawing already goes to a
+ * buffer), in which case the caller should just draw normally - the result is the same, only less
+ * smooth. Overlays do not nest.
+ */
+bool rg_gui_begin_overlay(int x_pos, int y_pos, int width, int height, rg_color_t seed)
+{
+    if (gui.overlay_active)
+        return false;
+
+    rg_rect_t rect = {get_horizontal_position(x_pos, width), get_vertical_position(y_pos, height), width, height};
+
+    gui.overlay_active = begin_offscreen(rect, seed, &gui.overlay_saved);
+    return gui.overlay_active;
+}
+
+void rg_gui_end_overlay(void)
+{
+    if (!gui.overlay_active)
+        return;
+
+    gui.overlay_active = false;
+    end_offscreen(&gui.overlay_saved);
 }
 
 rg_margins_t rg_gui_get_safe_area(void)
@@ -3260,7 +3290,7 @@ void rg_gui_about_menu(void)
         case 3:
             if (rg_gui_confirm(_("Reset all settings?"), NULL, false))
             {
-                rg_storage_delete(RG_BASE_PATH_CACHE);
+                rg_system_clear_cache();
                 rg_settings_reset();
                 rg_system_restart();
                 return;
@@ -3358,8 +3388,14 @@ void rg_gui_debug_menu(void)
         rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, RG_BOOT_RECOVERY);
         break;
     case 0x002:
-        rg_storage_delete(RG_BASE_PATH_CACHE);
-        rg_system_restart();
+        // Everything cached anywhere on the card, not just this folder: rom lists, checksums, the
+        // media library index, per-emulator cache files. It restarts because half the app is holding
+        // data that just went away.
+        if (rg_gui_confirm(_("Clear cache"), _("Delete all cached data and restart?"), true))
+        {
+            rg_system_clear_cache();
+            rg_system_restart();
+        }
         break;
     case 0x003:
         rg_emu_screenshot(RG_STORAGE_ROOT "/screenshot.png", 0, 0);

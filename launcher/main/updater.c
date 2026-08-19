@@ -41,12 +41,11 @@ static void format_size(char *out, size_t out_len, int bytes, bool speed)
 
 static void draw_download_progress(int received, int total, int speed)
 {
-    static rg_surface_t *surface = NULL;
     char received_str[16], total_str[16], speed_str[16], info[80];
     const int screen_w = rg_display_get_width();
     const int screen_h = rg_display_get_height();
     const int box_w = RG_MIN(screen_w - 24, 300);
-    const int box_h = 82;
+    const int box_h = 96;
     const int box_x = (screen_w - box_w) / 2;
     const int box_y = (screen_h - box_h) / 2;
     const int bar_x = box_x + 12;
@@ -75,15 +74,10 @@ static void draw_download_progress(int received, int total, int speed)
     else
         snprintf(info, sizeof(info), "%s  %s", received_str, speed_str);
 
-    if (!surface || surface->width != screen_w || surface->height != screen_h)
-    {
-        rg_gui_set_backdrop(NULL); // The GUI may still be holding this surface as its backdrop
-        rg_surface_free(surface);
-        surface = rg_surface_create(screen_w, screen_h, RG_PIXEL_565_LE, MEM_SLOW);
-    }
-
-    if (surface)
-        rg_gui_set_surface(surface);
+    // Composited like every other overlay, over whatever the launcher last drew: one transfer per
+    // update instead of a card built piece by piece on screen. This used to keep a full-screen
+    // scratch surface of its own (~150 KB) purely to avoid that flicker.
+    bool overlay = rg_gui_begin_overlay(box_x - 5, box_y - 5, box_w + 10, box_h + 12, C_NONE);
 
     // Same card, header chip and bar as the rest of the UI, so an update looks like part of the
     // firmware rather than like a different program that took the screen.
@@ -104,13 +98,11 @@ static void draw_download_progress(int received, int total, int speed)
     rg_gui_draw_progress_bar(bar_x, bar_y + 2, bar_w, bar_thickness, (fill_w * 100) / RG_MAX(inner_w, 1), pal->accent,
                              rg_gui_scale_color(pal->divider, 200));
     rg_gui_draw_text(bar_x, bar_y + bar_thickness + 6, bar_w, info, pal->text_dim, box_bg, RG_TEXT_ALIGN_CENTER);
+    rg_gui_draw_text(bar_x, bar_y + bar_thickness + 6 + text_h, bar_w, _("B  Cancel"), pal->accent, box_bg,
+                     RG_TEXT_ALIGN_CENTER);
 
-    if (surface)
-    {
-        uint16_t *data = surface->data;
-        rg_gui_set_surface(NULL);
-        rg_gui_copy_buffer(box_x, box_y, box_w, box_h, screen_w * 2, data + box_y * screen_w + box_x, false);
-    }
+    if (overlay)
+        rg_gui_end_overlay();
 }
 
 static bool download_file(const char *url, const char *filename, int expected_size)
@@ -154,28 +146,68 @@ static bool download_file(const char *url, const char *filename, int expected_si
     start_time = last_draw = rg_system_timer();
     draw_download_progress(0, content_length, 0);
 
+    // Input is polled on every chunk. Before, the download owned the device until it finished: no
+    // button did anything, and once the screen had dimmed or switched off there was no way to bring
+    // it back either, because nothing was reading the gamepad (which is what wakes it).
+    bool cancelled = false;
+    uint32_t prev_keys = rg_input_read_gamepad();
+
     while ((len = rg_network_http_read(req, buffer, 16 * 1024)) > 0)
     {
         rg_system_tick(0);
         received += len;
         written += fwrite(buffer, 1, len, fp);
         int64_t now = rg_system_timer();
+        int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
+
         if (now - last_draw > 200000)
         {
-            int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, now - start_time));
             draw_download_progress(received, content_length, speed);
             last_draw = now;
         }
+
+        uint32_t keys = rg_input_read_gamepad();
+
+        // Edge triggered, so holding the button does not ask again and again
+        if ((keys & RG_KEY_B) && !(prev_keys & RG_KEY_B))
+        {
+            // The transfer just pauses while the question is on screen; the server may drop a
+            // connection left idle for a long time, in which case this fails like any other read
+            // error and the partial file is removed.
+            if (rg_gui_confirm(_("Cancel update?"), _("Stop the download and delete the partial file?"), false))
+            {
+                cancelled = true;
+                break;
+            }
+            draw_download_progress(received, content_length, speed);
+            last_draw = rg_system_timer();
+            keys = rg_input_read_gamepad();
+        }
+
+        prev_keys = keys;
+
         if (received != written)
             break; // No point in continuing
     }
-    int64_t end_time = rg_system_timer();
-    int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
-    draw_download_progress(received, content_length, speed);
+    if (!cancelled)
+    {
+        int64_t end_time = rg_system_timer();
+        int speed = (int)((int64_t)received * 1000000 / RG_MAX(1, end_time - start_time));
+        draw_download_progress(received, content_length, speed);
+    }
 
     rg_network_http_close(req);
     free(buffer);
     fclose(fp);
+
+    if (cancelled)
+    {
+        rg_storage_delete(filename);
+        rg_gui_draw_message(_("Update cancelled"));
+        rg_task_delay(700);
+        gui_redraw();
+        return false;
+    }
 
     if (received != written || (received != content_length && content_length != -1))
     {

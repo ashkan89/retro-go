@@ -535,6 +535,14 @@ void event_handler(int event, void *arg)
     // over the player.
     if (event == RG_EVENT_REDRAW && !media_is_foreground())
         gui_redraw();
+
+    // Caches the core knows nothing about: the media library index, and the rom lists we are
+    // holding in RAM (their files have just been deleted underneath us).
+    if (event == RG_EVENT_CLEAR_CACHE)
+    {
+        media_clear_cache();
+        applications_forget_lists();
+    }
 }
 
 static void options_handler(rg_gui_option_t *dest)

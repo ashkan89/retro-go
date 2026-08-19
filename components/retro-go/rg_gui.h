@@ -113,6 +113,11 @@ void rg_gui_set_surface(rg_surface_t *surface);
 /* Register what is behind the GUI's overlays (the launcher passes the surface it renders into), so
  * dialogs can be composited over it in one transfer instead of being painted onto the panel. */
 void rg_gui_set_backdrop(const rg_surface_t *surface);
+/* Composite a region offscreen and send it in one transfer. `seed` is the color to start from, or
+ * C_NONE to start from the registered backdrop. Returns false if it could not be set up, which is
+ * not an error: draw as usual in that case. */
+bool rg_gui_begin_overlay(int x_pos, int y_pos, int width, int height, rg_color_t seed);
+void rg_gui_end_overlay(void);
 bool rg_gui_set_font(int index);
 bool rg_gui_set_theme(const char *name);
 int rg_gui_get_font_height(void);

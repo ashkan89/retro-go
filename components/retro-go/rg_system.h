@@ -127,6 +127,7 @@ typedef enum
     RG_EVENT_REDRAW       = RG_EVENT_TYPE_SYSTEM | 3,
     RG_EVENT_SPEEDUP      = RG_EVENT_TYPE_SYSTEM | 4,
     RG_EVENT_SCREENSHOT   = RG_EVENT_TYPE_SYSTEM | 5,
+    RG_EVENT_CLEAR_CACHE  = RG_EVENT_TYPE_SYSTEM | 6,
     RG_EVENT_SHUTDOWN     = RG_EVENT_TYPE_POWER | 1,
     RG_EVENT_SLEEP        = RG_EVENT_TYPE_POWER | 2,
 } rg_event_t;
@@ -221,6 +222,9 @@ void rg_system_panic(const char *context, const char *message) __attribute__((no
 void rg_system_shutdown(void) __attribute__((noreturn));
 void rg_system_sleep(void) __attribute__((noreturn));
 void rg_system_restart(void) __attribute__((noreturn));
+/* Delete every cached file on the storage: the shared cache folder, plus whatever the running app
+ * caches of its own (it is told through RG_EVENT_CLEAR_CACHE). User data is never touched. */
+void rg_system_clear_cache(void);
 void rg_system_exit(void) __attribute__((noreturn));
 void rg_system_switch_app(const char *part, const char *name, const char *args, uint32_t flags) __attribute__((noreturn));
 bool rg_system_have_app(const char *app);

@@ -57,6 +57,10 @@ bool media_has_library(void);
 /** True while the media player owns the display (between entering and leaving it). */
 bool media_is_foreground(void);
 
+/* Delete the player's rebuildable caches (the library index). Favourites, play counts, resume
+ * positions and saved network locations are user data and are kept. */
+void media_clear_cache(void);
+
 /** One-line playback state for the launcher tab, e.g. "Breathe - Pink Floyd". */
 void media_status_line(char *out, size_t size);
 

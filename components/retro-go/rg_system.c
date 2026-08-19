@@ -721,7 +721,7 @@ static void enter_recovery_mode(void)
         {
         case 0:
             rg_settings_reset();
-            rg_storage_delete(RG_BASE_PATH_CACHE);
+            rg_system_clear_cache();
             break;
         case 1:
             rg_system_switch_app(RG_APP_FACTORY, 0, 0, 0);
@@ -1460,6 +1460,29 @@ void rg_system_sleep(void)
 #else
     exit(0);
 #endif
+}
+
+/**
+ * Throw away everything that can be rebuilt from the card's actual contents.
+ *
+ * Everything under the shared cache folder goes: rom lists, CRC checksums, the saved clock, and any
+ * per-emulator cache files (RG_PATH_CACHE_FILE lands there too). Caches that belong to a component
+ * rather than to the firmware - the media player's library index, for one - are cleared by the app
+ * in response to RG_EVENT_CLEAR_CACHE, because only it knows where they live.
+ *
+ * Saves, save states, screenshots, cover art, themes, borders and settings are user data and are
+ * never touched here.
+ */
+void rg_system_clear_cache(void)
+{
+    RG_LOGI("Clearing caches...");
+
+    rg_storage_delete(RG_BASE_PATH_CACHE);
+    rg_storage_mkdir(RG_BASE_PATH_CACHE);
+
+    rg_system_event(RG_EVENT_CLEAR_CACHE, NULL);
+
+    rg_storage_commit();
 }
 
 void rg_system_restart(void)

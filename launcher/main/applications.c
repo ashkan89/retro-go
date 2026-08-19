@@ -1114,6 +1114,17 @@ void applications_init(void)
     }
 }
 
+void applications_forget_lists(void)
+{
+    for (int i = 0; i < apps_count; i++)
+    {
+        romcache_forget(apps[i]);
+        apps[i]->cached_count = -1;
+    }
+
+    crc_cache_dirty = false; // Its file is gone; do not write the stale copy back out
+}
+
 /**
  * Rescan every rom folder and rewrite the caches.
  *
