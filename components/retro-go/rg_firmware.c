@@ -220,25 +220,33 @@ cleanup:
     return matches;
 }
 
-static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size, const char *label)
+/**
+ * Write one range of the image to flash. Returns NULL on success, or the reason it failed.
+ *
+ * The reason is returned rather than logged because every one of these used to be a silent
+ * `return false`: the install aborted, the caller had nothing to report, and the user was left
+ * looking at a screen that said only that the update had failed.
+ */
+static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size,
+                                     const char *label)
 {
     uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST);
     uint32_t written = 0;
     esp_err_t err;
 
     if (!buffer)
-        return false;
+        return "Out of memory while flashing.";
     if ((flash_offset % FLASH_SECTOR_SIZE) != 0 || (size % FLASH_SECTOR_SIZE) != 0)
     {
         RG_LOGE("Unaligned flash range for '%s': offset=%08X size=%08X", label, (int)flash_offset, (int)size);
         free(buffer);
-        return false;
+        return "Image layout is not sector aligned.";
     }
     if (flash_range_matches(fp, file_offset, flash_offset, size))
     {
         RG_LOGI("Skipping unchanged range '%s'", label);
         free(buffer);
-        return true;
+        return NULL;
     }
     rg_display_clear(C_BLACK);
     // draw_firmware_message("Flashing %s...\nPlease wait", label);
@@ -251,7 +259,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         {
             RG_LOGE("Erase failed for '%s': 0x%02X", label, err);
             free(buffer);
-            return false;
+            return "Flash erase failed.";
         }
         rg_task_delay(1);
     }
@@ -259,7 +267,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
     if (fseek(fp, file_offset, SEEK_SET) != 0)
     {
         free(buffer);
-        return false;
+        return "Could not seek in the image file.";
     }
 
     rg_display_clear(C_BLACK);
@@ -269,8 +277,9 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         size_t chunk = RG_MIN(size - written, FLASH_CHUNK_SIZE);
         if (fread(buffer, 1, chunk, fp) != chunk)
         {
+            RG_LOGE("Short read from the image at offset %d", (int)(file_offset + written));
             free(buffer);
-            return false;
+            return "Could not read the image file.";
         }
 
         err = esp_flash_write(esp_flash_default_chip, buffer, flash_offset + written, chunk);
@@ -278,7 +287,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
         {
             RG_LOGE("Write failed for '%s': 0x%02X", label, err);
             free(buffer);
-            return false;
+            return "Flash write failed.";
         }
 
         written += chunk;
@@ -289,7 +298,7 @@ static bool write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_off
     rg_display_clear(C_BLACK);
     draw_firmware_message("Flashed %s", label);
     free(buffer);
-    return true;
+    return NULL;
 }
 
 static bool range_overlaps(const esp_partition_t *partition, uint32_t offset, uint32_t size)
@@ -399,6 +408,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     image_partition_t *partitions = NULL;
     const esp_partition_t *running = esp_ota_get_running_partition();
     rg_stat_t stat = rg_storage_stat(path);
+    const char *error;
     FILE *fp;
     int partition_count;
     bool success = false;
@@ -498,21 +508,30 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
             rg_gui_alert("Update failed!", "Image is truncated.");
             goto cleanup;
         }
-        if (!write_flash_range(fp, part->offset, part->offset, part->size, part->label))
+        if ((error = write_flash_range(fp, part->offset, part->offset, part->size, part->label)))
+        {
+            rg_gui_alert("Update failed!", error);
             goto cleanup;
+        }
     }
 
     if (flags & RG_FIRMWARE_UPDATE_PARTITION_TABLE)
     {
-        if (!write_flash_range(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE,
-                               "partition table"))
+        if ((error = write_flash_range(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE,
+                                       "partition table")))
+        {
+            rg_gui_alert("Update failed!", error);
             goto cleanup;
+        }
     }
 
     if (flags & RG_FIRMWARE_UPDATE_BOOTLOADER)
     {
-        if (!write_flash_range(fp, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE, "bootloader"))
+        if ((error = write_flash_range(fp, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE, "bootloader")))
+        {
+            rg_gui_alert("Update failed!", error);
             goto cleanup;
+        }
     }
 
     success = true;

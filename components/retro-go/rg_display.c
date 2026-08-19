@@ -580,6 +580,12 @@ void rg_display_write_rect(int left, int top, int width, int height, int stride,
 void rg_display_clear_rect(int left, int top, int width, int height, uint16_t color_le)
 {
     const uint16_t color_be = (color_le << 8) | (color_le >> 8);
+
+    // Painting the panel directly invalidates whatever the GUI thought was behind its overlays: a
+    // dialog composited over a stale surface would show the screen that used to be there (which is
+    // what happens during a firmware update, where the screen is cleared before each stage).
+    rg_gui_set_backdrop(NULL);
+
     int pixels_remaining = width * height;
     if (pixels_remaining > 0)
     {

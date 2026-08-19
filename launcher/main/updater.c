@@ -105,6 +105,45 @@ static void draw_download_progress(int received, int total, int speed)
         rg_gui_end_overlay();
 }
 
+typedef struct
+{
+    const char *keep;
+    int removed;
+} purge_state_t;
+
+static int purge_image_cb(const rg_scandir_t *file, void *arg)
+{
+    purge_state_t *state = (purge_state_t *)arg;
+
+    if (!file->is_file || !rg_extension_match(file->path, "img"))
+        return RG_SCANDIR_CONTINUE;
+    if (state->keep && strcmp(file->path, state->keep) == 0)
+        return RG_SCANDIR_CONTINUE;
+
+    RG_LOGI("Removing stale firmware image '%s'", file->path);
+    if (rg_storage_delete(file->path))
+        state->removed++;
+
+    return RG_SCANDIR_CONTINUE;
+}
+
+/**
+ * Delete firmware images already sitting in the download folder.
+ *
+ * Nothing used to clean these up, so every update left another few megabytes behind. That is not
+ * only wasted space (which a 4 MB image can easily run out of, and a truncated download then fails
+ * its checksum): the factory app looks in this folder for the image to apply, so an old one being
+ * there at all is a hazard.
+ */
+static int purge_stale_images(const char *keep)
+{
+    purge_state_t state = {.keep = keep};
+    rg_storage_scandir(RG_UPDATER_DOWNLOAD_LOCATION, purge_image_cb, &state, RG_SCANDIR_FILES);
+    if (state.removed)
+        RG_LOGI("Removed %d stale firmware image(s)", state.removed);
+    return state.removed;
+}
+
 static bool download_file(const char *url, const char *filename, int expected_size)
 {
     RG_ASSERT_ARG(url && filename);
@@ -291,6 +330,11 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                 rg_gui_alert("Download failed!", "Could not create firmware folder!");
                 return RG_DIALOG_REDRAW;
             }
+            // Clear out earlier downloads before writing a new one: they are superseded by this
+            // image, they are what the factory app might otherwise pick up, and a 4 MB image needs
+            // the space they are holding.
+            if (rg_extension_match(dest_path, "img"))
+                purge_stale_images(dest_path);
             if (download_file(release->assets[sel].url, dest_path, release->assets[sel].size))
             {
                 if (rg_gui_confirm(_("Download complete!"), _("Reboot to flash?"), true))
@@ -305,7 +349,17 @@ static rg_gui_event_t view_release_cb(rg_gui_option_t *option, rg_gui_event_t ev
                         rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
                     }
                     else
-                        rg_gui_alert("Update failed!", "Firmware updater app not found!");
+                    {
+                        // No factory partition means there is nothing on this device that can flash
+                        // an image, and no amount of retrying will change that. The download is kept
+                        // so it can be flashed over USB, and the message says so instead of leaving
+                        // the user with "not found".
+                        rg_gui_alert(_("Cannot install update"),
+                                     _("This firmware has no factory partition, so it cannot flash an "
+                                       "image by itself.\n\nThe file was kept in /retro-go/firmware: "
+                                       "flash it over USB once, and updates will work from the device "
+                                       "after that."));
+                    }
                 }
             }
         }

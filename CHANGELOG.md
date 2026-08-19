@@ -19,6 +19,28 @@
   dialogs scroll one row at a time instead of paging, so stepping past the last visible row moves
   the list by one line and keeps your place
 
+## Firmware update fixes
+
+- All: Every failure while writing flash now says what went wrong. `write_flash_range()` had five
+  silent `return false` paths (out of memory, unaligned range, erase failed, image read failed, flash
+  write failed): the install aborted, the caller had nothing to report, and the user was left with a
+  screen that said only that the update had failed. Each one now returns a reason that is shown and
+  logged
+- Launcher: Downloading an update now deletes the firmware images already in `/retro-go/firmware`
+  first. Nothing ever cleaned them up, so every update left another few megabytes behind - which
+  wastes space a 4 MB image may need (a truncated download then fails its checksum), and leaves stale
+  images where the factory app looks for the one to apply
+- Factory: The pending image is chosen newest-first instead of taking whatever the directory listed
+  first, so an old image cannot win over the one just downloaded. It also shows which file it is
+  checking, because verifying an image means a full CRC pass plus comparing every partition against
+  flash - seconds per file, and previously silent
+- All: Clearing the panel (`rg_display_clear`) now drops the GUI's backdrop. A dialog composited over
+  a surface that no longer matches the screen would show the screen that used to be there, which is
+  exactly what happens during an update, where each stage clears the screen first
+- Launcher: A device whose firmware has no factory partition cannot flash an image by itself. Instead
+  of "Firmware updater app not found!" it now says so, and says what to do: the downloaded file is
+  kept in `/retro-go/firmware`, flash it over USB once and updates work from the device afterwards
+
 ## Caches and the updater
 
 - All: **Clear cache** (debug menu) and **Reset settings** now clear every cache on the card, not
