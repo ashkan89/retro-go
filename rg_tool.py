@@ -14,7 +14,7 @@ import zlib
 DEFAULT_TARGET = os.getenv("RG_TOOL_TARGET", "odroid-go")
 DEFAULT_BAUD = os.getenv("RG_TOOL_BAUD", "1152000")
 DEFAULT_PORT = os.getenv("RG_TOOL_PORT", "COM3")
-DEFAULT_APPS = os.getenv("RG_TOOL_APPS", "launcher retro-core prboom-go gwenesis fmsx")
+DEFAULT_APPS = os.getenv("RG_TOOL_APPS", "launcher retro-core prboom-go gwenesis fmsx retro-legacy")
 PROJECT_NAME = os.getenv("PROJECT_NAME", "Retro-Go")
 PROJECT_ICON = os.getenv("PROJECT_ICON", "assets/icon.raw")
 PROJECT_APPS = {
@@ -25,6 +25,7 @@ PROJECT_APPS = {
   'prboom-go':    [0, 16, 786432],
   'gwenesis':     [0, 16, 1048576],
   'fmsx':         [0, 16, 589824],
+  'retro-legacy': [0, 16, 2097152],
 }
 # PROJECT_APPS = {}
 # for t in glob.glob("*/CMakeLists.txt"):
@@ -70,8 +71,40 @@ def run(cmd, cwd=None, check=True):
     return subprocess.run(cmd, shell=False, cwd=cwd, check=check)
 
 
+def parse_size(value):
+    value = str(value).strip('"').upper()
+    match = re.fullmatch(r"(\d+)([KM])B?", value)
+    return int(match[1]) * (1024 if match[2] == "K" else 1048576) if match else int(value, 0)
+
+
+def check_image_size(apps, target, fatsize=0):
+    defaults = read_sdkconfig(f"components/retro-go/targets/{target}/sdkconfig")
+    capacity = defaults.get("CONFIG_ESPTOOLPY_FLASHSIZE")
+    if not capacity:
+        return
+    end = 0x10000
+    for app in apps:
+        alignment = 0x10000 if PROJECT_APPS[app][0] == 0 else 0x1000
+        size = max(PROJECT_APPS[app][2], os.path.getsize(f"{app}/build/{app}.bin"))
+        end = math.ceil(end / alignment) * alignment
+        end += math.ceil(size / alignment) * alignment
+    if fatsize:
+        end = math.ceil(end / 0x1000) * 0x1000
+        end += math.ceil(parse_size(fatsize) / 0x1000) * 0x1000
+    # mkfw.create_image appends a 256-byte updater metadata/CRC footer.
+    end += 256
+    capacity = parse_size(capacity)
+    if end > capacity:
+        raise ValueError(f"Image needs {end} bytes, but {target} has {capacity} bytes of flash. "
+                         "Reduce the selected apps or partition sizes.")
+    print(f"Flash capacity checked: {end}/{capacity} bytes")
+    return end
+
+
 def build_image(apps, output_file, img_type="odroid", fatsize=0, target="unknown", version="unknown"):
     print("Building firmware image with: %s\n" % " ".join(apps))
+    if img_type not in ["odroid", "esplay"]:
+        check_image_size(apps, target, fatsize)
     args = [MKFW_PY, "--type", img_type, "--name", PROJECT_NAME, "--icon", PROJECT_ICON, "--version", PROJECT_VER]
 
     if img_type not in ["odroid", "esplay"]:
@@ -92,7 +125,7 @@ def build_image(apps, output_file, img_type="odroid", fatsize=0, target="unknown
             ota_next_id += 1
         args += [str(part[0]), str(subtype), str(part[2]), app, os.path.join(app, "build", app + ".bin")]
     if fatsize:
-        args += ["1", "129", fatsize, "vfs", "none"]
+        args += ["1", "129", str(parse_size(fatsize)), "vfs", "none"]
 
     run(args)
 
@@ -161,7 +194,9 @@ def clean_stale_app_config(app, target_defaults):
 def build_app(app, device_type, with_profiling=False, no_networking=False, is_release=False):
     # To do: clean up if any of the flags changed since last build
     print("Building app '%s'" % app)
-    clean_stale_app_config(app, TARGET_SDKCONFIG_DEFAULTS)
+    app_defaults = dict(TARGET_SDKCONFIG_DEFAULTS)
+    app_defaults.update(read_sdkconfig(os.path.join(app, "sdkconfig.defaults")))
+    clean_stale_app_config(app, app_defaults)
     args = [IDF_PY, "app"]
     args.append(f"-DRG_PROJECT_APP={app}")
     args.append(f"-DRG_PROJECT_VER={PROJECT_VER}")

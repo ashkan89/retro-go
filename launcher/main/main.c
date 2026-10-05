@@ -45,7 +45,7 @@ static rg_gui_event_t toggle_tabs_cb(rg_gui_option_t *option, rg_gui_event_t eve
         rg_gui_option_t *opt = options;
 
         for (size_t i = 0; i < gui.tabs_count; ++i)
-            *opt++ = (rg_gui_option_t){i, gui.tabs[i]->name, "...", 1, &toggle_tab_cb};
+            *opt++ = (rg_gui_option_t){i, gui.tabs[i]->desc, "...", 1, &toggle_tab_cb};
         *opt++ = (rg_gui_option_t)RG_DIALOG_END;
 
         rg_gui_dialog(option->label, options, 0);

@@ -20,7 +20,8 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 - Sega: **SG-1000, Master System, Mega Drive / Genesis, Game Gear**
 - Coleco: **Colecovision**
 - NEC: **PC Engine**
-- Atari: **Lynx**
+- Atari: **Lynx, 2600, 7800**
+- Sinclair: **ZX Spectrum 48K** (SNA/Z80 snapshots)
 - Others: **DOOM** (including mods!)
 
 ### Retro-Go features:

@@ -47,6 +47,10 @@ For a smaller build you can also specify which apps you want, for example the la
 
 Note that the app named `retro-core` contains the following emulators: NES, PCE, G&W, Lynx, and SMS/GG/COL. As such, these emulators cannot be selected individually. The reason for the bundling is simply size, together they account for a mere 700KB instead of almost 3MB when they were built separately.
 
+The `retro-legacy` app bundles ZX Spectrum 48K, Atari 2600, and Atari 7800.
+It is included in default builds. See [its integration notes](retro-legacy/README.md)
+for ROM folders, controls, source revisions, and implementation details.
+
 
 ## Flashing an image for the first time
 Once we have successfully built an image file (`.img` or `.fw`), it must be flashed to the device.
