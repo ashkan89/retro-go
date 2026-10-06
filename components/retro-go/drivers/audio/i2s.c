@@ -94,6 +94,10 @@
 #define DMA_BUFFER_COUNT RG_AUDIO_DMA_BUFFER_COUNT
 #define DMA_BUFFER_LEN RG_AUDIO_DMA_BUFFER_LENGTH
 
+#if RG_AUDIO_QUEUE_LENGTH < RG_AUDIO_DMA_BUFFER_LENGTH
+#error "The audio queue must hold at least one complete DMA buffer."
+#endif
+
 static struct {
     const char *last_error;
     int device;
@@ -205,11 +209,17 @@ static void audio_task(void *arg)
 
             portENTER_CRITICAL(&queue_lock);
             running = state.running;
-            if (running && state.queue_count)
+            // The legacy I2S driver retains its position in a partially written
+            // DMA buffer. If a producer stalls until that buffer is played and
+            // auto-cleared, the next write resumes in the middle of silence.
+            // Commit complete DMA buffers, even when cores submit tiny chunks.
+            if (running && state.queue_count >= RG_COUNT(frames))
             {
-                count = RG_MIN(state.queue_count, RG_COUNT(frames));
-                count = RG_MIN(count, RG_AUDIO_QUEUE_LENGTH - state.queue_read);
-                memcpy(frames, &state.queue[state.queue_read], count * sizeof(*frames));
+                count = RG_COUNT(frames);
+                size_t first = RG_MIN(count, RG_AUDIO_QUEUE_LENGTH - state.queue_read);
+                memcpy(frames, &state.queue[state.queue_read], first * sizeof(*frames));
+                if (first < count)
+                    memcpy(frames + first, state.queue, (count - first) * sizeof(*frames));
                 state.queue_read = (state.queue_read + count) % RG_AUDIO_QUEUE_LENGTH;
                 state.queue_count -= count;
             }

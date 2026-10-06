@@ -36,6 +36,7 @@ extern "C" {
 
 extern void prosystem_Reset(void);
 extern void prosystem_ExecuteFrame(const uint8_t* input);
+extern void prosystem_AudioTick(uint16_t scanline);
 extern bool prosystem_Save(char *buffer, bool compress);
 extern bool prosystem_Load(const char *buffer);
 extern void prosystem_Close(void);

@@ -17,6 +17,7 @@ static Console *console;
 static uint16_t palette[256];
 static rg_audio_sample_t audio[640];
 static unsigned samples;
+static unsigned sample_remainder;
 static string digest;
 
 static void init(const char *path)
@@ -43,7 +44,8 @@ static void init(const char *path)
     stella_core.width = console->tia().width();
     stella_core.height = console->tia().height();
     stella_core.refresh_rate = (int)(console->getFramerate() + 0.5f);
-    samples = 31400 / stella_core.refresh_rate;
+    sample_remainder = 0;
+    samples = (31400 + stella_core.refresh_rate - 1) / stella_core.refresh_rate;
     RG_ASSERT(samples <= RG_COUNT(audio), "Unsupported Atari 2600 frame rate");
     const uInt32 *colors = console->getPalette(0);
     for (int i = 0; i < 256; i++)
@@ -64,6 +66,9 @@ static void step(uint32_t keys, rg_surface_t *surface)
     console->controller(Controller::Right).update();
     console->switches().update();
     console->tia().update();
+    sample_remainder += 31400;
+    samples = sample_remainder / stella_core.refresh_rate;
+    sample_remainder %= stella_core.refresh_rate;
     ((SoundSDL *)&osystem->sound())->processFragment((Int16 *)audio, samples);
     rg_audio_submit(audio, samples);
     if (RenderFlag) {
@@ -91,6 +96,7 @@ static bool load(const char *path)
         if (state.getString() != digest) return false;
         bool ok = console->load(state);
         ((SoundSDL *)&osystem->sound())->reset();
+        sample_remainder = 0;
         return ok;
     } catch (...) { return false; }
 }
@@ -99,6 +105,7 @@ static bool reset(bool hard)
 {
     console->system().reset();
     ((SoundSDL *)&osystem->sound())->reset();
+    sample_remainder = 0;
     return true;
 }
 

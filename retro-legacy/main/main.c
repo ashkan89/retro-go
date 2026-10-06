@@ -62,7 +62,9 @@ void app_main(void)
         unsigned skip = app->frameskip > 0 ? app->frameskip : 0;
         RenderFlag = frame++ % (skip + 1) == 0;
         rg_surface_t *next = current == surfaces[0] ? surfaces[1] : surfaces[0];
-        if (RenderFlag) rg_display_sync(false);
+        // Do not overwrite a surface still being transferred or wait behind a
+        // slow display update before generating the next frame's audio.
+        if (RenderFlag) RenderFlag = rg_display_sync(false);
         core->step(keys, next);
         if (RenderFlag) {
             current = next;

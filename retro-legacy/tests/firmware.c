@@ -8,12 +8,16 @@
 #include "Memory.h"
 #include "Maria.h"
 #include "Equates.h"
+#include "Tia.h"
+#include "Pokey.h"
+#include "Region.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <errno.h>
 
 bool RenderFlag = true;
 static size_t audio_frames;
+static size_t audio_blocks, audio_max_block, audio_nonzero;
 typedef struct { const char *name; uint8_t *data; size_t size, capacity; } file_t;
 static file_t files[8];
 static struct { file_t *file; size_t position; } handles[16];
@@ -21,7 +25,14 @@ static struct { file_t *file; size_t position; } handles[16];
 void *rg_alloc(size_t size, uint32_t caps)
 { return heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT); }
 void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
-{ RG_ASSERT(frames && count > 0 && count <= 640, "Invalid audio block"); audio_frames += count; }
+{
+    RG_ASSERT(frames && count > 0 && count <= 640, "Invalid audio block");
+    audio_frames += count;
+    audio_blocks++;
+    if (count > audio_max_block) audio_max_block = count;
+    for (size_t i = 0; i < count; i++)
+        if (frames[i].left || frames[i].right) audio_nonzero++;
+}
 const char *rg_gettext(const char *text) { return text; }
 double rg_settings_get_number(const char *ns, const char *key, double fallback) { return fallback; }
 void rg_settings_set_number(const char *ns, const char *key, double value) {}
@@ -146,6 +157,8 @@ static void exercise(legacy_core_t *core, const char *rom, const char *state)
         RG_ASSERT(colored, "Synthetic ROM did not render color");
     }
     RG_ASSERT(audio_frames > 0, "Audio was not submitted");
+    if (core == &stella_core)
+        RG_ASSERT(audio_frames == (31400 * 6) / core->refresh_rate, "Atari 2600 sample clock drifted");
     RG_ASSERT(core->save(state), "State save failed");
     RG_ASSERT(core->reset(true), "Reset failed");
     RG_ASSERT(core->load(state), "State round trip failed");
@@ -155,8 +168,51 @@ static void exercise(legacy_core_t *core, const char *rom, const char *state)
     free(surface.data);
 }
 
+static void exercise_prosystem_audio(void)
+{
+    // The synthetic ROM never enables sound. Silence must remain zero, even
+    // with POKEY's nonzero idle bias, and frame skip must not suppress audio.
+    rg_surface_t unused = {0};
+    RenderFlag = false;
+    for (int pal = 0; pal < 2; pal++) {
+        region_type = pal ? REGION_PAL : REGION_NTSC;
+        for (int pokey = 0; pokey < 2; pokey++) {
+            cartridge_pokey = pokey;
+            prosystem_core.reset(true);
+            audio_frames = audio_blocks = audio_max_block = audio_nonzero = 0;
+            int frames = pal ? 50 : 60;
+            for (int i = 0; i < frames; i++) prosystem_core.step(0, &unused);
+            RG_ASSERT(audio_frames == 32000, "Atari 7800 sample clock drifted");
+            RG_ASSERT(audio_nonzero == 0, "Atari 7800 silence contains DC");
+            RG_ASSERT(audio_blocks >= frames * 4 && audio_max_block <= 160,
+                "Atari 7800 audio was delayed until frame end");
+        }
+    }
+    // A real TIA square wave must survive DC removal.
+    region_type = REGION_NTSC;
+    cartridge_pokey = false;
+    prosystem_core.reset(true);
+    tia_SetRegister(AUDC0, 4); tia_SetRegister(AUDF0, 4); tia_SetRegister(AUDV0, 15);
+    audio_nonzero = 0;
+    for (int i = 0; i < 3; i++) prosystem_core.step(0, &unused);
+    RG_ASSERT(audio_nonzero > 0, "Atari 7800 tone was filtered out");
+    region_type = REGION_AUTO;
+    prosystem_core.reset(true);
+    RenderFlag = true;
+    printf("SELFTEST PASS: Atari 7800 TIA/POKEY silence, PAL/NTSC sample clock and streamed audio\n");
+}
+
 void app_main(void)
 {
+    extern int audio_dma_selftest(void);
+    RG_ASSERT(audio_dma_selftest() == 0, "I2S batching or FIFO order failed");
+    printf("SELFTEST PASS: complete I2S DMA blocks and ring wrap (75 producer scenarios)\n");
+    extern int snes_audio_selftest(void);
+    RG_ASSERT(snes_audio_selftest() == 0, "SNES PAL/NTSC audio clock failed");
+    printf("SELFTEST PASS: SNES PAL/NTSC sample totals and mixer bounds, both filters\n");
+    extern int msx_audio_selftest(void);
+    RG_ASSERT(msx_audio_selftest() == 0, "MSX fractional stereo sample clock failed");
+    printf("SELFTEST PASS: MSX fractional sample totals and whole stereo frames\n");
     const esp_vfs_t vfs = {.flags = ESP_VFS_FLAG_DEFAULT, .open = mem_open,
         .close = mem_close, .read = mem_read, .write = mem_write, .lseek = mem_seek, .fstat = mem_fstat};
     ESP_ERROR_CHECK(esp_vfs_register("/test", &vfs, NULL));
@@ -199,6 +255,7 @@ void app_main(void)
     stella_state->capacity = capacity;
     printf("SELFTEST PASS: failed Stella write\n");
     exercise(&prosystem_core, "/test/game.a78", "/test/a78.state");
+    exercise_prosystem_audio();
     exercise_maria_clipping();
     // Regression: the original port aborted saving carts with 16K extra RAM.
     uint8_t *ram_rom = rg_alloc(65536 + 128, 0);

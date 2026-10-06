@@ -81,6 +81,9 @@ void prosystem_Reset(void)
 // ----------------------------------------------------------------------------
 // ExecuteFrame
 // ----------------------------------------------------------------------------
+// Ports may stream completed audio while MARIA is still executing the frame.
+__attribute__((weak)) void prosystem_AudioTick(uint16_t scanline) {}
+
 IRAM_ATTR void prosystem_ExecuteFrame(const uint8_t* input)
 {
    riot_SetInput(input);
@@ -131,6 +134,7 @@ IRAM_ATTR void prosystem_ExecuteFrame(const uint8_t* input)
       tia_Process(2);
       if(cartridge_pokey)
          pokey_Process(2);
+      prosystem_AudioTick(maria_scanline);
    }
 
    prosystem_frame++;

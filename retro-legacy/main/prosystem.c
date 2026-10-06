@@ -10,6 +10,33 @@
 static uint8_t input[17] = {[15] = 1};
 static uint16_t palette[256];
 static rg_audio_sample_t audio[640];
+static unsigned audio_remainder;
+static int audio_length, audio_done;
+static int32_t audio_dc = -1;
+
+void prosystem_AudioTick(uint16_t scanline)
+{
+    int target = scanline * audio_length / prosystem_scanlines;
+    int pending = target - audio_done;
+    if (pending < audio_length / 4 && scanline != prosystem_scanlines) return;
+
+    for (int i = audio_done; i < target; i++) {
+        int index = i * (prosystem_scanlines * 2) / audio_length;
+        // TIA is unipolar (0..120), not unsigned PCM with silence at 128.
+        // POKEY is also unipolar, with an idle value of 8. Remove their DC
+        // continuously instead of driving the speaker with full-scale DC.
+        int raw = tia_buffer[index];
+        if (cartridge_pokey) raw = (raw + pokey_buffer[index]) / 2;
+        int32_t level = raw * 65536;
+        if (audio_dc < 0) audio_dc = level;
+        audio_dc += (level - audio_dc) / 512;
+        int sample = (level - audio_dc) / 256;
+        sample = RG_MAX(-32768, RG_MIN(32767, sample));
+        audio[i].left = audio[i].right = sample;
+    }
+    if (pending > 0) rg_audio_submit(audio + audio_done, pending);
+    audio_done = target;
+}
 
 static void init(const char *path)
 {
@@ -21,6 +48,8 @@ static void init(const char *path)
     RG_ASSERT(ok, "Invalid Atari 7800 cartridge");
     database_Load(cartridge_digest);
     prosystem_Reset();
+    audio_remainder = 0;
+    audio_dc = -1;
     prosystem_core.refresh_rate = prosystem_frequency;
     prosystem_core.height = maria_visibleArea.bottom - maria_visibleArea.top + 1;
     RG_ASSERT(prosystem_core.height > 0 && prosystem_core.height <= 292, "Invalid Atari 7800 display area");
@@ -37,16 +66,13 @@ static void step(uint32_t keys, rg_surface_t *surface)
     input[4] = !!(keys & RG_KEY_B); input[5] = !!(keys & RG_KEY_A);
     input[12] = !!((keys & RG_KEY_START) && (keys & RG_KEY_SELECT));
     input[13] = !!(keys & RG_KEY_SELECT); input[14] = !!(keys & RG_KEY_START);
+    // Carry the fractional sample across NTSC frames: 533, 533, 534 at
+    // 60 Hz produces exactly 32000 samples/sec rather than losing 20/sec.
+    audio_remainder += 32000;
+    audio_length = audio_remainder / prosystem_frequency;
+    audio_remainder %= prosystem_frequency;
+    audio_done = 0;
     prosystem_ExecuteFrame(input);
-    int length = 32000 / prosystem_frequency;
-    int source_length = prosystem_scanlines * 2;
-    for (int i = 0; i < length; i++) {
-        int index = i * source_length / length;
-        int sample = tia_buffer[index] - 128;
-        if (cartridge_pokey) sample = (sample + pokey_buffer[index] - 128) / 2;
-        audio[i].left = audio[i].right = sample * 256;
-    }
-    rg_audio_submit(audio, length);
     if (RenderFlag) {
         int offset = (maria_visibleArea.top - maria_displayArea.top) * 320;
         uint16_t *dest = surface->data;
@@ -78,9 +104,11 @@ static bool load(const char *path)
     char *data = legacy_read_file(path, &size, 32829);
     bool ok = data && size == state_size() && prosystem_Load(data);
     free(data);
+    if (ok) { audio_remainder = 0; audio_dc = -1; }
     return ok;
 }
 
-static bool reset(bool hard) { prosystem_Reset(); return true; }
+static bool reset(bool hard)
+{ prosystem_Reset(); audio_remainder = 0; audio_dc = -1; return true; }
 
 legacy_core_t prosystem_core = {init, step, save, load, reset, NULL, 320, 240, 32000, 60};

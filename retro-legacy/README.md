@@ -126,3 +126,7 @@ SD card, or controller hardware.
 The Atari 7800 regression checks also cover all 256 horizontal sprite positions
 in both cell modes, transparent kangaroo-mode cells, DMA cycle counts, horizontal
 wrap, and CPU writes across the full 16K cartridge RAM window.
+Audio regressions cover zero-valued TIA/POKEY silence, exact PAL/NTSC sample
+totals, delivery during scanline execution with rendering skipped, and a TIA
+tone surviving DC removal. See [the audio investigation](../AUDIO.md) for the
+shared output path, emulator delivery differences, and device-test limits.

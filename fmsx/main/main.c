@@ -8,6 +8,7 @@ static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
 static rg_task_t *audioQueue;
 static rg_app_t *app;
+static uint64_t audio_remainder;
 
 static int JoyState, LastKey, InMenu, InKeyboard;
 static int KeyboardCol, KeyboardRow, KeyboardKey;
@@ -339,6 +340,7 @@ unsigned int WaitKeyOrMouse(void)
 
 unsigned int InitAudio(unsigned int Rate, unsigned int Latency)
 {
+    audio_remainder = 0;
     return AUDIO_SAMPLE_RATE;
 }
 
@@ -354,9 +356,15 @@ unsigned int GetFreeAudio(void)
 
 void PlayAllSound(int uSec)
 {
+    if (uSec <= 0) return;
     int64_t start = rg_system_timer();
-    unsigned int samples = 2 * uSec * AUDIO_SAMPLE_RATE / 1000000;
-    rg_task_send(audioQueue, &(rg_task_msg_t){.dataInt = samples});
+    // This is called every eight scanlines. Rounding each small request loses
+    // a significant fraction of a sample on every call; carry it forward.
+    // Count stereo frames first so WriteAudio never receives an odd half-frame.
+    audio_remainder += (uint64_t)uSec * AUDIO_SAMPLE_RATE;
+    unsigned int samples = (audio_remainder / 1000000) * 2;
+    audio_remainder %= 1000000;
+    if (samples) rg_task_send(audioQueue, &(rg_task_msg_t){.dataInt = samples});
     FrameStartTime += rg_system_timer() - start;
 }
 
