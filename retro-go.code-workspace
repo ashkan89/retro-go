@@ -19,6 +19,9 @@
 			"path": "retro-core"
 		},
 		{
+			"path": "retro-legacy"
+		},
+		{
 			"path": "themes"
 		},
 		{
