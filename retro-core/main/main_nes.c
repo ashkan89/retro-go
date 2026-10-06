@@ -5,7 +5,6 @@
 static int overscan = true;
 static int autocrop = 0;
 static int palette = 0;
-static bool slowFrame = false;
 static bool nsfPlayer = false;
 static nes_t *nes;
 
@@ -151,11 +150,6 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
 
 static void blit_screen(uint8 *bmp)
 {
-    slowFrame = bmp && !rg_display_sync(false);
-    // Keep emulation/audio moving when a full-screen transfer is still busy.
-    // Redraw requests (bmp == NULL) retain their blocking submission semantics.
-    if (slowFrame)
-        return;
     // A rolling average should be used for autocrop == 1, it causes jitter in some games...
     // int crop_h = (autocrop == 2) || (autocrop == 1 && nes->ppu->left_bg_counter > 210) ? 8 : 0;
     int crop_v = (overscan) ? nes->overscan : 0;
@@ -269,6 +263,9 @@ void nes_main(void)
 
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(nes->refresh_rate);
+    // Apply after overclock setup, which can reset the shared frameskip to 1.
+    // NES normally renders every frame; retain timing-based overload fallback.
+    app->frameskip = 0;
 
     int skipFrames = 0;
 
@@ -285,7 +282,7 @@ void nes_main(void)
         }
 
         int64_t startTime = rg_system_timer();
-        bool drawFrame = !skipFrames && !nsfPlayer && rg_display_sync(false);
+        bool drawFrame = !skipFrames && !nsfPlayer;
         int buttons = 0;
 
         if (joystick & RG_KEY_START)  buttons |= NES_PAD_START;
@@ -332,8 +329,6 @@ void nes_main(void)
                 skipFrames = app->frameskip;
             else if (elapsed > frameTime + 1500) // Allow some jitter
                 skipFrames = 1; // (elapsed / frameTime)
-            else if (drawFrame && slowFrame)
-                skipFrames = 1;
         }
         else if (skipFrames > 0)
         {

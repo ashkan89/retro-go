@@ -75,8 +75,8 @@ static void apu_process(short *, size_t, bool);
 '''
 
 RUNNER = r'''
-static int scanline_sound(void) { return nes.scanline * 20; }
-static const apuext_t scanline_ext = {NULL, scanline_sound};
+static int constant_tone(void) { return 1234; }
+static const apuext_t tone_ext = {NULL, constant_tone};
 static ppu_t test_ppu;
 static mapper_t test_mapper;
 static uint8 pixels[272 * 240];
@@ -86,7 +86,10 @@ static void record_audio(int offset, int count) {
     last_delivery = nes.scanline;
     submitted += count;
 }
-static void record_video(uint8 *buffer) { presented++; }
+static void record_video(uint8 *buffer) {
+    if (!submitted || submitted != processed) failure = 4;
+    presented++;
+}
 static void apu_process(short *buffer, size_t count, bool stereo) {
     int channels = stereo ? 2 : 1;
     if (buffer != apu.buffer + processed * channels) failure = 2;
@@ -104,7 +107,7 @@ static void setup(int rate, int refresh, bool stereo) {
     nes.ppu = &test_ppu; nes.mapper = &test_mapper; nes.vidbuf = pixels;
     nes.audio_func = record_audio; nes.blit_func = record_video;
     apu_reset(); apu_setopt(APU_FILTER_TYPE, APU_FILTER_NONE);
-    apu_setext(&scanline_ext);
+    apu_setext(&tone_ext);
     rendered = presented = submitted = processed = failure = synth_calls = 0;
 }
 #ifdef _WIN32
@@ -119,21 +122,17 @@ int check_timing(int rate, int refresh, int stereo, int draw, int initial_line) 
         int start_line = nes.scanline;
         nes_emulate(draw);
         if (failure || submitted != processed) return 10 + failure;
+        // Bound synthesis overhead even when every scanline is emulated.
+        if (synth_calls > 5) return 24;
         total += submitted;
         if (nes.scanline != 0) return 20;
         if (start_line == 0) {
             if (first_delivery <= 0 || first_delivery > nes.scanlines_per_frame / 4 + 2
                 || (last_delivery != 0 && last_delivery != nes.scanlines_per_frame)) return 21;
-            // Each sample must reflect its scanline's sound register state,
-            // rather than the state at the end of a quarter-frame batch.
-            int offset = 0;
-            for (int line = 1; line <= nes.scanlines_per_frame; line++) {
-                int end = submitted * line / nes.scanlines_per_frame;
-                while (offset < end) {
-                    if (apu.buffer[offset * (stereo ? 2 : 1)] != line * 20) return 22;
-                    if (stereo && apu.buffer[offset * 2 + 1] != line * 20) return 23;
-                    offset++;
-                }
+            // Samples must stay contiguous, including across delivery batches.
+            for (int offset = 0; offset < submitted; offset++) {
+                if (apu.buffer[offset * (stereo ? 2 : 1)] != 1234) return 22;
+                if (stereo && apu.buffer[offset * 2 + 1] != 1234) return 23;
             }
         }
     }
@@ -180,7 +179,7 @@ DISPLAY_STUB = r'''
 typedef struct { int width, height, stride, offset; } rg_surface_t;
 static rg_surface_t surface;
 static rg_surface_t *currentUpdate = &surface;
-static bool slowFrame, busy;
+static bool busy;
 static int overscan, autocrop, display_calls;
 #define NES_SCREEN_WIDTH 256
 #define NES_SCREEN_HEIGHT 240
@@ -195,20 +194,60 @@ __declspec(dllexport)
 int check_display(void) {
     busy = true; display_calls = 0;
     blit_screen(pixels);
-    if (display_calls || !slowFrame) return 50;
+    // A busy previous frame must not discard the next completed frame.
+    if (display_calls != 1) return 50;
     busy = false;
     blit_screen(pixels);
-    if (display_calls != 1 || slowFrame) return 51;
+    if (display_calls != 2) return 51;
     busy = true;
     blit_screen(NULL);
-    if (display_calls != 2 || slowFrame) return 52;
+    if (display_calls != 3) return 52;
     for (int skipFrames = 0; skipFrames <= 1; skipFrames++)
         for (int nsfPlayer = 0; nsfPlayer <= 1; nsfPlayer++)
             for (busy = false; ; busy = true) {
                 bool drawFrame = DRAW_EXPRESSION;
-                if (drawFrame != (!skipFrames && !nsfPlayer && !busy)) return 53;
+                // The second framebuffer can be drawn while the first is busy.
+                if (drawFrame != (!skipFrames && !nsfPlayer)) return 53;
                 if (busy) break;
             }
+    return 0;
+}
+'''
+
+POLICY_STUB = r'''
+typedef struct { int frameskip; float speed; } test_app_t;
+static test_app_t test_app;
+static int policy_elapsed;
+static int rg_system_timer(void) { return policy_elapsed; }
+static void nsf_draw_overlay(void) {}
+static int frame_policy(int skipFrames, bool nsfPlayer) {
+    test_app_t *app = &test_app;
+    int startTime = 0;
+    bool drawFrame = !skipFrames && !nsfPlayer;
+'''
+
+POLICY_RUNNER = r'''
+    return skipFrames;
+}
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
+int check_frame_policy(void) {
+    nes_getptr()->refresh_rate = 60; test_app.speed = 1; test_app.frameskip = 0;
+    const int within_budget[] = {1000, 10000, 16666, 18166};
+    for (int i = 0; i < 4; i++) {
+        policy_elapsed = within_budget[i];
+        busy = true;
+        if (frame_policy(0, false) != 0) return 70;
+        busy = false;
+        if (frame_policy(0, false) != 0) return 71;
+    }
+    policy_elapsed = 18167;
+    if (frame_policy(0, false) != 1) return 72;
+    if (frame_policy(2, false) != 1) return 73;
+    test_app.frameskip = 2; policy_elapsed = 1000;
+    if (frame_policy(0, false) != 2) return 74;
+    if (frame_policy(0, true) != 10) return 75;
     return 0;
 }
 '''
@@ -285,9 +324,13 @@ def main():
     adapter = ROOT / "retro-core/main/main_nes.c"
     blit = section(adapter, "static void blit_screen", "static void submit_audio")
     draw_expression = adapter.read_text().split("bool drawFrame = ", 1)[1].split(";", 1)[0]
+    # Execute the adapter's actual end-of-frame policy, excluding the outer loop's closing brace.
+    policy = section(adapter, "        if (skipFrames == 0)", "    RG_PANIC(").rstrip().rsplit("}", 1)[0]
     source = (PRELUDE + apu_source + loop + RUNNER + DISPLAY_STUB
               + "\n#define nes nes_getptr()\n" + blit + "\n#undef nes\n"
               + DISPLAY_RUNNER.replace("DRAW_EXPRESSION", draw_expression)
+              + "\n#define nes nes_getptr()\n" + POLICY_STUB + policy + POLICY_RUNNER
+              + "\n#undef nes\n"
               + PPU_STUB + section(NES / "ppu.c", "INLINE uint32 get_patpix", "bool ppu_enabled")
               + PPU_RUNNER)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
@@ -326,12 +369,13 @@ def main():
                 result = dll.check_filter(filter_type, stereo)
                 assert result == 0, (filter_type, stereo, result)
         assert dll.check_display() == 0
+        assert dll.check_frame_policy() == 0
         assert dll.check_sprites() == 0
         if os.name == "nt":
             free = ctypes.windll.kernel32.FreeLibrary
             free.argtypes = [ctypes.c_void_p]
             free(dll._handle)
-    print(f"PASS: {scenarios} NES timing scenarios, all APU filters, busy display/redraw, "
+    print(f"PASS: {scenarios} NES timing scenarios, all APU filters, display/redraw/frame-skip policy, "
           "262144 sprite pattern/flip/priority cases")
 
 
