@@ -571,6 +571,21 @@ bool rg_firmware_image_describe(const char *path, char *out, size_t out_len)
     return success;
 }
 
+bool rg_firmware_image_matches_version(const char *path, const char *version)
+{
+    image_footer_t footer = {0};
+    rg_stat_t stat = rg_storage_stat(path);
+    FILE *fp = stat.is_file ? fopen(path, "rb") : NULL;
+    if (!fp || !version)
+    {
+        if (fp) fclose(fp);
+        return false;
+    }
+    bool matches = read_image_footer(fp, stat.size, &footer) && strcmp(footer.version, version) == 0;
+    fclose(fp);
+    return matches;
+}
+
 bool rg_firmware_install_image(const char *path, uint32_t flags)
 {
 #ifndef ESP_PLATFORM

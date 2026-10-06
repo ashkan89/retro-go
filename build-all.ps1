@@ -1,14 +1,5 @@
-# List all your target configurations here
-$Targets = @(
-    "esp32-s3-n16r8-st7796",
-    "esp32-s3-n8r2-st7796",
-    "esp32-s3-n16r8-st7789v2",
-    "esp32-s3-n8r2-st7789v2",
-    "esp32-s3-n16r8-st7789",
-    "esp32-s3-n8r2-st7789",
-    "esp32-s3-n16r8-ili9341",
-    "esp32-s3-n8r2-ili9341"
-)
+# Shared release targets used by GitHub Actions and local builds.
+$Targets = Get-Content -LiteralPath (Join-Path $PSScriptRoot "tools/release-targets.json") -Raw | ConvertFrom-Json
 
 foreach ($Target in $Targets) {
     Write-Host "----------------------------------------" -ForegroundColor Cyan
@@ -16,7 +7,7 @@ foreach ($Target in $Targets) {
     Write-Host "----------------------------------------" -ForegroundColor Cyan
     
     # Run the python build tool
-    python rg_tool.py --target $Target release all
+    python rg_tool.py --target $Target release factory launcher retro-core prboom-go gwenesis fmsx retro-legacy
 
     # Check if the build failed ($LASTEXITCODE is not 0)
     if ($LASTEXITCODE -ne 0) {

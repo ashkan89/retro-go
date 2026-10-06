@@ -23,4 +23,5 @@ enum
 bool rg_firmware_install_image(const char *path, uint32_t flags);
 /* Fills `out` with "name version (target)" from the image's footer. False if it is not an image. */
 bool rg_firmware_image_describe(const char *path, char *out, size_t out_len);
+bool rg_firmware_image_matches_version(const char *path, const char *version);
 bool rg_firmware_image_pending(const char *path, uint32_t flags);

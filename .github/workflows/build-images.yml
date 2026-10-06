@@ -1,0 +1,43 @@
+name: Build firmware images
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+      targets:
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: espressif/idf:v5.5.5
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJSON(inputs.targets) }}
+    env:
+      PROJECT_VER: ${{ inputs.version }}
+      PROJECT_NAME: Retro-Go
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build complete image with factory updater
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ matrix.target }}
+        run: |
+          . "$IDF_PATH/export.sh"
+          python rg_tool.py --target "$BUILD_TARGET" release factory launcher retro-core prboom-go gwenesis fmsx retro-legacy
+          python tools/release.py check "retro-go_${PROJECT_VER}_${BUILD_TARGET}.img" "$PROJECT_VER" "$BUILD_TARGET"
+      - name: Upload validated image
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.target }}
+          path: retro-go_${{ inputs.version }}_${{ matrix.target }}.img
+          if-no-files-found: error
+          retention-days: 14

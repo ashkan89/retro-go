@@ -1,0 +1,80 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      targets: ${{ steps.metadata.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate tag and release logic
+        id: metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION=$(python tools/release.py version "$RELEASE_TAG")
+          TARGETS=$(python tools/release.py targets)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+          python -m unittest discover -s tools/tests -v
+          cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
+          /tmp/test-update-version
+  build:
+    needs: prepare
+    uses: ./.github/workflows/build-images.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+      targets: ${{ needs.prepare.outputs.targets }}
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: image-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify complete release and generate checksums
+        run: python tools/release.py package release-assets "$RELEASE_TAG"
+      - name: Create draft, upload all assets, and publish latest
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Never overwrite an already published release on a workflow rerun.
+          if gh api "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > /tmp/release.json 2>/tmp/release-error; then
+            python -c 'import json; r=json.load(open("/tmp/release.json")); assert r["draft"], "Release is already published"'
+          else
+            # Network/auth failures must not be mistaken for a missing release.
+            grep -q 'HTTP 404' /tmp/release-error
+            python tools/release.py notes "$RELEASE_TAG" > /tmp/release-notes.md
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Retro-Go $RELEASE_TAG" --generate-notes --notes-file /tmp/release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/*.img release-assets/SHA256SUMS release-assets/release-manifest.json --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest --title "Retro-Go $RELEASE_TAG"

@@ -12,6 +12,7 @@ if(IDF_TARGET STREQUAL "esp32s3")
     list(APPEND COMPONENT_REQUIRES usb usb_host_hid esp_tinyusb)
 endif()
 
+list(APPEND COMPONENT_REQUIRES mbedtls)
 register_component()
 
 # Small size is preferred because of the small cache and most things here aren't performance sensitive!

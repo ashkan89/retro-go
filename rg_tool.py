@@ -200,6 +200,7 @@ def build_app(app, device_type, with_profiling=False, no_networking=False, is_re
     args = [IDF_PY, "app"]
     args.append(f"-DRG_PROJECT_APP={app}")
     args.append(f"-DRG_PROJECT_VER={PROJECT_VER}")
+    args.append(f"-DPROJECT_VER={PROJECT_VER}")
     args.append(f"-DRG_BUILD_TARGET=RG_TARGET_{re.sub(r'[^A-Z0-9]', '_', device_type.upper())}")
     args.append(f"-DRG_BUILD_RELEASE={1 if is_release else 0}")
     args.append(f"-DRG_ENABLE_PROFILING={1 if with_profiling else 0}")

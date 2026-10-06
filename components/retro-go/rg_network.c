@@ -21,6 +21,9 @@
 #ifdef RG_ENABLE_NETWORKING
 #include <esp_idf_version.h>
 #include <esp_http_client.h>
+#ifdef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+#include <esp_crt_bundle.h>
+#endif
 #include <esp_system.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
@@ -256,6 +259,7 @@ rg_network_t rg_network_get_info(void)
 {
     rg_network_t info = {0};
 #ifdef RG_ENABLE_NETWORKING
+    info.ap_mode = wifi_config.ap_mode;
     if (netif)
     {
         memcpy(info.name, wifi_config.ssid, 32);
@@ -371,6 +375,14 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
     }
 
     req->config = cfg ? *cfg : (rg_http_cfg_t)RG_HTTP_DEFAULT_CONFIG();
+#ifndef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+    if (req->config.verify_server)
+    {
+        RG_LOGE("Verified HTTPS requires the certificate bundle");
+        free(req);
+        return NULL;
+    }
+#endif
     req->client = esp_http_client_init(&(esp_http_client_config_t){
         .url = url,
         .buffer_size = req->config.buffer_size > 0 ? req->config.buffer_size : 4096,
@@ -379,6 +391,9 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
         .timeout_ms = req->config.timeout_ms,
         .event_handler = req->config.on_header ? http_event_handler : NULL,
         .user_data = req,
+#ifdef CONFIG_MBEDTLS_CERTIFICATE_BUNDLE
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
     });
 
     if (!req->client)
@@ -391,6 +406,11 @@ rg_http_req_t *rg_network_http_open(const char *url, const rg_http_cfg_t *cfg)
         esp_http_client_set_header(req->client, header->name, header->value ?: "");
 
 try_again:
+    if (req->config.verify_server && esp_http_client_get_transport_type(req->client) != HTTP_TRANSPORT_OVER_SSL)
+    {
+        RG_LOGE("Refusing an unencrypted firmware request or redirect");
+        goto fail;
+    }
     if (esp_http_client_open(req->client, req->config.post_len) != ESP_OK)
     {
         RG_LOGE("Error opening connection");

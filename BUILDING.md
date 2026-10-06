@@ -7,7 +7,7 @@
 # Building Retro-Go
 
 ## Prerequisites
-You will need a working installation of [esp-idf](https://docs.espressif.com/projects/esp-idf/en/release-v4.4/esp32/get-started/index.html#get-started-get-prerequisites). Versions 4.4 to 5.3 are supported.
+You will need a working installation of [esp-idf](https://docs.espressif.com/projects/esp-idf/en/release-v4.4/esp32/get-started/index.html#get-started-get-prerequisites). The automated ESP32-S3 builds use ESP-IDF **5.5.5**. Older ports support versions 4.4 onward, subject to their target configuration.
 
 _Note: As of retro-go 1.44, I use 4.4.8. I used 4.3 for 1.35 to 1.43. ESP-IDF 4.1 was used for 1.20 to 1.34 versions._
 
@@ -41,6 +41,67 @@ Run `python rg_tool.py --help` to see all available flags and commands.
     `python rg_tool.py build-fw` or `python rg_tool.py release` (clean build)
 - Generate a .img to be flashed with esptool.py (Serial):\
     `python rg_tool.py build-img` or `python rg_tool.py release` (clean build)
+
+For the complete image required by the on-device updater, include the factory app explicitly:
+
+```powershell
+$env:PROJECT_VER = "4.5"
+python rg_tool.py --target esp32-s3-n16r8-ili9341 release factory launcher retro-core prboom-go gwenesis fmsx retro-legacy
+```
+
+`build-all.ps1` builds complete images for every target in `tools/release-targets.json`.
+The version is embedded in each app's ESP-IDF descriptor and Retro-Go version string,
+the image footer, and the output filename.
+
+## Automated releases and device updates
+
+After committing and pushing the desired release changes, push a stable version tag:
+
+```sh
+git tag -a v4.5 -m "Retro-Go v4.5"
+git push origin v4.5
+```
+
+Tags accept `vMAJOR.MINOR` or `vMAJOR.MINOR.PATCH`, without leading zeroes or prerelease suffixes.
+The Release workflow removes the `v` for the build version, runs tests, and builds the eight
+ESP32-S3 configurations in `tools/release-targets.json` using ESP-IDF 5.5.5.
+All images contain the factory updater, launcher, and all emulator apps.
+The workflow checks targets, app versions, partition bounds, flash capacity, and image CRCs.
+Publication waits for every build to succeed. It creates a draft titled **Retro-Go v4.5**,
+uploads the `.img` assets, `SHA256SUMS`, and `release-manifest.json`, and publishes it as latest.
+A failed upload leaves the draft unpublished; rerunning retries the upload. Already published
+releases are protected from replacement. Use a new tag for corrections.
+
+Release notes include GitHub's generated changelog and installation instructions. If
+`CHANGELOG.md` has a matching `# Retro-Go 4.5` section, its contents are included too.
+For tag `v4.5`, asset names are exactly `retro-go_4.5_<target>.img`; keep this convention because
+devices use it to select their matching image. Regular branch/PR CI builds two representative
+8 MB and 16 MB targets and runs the release tests without publishing.
+GitHub's built-in workflow token supplies release permissions; no personal token is needed.
+
+At launcher startup, once station Wi-Fi connects, a background task checks GitHub's latest
+stable release. It retries transient failures up to three times, one minute apart, and draws
+an upward-arrow update icon in the top-right status area when a newer matching image exists.
+AP mode does not trigger an Internet check. A manual **Check for updates** always refreshes
+the result, automatically selects the device's exact target image, and asks only to download
+and reboot for installation. Older/same versions, prereleases, and incompatible assets are
+excluded. Unknown development version strings cannot be compared; use `PROJECT_VER` for those builds.
+
+Downloads require HTTPS certificate verification, reject unencrypted redirects and HTTP errors,
+check the expected byte count and embedded release version, and verify image target and CRC before
+preparing the factory updater. Failed or cancelled transfers are removed. A valid device clock
+is needed for TLS; station Wi-Fi starts SNTP automatically. Devices with older firmware lacking
+a factory partition need one complete image installed over USB first. Keep power connected
+through installation; this multi-app updater does not provide automatic rollback after a power loss.
+
+Local release checks:
+
+```sh
+python -m unittest discover -s tools/tests -v
+cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o test-update-version
+./test-update-version
+python tools/release.py package path/to/all/images v4.5
+```
 
 For a smaller build you can also specify which apps you want, for example the launcher + DOOM only:
 1. `python rg_tool.py build-fw launcher prboom-go`

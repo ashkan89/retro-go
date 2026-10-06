@@ -1256,12 +1256,20 @@ void rg_gui_draw_wifi_icon(int x_pos, int y_pos, int width, int height)
     }
 }
 
+static bool update_available;
+
+void rg_gui_set_update_available(bool available)
+{
+    __atomic_store_n(&update_available, available, __ATOMIC_RELEASE);
+}
+
 void rg_gui_draw_icons(void)
 {
     const rg_gui_palette_t *pal = &gui.palette;
     rg_battery_t battery = rg_input_read_battery();
     rg_network_t network = rg_network_get_info();
     bool show_network = network.state > RG_NETWORK_DISCONNECTED;
+    bool show_update = __atomic_load_n(&update_available, __ATOMIC_ACQUIRE);
     rg_rect_t clock_text = TEXT_RECT("00:00", 0);
 
     int bar_height = clock_text.height;
@@ -1278,6 +1286,8 @@ void rg_gui_draw_icons(void)
         total += battery_width + 2 + gap;
     if (show_network)
         total += wifi_width + gap;
+    if (show_update)
+        total += icon_height + gap;
     if (gui.show_clock)
         total += clock_text.width + gap;
 
@@ -1310,6 +1320,18 @@ void rg_gui_draw_icons(void)
     {
         right += wifi_width + gap;
         rg_gui_draw_wifi_icon(-right, icon_top, wifi_width, icon_height);
+    }
+
+    if (show_update)
+    {
+        right += icon_height + gap;
+        int x = get_horizontal_position(-right, icon_height);
+        int center = x + icon_height / 2;
+        // Upward arrow above a tray: a firmware upgrade is available.
+        rg_gui_draw_rect(center, icon_top + 1, 2, icon_height - 4, 0, pal->accent, pal->accent);
+        for (int i = 0; i < icon_height / 3; ++i)
+            rg_gui_draw_rect(center - i, icon_top + 1 + i, 2 + i * 2, 1, 0, pal->accent, pal->accent);
+        rg_gui_draw_rect(x, icon_top + icon_height - 2, icon_height, 2, 0, pal->accent, pal->accent);
     }
 
     if (gui.show_clock)

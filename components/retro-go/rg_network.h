@@ -28,6 +28,7 @@ typedef struct
     char ip_addr[16];
     int channel, rssi;
     int state;
+    bool ap_mode;
 } rg_network_t;
 
 bool rg_network_init(void);
@@ -56,6 +57,8 @@ typedef struct
     // a bulk transfer pay the per-read cost (and, over TLS, per-record work) a thousand times per
     // megabyte. 0 means use the default.
     int buffer_size;
+    // Require HTTPS and trusted TLS certificates (update metadata and assets).
+    bool verify_server;
     // Perform POST request
     const void *post_data;
     int post_len;
@@ -73,6 +76,7 @@ typedef struct
         .max_redirections = 5,   \
         .timeout_ms = 30000,     \
         .buffer_size = 4096,     \
+        .verify_server = false,  \
         .post_data = NULL,       \
         .post_len = 0,           \
         .headers = NULL,         \

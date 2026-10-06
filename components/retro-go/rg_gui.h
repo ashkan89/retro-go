@@ -1,6 +1,10 @@
 #pragma once
 
 #include <stdbool.h>
+
+// May be set by the background update checker; rendering stays on the UI task.
+void rg_gui_set_update_available(bool available);
+
 #include <stdint.h>
 #include <stddef.h>
 
