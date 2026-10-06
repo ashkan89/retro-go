@@ -5,6 +5,9 @@
 #include "esp_heap_caps.h"
 #include "Cartridge.h"
 #include "ProSystem.h"
+#include "Memory.h"
+#include "Maria.h"
+#include "Equates.h"
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -88,6 +91,46 @@ void *legacy_read_file(const char *path, size_t *size, size_t limit)
     *size = length; return data;
 }
 
+static void exercise_maria_clipping(void)
+{
+    // Long sprites can cross the right edge, start off-screen, or wrap the
+    // 8-bit horizontal counter back onto the left edge. Exercise both cell
+    // writers, including transparent cells with kangaroo mode enabled.
+    prosystem_Reset();
+    for (int wide = 0; wide < 2; wide++) {
+        for (int transparent = 0; transparent < 2; transparent++) {
+            for (int horizontal = 0; horizontal < 256; horizontal++) {
+                memory_Write(CTRL, 0x40 | (transparent ? 4 : 0));
+                memory_Write(DPPH, 0x18); memory_Write(DPPL, 0);
+                memory_Write(0x1800, 0); // DLL offset, no NMI or holey DMA
+                memory_Write(0x1801, 0x18); memory_Write(0x1802, 0x20);
+                // Extended, direct, 32-byte sprite at $1900.
+                memory_Write(0x1820, 0); memory_Write(0x1821, 0x40 | (wide ? 0x80 : 0));
+                memory_Write(0x1822, 0x19); memory_Write(0x1823, 0);
+                memory_Write(0x1824, horizontal); memory_Write(0x1826, 0);
+                memory_Write(BACKGRND + (wide ? 15 : 3), 0x46);
+                for (int i = 0; i < 32; i++) memory_Write(0x1900 + i, transparent ? 0 : 0xFF);
+                maria_scanline = maria_displayArea.top;
+                RG_ASSERT(maria_RenderScanline() == 144, "Off-screen sprite corrupted DMA cycles");
+                maria_scanline = maria_visibleArea.top;
+                maria_RenderScanline();
+                const uint8_t *line = maria_surface + (maria_scanline - maria_displayArea.top) * 320;
+                bool drawn[160] = {0};
+                for (int i = 0; i < 32 * (wide ? 2 : 4); i++) {
+                    uint8_t cell = horizontal + i;
+                    if (cell < 160 && !transparent) drawn[cell] = true;
+                }
+                for (int i = 0; i < 160; i++) {
+                    uint8_t expected = drawn[i] ? 0x46 : 0;
+                    RG_ASSERT(line[i * 2] == expected && line[i * 2 + 1] == expected,
+                        "Off-screen sprite clipping or horizontal wrap failed");
+                }
+            }
+        }
+    }
+    printf("SELFTEST PASS: Atari 7800 off-screen sprites and horizontal wrap\n");
+}
+
 static void exercise(legacy_core_t *core, const char *rom, const char *state)
 {
     core->init(rom);
@@ -156,12 +199,22 @@ void app_main(void)
     stella_state->capacity = capacity;
     printf("SELFTEST PASS: failed Stella write\n");
     exercise(&prosystem_core, "/test/game.a78", "/test/a78.state");
+    exercise_maria_clipping();
     // Regression: the original port aborted saving carts with 16K extra RAM.
-    cartridge_type = CARTRIDGE_TYPE_SUPERCART_RAM; prosystem_Reset();
-    extern uint8_t *cartRAM;
-    cartRAM[123] = 0x5A;
+    uint8_t *ram_rom = rg_alloc(65536 + 128, 0);
+    RG_ASSERT(ram_rom, "RAM cartridge allocation failed");
+    memset(ram_rom, 0, 65536 + 128);
+    memcpy(ram_rom + 1, "ATARI7800", 9);
+    ram_rom[50] = 1; ram_rom[54] = 6;
+    memcpy(ram_rom + 128 + 49152, pro, sizeof(pro));
+    ram_rom[128 + 65533] = 0xC0;
+    RG_ASSERT(cartridge_Load(ram_rom, 65536 + 128), "RAM cartridge load failed");
+    free(ram_rom); prosystem_Reset();
+    for (int i = 0; i < 16384; i++) memory_Write(0x4000 + i, (i ^ (i >> 8)) & 0xFF);
+    for (int i = 0; i < 16384; i++)
+        RG_ASSERT(memory_Read(0x4000 + i) == ((i ^ (i >> 8)) & 0xFF), "Cartridge RAM write lost");
     RG_ASSERT(prosystem_core.save("/test/a78.state"), "Cartridge RAM state save failed");
-    cartRAM[123] = 0;
-    RG_ASSERT(prosystem_core.load("/test/a78.state") && cartRAM[123] == 0x5A, "Cartridge RAM state lost");
+    memory_Write(0x407B, 0);
+    RG_ASSERT(prosystem_core.load("/test/a78.state") && memory_Read(0x407B) == 0x7B, "Cartridge RAM state lost");
     printf("SELFTEST PASS: cartridge RAM\nSELFTEST COMPLETE\n");
 }

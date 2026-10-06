@@ -283,6 +283,10 @@ void cartridge_Store(void)
 // ----------------------------------------------------------------------------
 IRAM_ATTR void cartridge_Write(uint16_t address, uint8_t data)
 {
+   if(cartridge_type == CARTRIDGE_TYPE_SUPERCART_RAM &&
+         address >= 0x4000 && address < 0x8000)
+      fastmap[address >> 12][address & 0xfff] = data;
+
    switch(cartridge_type)
    {
       case CARTRIDGE_TYPE_SUPERCART:

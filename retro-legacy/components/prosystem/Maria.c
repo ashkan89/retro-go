@@ -64,7 +64,9 @@ static uint8_t maria_wmode;
 // ----------------------------------------------------------------------------
 static inline void maria_StoreCell2(uint8_t data)
 {
-   //if(maria_horizontal < MARIA_LINERAM_SIZE)
+   // Off-screen cells still advance the 8-bit horizontal counter, but must
+   // not write past line RAM into the renderer's state.
+   if(maria_horizontal < MARIA_LINERAM_SIZE)
    {
       if(data)
          maria_lineRAM[maria_horizontal] = maria_palette | data;
@@ -84,7 +86,7 @@ static inline void maria_StoreCell2(uint8_t data)
 // ----------------------------------------------------------------------------
 static inline void maria_StoreCell(uint8_t high, uint8_t low)
 {
-  //if(maria_horizontal < MARIA_LINERAM_SIZE)
+  if(maria_horizontal < MARIA_LINERAM_SIZE)
   {
     if(low || high)
       maria_lineRAM[maria_horizontal] = (maria_palette & 16) | high | low;

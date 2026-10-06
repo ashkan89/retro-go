@@ -81,7 +81,10 @@ colors, flashing attributes, and border into a 320x240 surface.
 
 Port fixes include Spectrum's aligned 64K RAM allocation, loading uncompressed
 extended Z80 pages, snapshot error reporting, Stella's aliased framebuffer
-destructor, and ProSystem's cartridge-RAM save/load path. ProSystem's original
+destructor, and ProSystem's cartridge-RAM writes and save/load path. ProSystem's
+MARIA renderer clips off-screen sprite cells to its 160-byte line RAM while
+preserving horizontal wrap; unchecked writes here could corrupt renderer state
+and panic when a game moved from its menu into gameplay. ProSystem's original
 state format preserves CPU, banking, and RAM; it does not capture every audio
 or video device register. Spectrum supports 48K snapshots; tape loading and
 128K models are outside this adapter.
@@ -120,3 +123,6 @@ frame execution, colored Spectrum/2600 output, audio delivery, reset, state
 round trips, malformed states, extended Z80 pages, 128K rejection, and Atari
 cartridge RAM persistence. These tests do not exercise physical display, audio,
 SD card, or controller hardware.
+The Atari 7800 regression checks also cover all 256 horizontal sprite positions
+in both cell modes, transparent kangaroo-mode cells, DMA cycle counts, horizontal
+wrap, and CPU writes across the full 16K cartridge RAM window.
