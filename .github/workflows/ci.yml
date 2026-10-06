@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m unittest discover -s tools/tests -v
+      - run: python tools/test_nes_timing.py --cc cc
       - run: |
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
           /tmp/test-update-version

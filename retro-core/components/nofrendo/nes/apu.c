@@ -730,10 +730,23 @@ void apu_process(short *buffer, size_t num_samples, bool stereo)
    apu.prev_sample = prev_sample;
 }
 
+int apu_frame_samples(void)
+{
+   int refresh_rate = nes_getptr()->refresh_rate;
+   int samples = apu.samples_per_frame;
+   apu.sample_remainder += apu.sample_rate % refresh_rate;
+   if (apu.sample_remainder >= refresh_rate)
+   {
+      apu.sample_remainder -= refresh_rate;
+      samples++;
+   }
+   return samples;
+}
+
 void apu_emulate(void)
 {
    // Run for one frame
-   apu_process(apu.buffer, apu.samples_per_frame, apu.stereo);
+   apu_process(apu.buffer, apu_frame_samples(), apu.stereo);
 }
 
 void apu_setopt(apu_option_t n, int val)
@@ -758,6 +771,7 @@ void apu_reset(void)
    /* Update region if needed */
    nes_t *nes = nes_getptr();
    apu.samples_per_frame = apu.sample_rate / nes->refresh_rate;
+   apu.sample_remainder = 0;
    apu.cycle_rate = (float)nes->cpu_clock / apu.sample_rate;
    apu.noise.shift_reg = 0x4000;
    apu_build_luts(apu.samples_per_frame);

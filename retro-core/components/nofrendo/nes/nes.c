@@ -35,14 +35,19 @@ void nes_emulate(bool draw)
 {
     draw = draw && nes.vidbuf != NULL;
 
-    // Audio is the real-time deadline. Rather than synthesizing and handing off
-    // the whole frame's APU buffer in one lump after every scanline has been
-    // emulated (which lets one slow/heavy scanline delay audio that was already
-    // "ready" earlier in the same frame), flush it in a few chunks as we go.
-    int audio_chunk_target = nes.apu->samples_per_frame / 4;
+    const int frame_samples = apu_frame_samples();
+    const int channels = nes.apu->stereo ? 2 : 1;
+    const int samples_per_line = frame_samples / nes.scanlines_per_frame;
+    const int samples_extra = frame_samples % nes.scanlines_per_frame;
+    // Preserve sample positions when reset starts partway through vblank.
+    int sample_phase = (samples_extra * nes.scanline) % nes.scanlines_per_frame;
+    int audio_chunk_target = frame_samples / 4;
     if (audio_chunk_target < 1)
         audio_chunk_target = 1;
-    int audio_samples_done = 0;
+    int audio_samples_done = frame_samples * nes.scanline / nes.scanlines_per_frame;
+    int audio_samples_sent = 0;
+    if (audio_samples_done > 0)
+        apu_process(nes.apu->buffer, audio_samples_done, nes.apu->stereo);
 
     while (nes.scanline < nes.scanlines_per_frame)
     {
@@ -78,28 +83,35 @@ void nes_emulate(bool draw)
         ppu_endline();
         nes.scanline++;
 
-        // Flush a chunk of audio as soon as enough of it is ready.
-        int target_samples = (int)((int64_t)nes.apu->samples_per_frame * nes.scanline / nes.scanlines_per_frame);
-        int pending_samples = target_samples - audio_samples_done;
+        // Synthesize against this scanline's register state, before the next
+        // CPU slice can overwrite it. Batch only delivery to the output driver.
+        // A phase accumulator avoids a 64-bit division on every scanline.
+        int line_samples = samples_per_line;
+        sample_phase += samples_extra;
+        if (sample_phase >= nes.scanlines_per_frame)
+        {
+            sample_phase -= nes.scanlines_per_frame;
+            line_samples++;
+        }
+        if (line_samples > 0)
+        {
+            apu_process(nes.apu->buffer + audio_samples_done * channels, line_samples, nes.apu->stereo);
+            audio_samples_done += line_samples;
+        }
+        int pending_samples = audio_samples_done - audio_samples_sent;
         if (pending_samples >= audio_chunk_target)
         {
-            apu_process(nes.apu->buffer + audio_samples_done * (nes.apu->stereo ? 2 : 1), pending_samples, nes.apu->stereo);
             if (nes.audio_func)
-                nes.audio_func(audio_samples_done, pending_samples);
-            audio_samples_done = target_samples;
+                nes.audio_func(audio_samples_sent, pending_samples);
+            audio_samples_sent = audio_samples_done;
         }
     }
 
     nes.scanline = 0;
 
     // Flush whatever's left of this frame's audio.
-    int remaining_samples = nes.apu->samples_per_frame - audio_samples_done;
-    if (remaining_samples > 0)
-    {
-        apu_process(nes.apu->buffer + audio_samples_done * (nes.apu->stereo ? 2 : 1), remaining_samples, nes.apu->stereo);
-        if (nes.audio_func)
-            nes.audio_func(audio_samples_done, remaining_samples);
-    }
+    if (nes.audio_func && frame_samples > audio_samples_sent)
+        nes.audio_func(audio_samples_sent, frame_samples - audio_samples_sent);
 
     if (draw && nes.blit_func)
         nes.blit_func(nes.vidbuf);

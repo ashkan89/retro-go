@@ -152,6 +152,10 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
 static void blit_screen(uint8 *bmp)
 {
     slowFrame = bmp && !rg_display_sync(false);
+    // Keep emulation/audio moving when a full-screen transfer is still busy.
+    // Redraw requests (bmp == NULL) retain their blocking submission semantics.
+    if (slowFrame)
+        return;
     // A rolling average should be used for autocrop == 1, it causes jitter in some games...
     // int crop_h = (autocrop == 2) || (autocrop == 1 && nes->ppu->left_bg_counter > 210) ? 8 : 0;
     int crop_v = (overscan) ? nes->overscan : 0;
@@ -281,7 +285,7 @@ void nes_main(void)
         }
 
         int64_t startTime = rg_system_timer();
-        bool drawFrame = !skipFrames && !nsfPlayer;
+        bool drawFrame = !skipFrames && !nsfPlayer && rg_display_sync(false);
         int buttons = 0;
 
         if (joystick & RG_KEY_START)  buttons |= NES_PAD_START;

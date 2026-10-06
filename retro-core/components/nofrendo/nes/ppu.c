@@ -591,10 +591,12 @@ IRAM_ATTR INLINE void ppu_renderoam(uint8 *vidbuf, int scanline, bool draw)
          tile_addr += y_offset;
       }
 
+      // Sprite zero's pattern is also used for drawing; fetch it only once.
+      uint32 pattern = (draw || (sprite_num == 0 && !ppu.strikeflag)) ? get_patpix(tile_addr) : 0;
       /* Check for a strike on sprite 0 if strike flag isn't set */
       if (sprite_num == 0 && !ppu.strikeflag)
       {
-         check_strike(draw ? vidbuf + sprite->x_loc : NULL, sprite->attr, get_patpix(tile_addr));
+         check_strike(draw ? vidbuf + sprite->x_loc : NULL, sprite->attr, pattern);
       }
 
       /* If we don't draw to buffer then we're done after sprite 0 */
@@ -605,7 +607,7 @@ IRAM_ATTR INLINE void ppu_renderoam(uint8 *vidbuf, int scanline, bool draw)
       draw_oamtile(
          vidbuf + sprite->x_loc,
          sprite->attr,
-         get_patpix(tile_addr),
+         pattern,
          ppu.palette + 16 + ((sprite->attr & 3) << 2));
 
       /* maximum of 8 sprites per scanline */
@@ -674,7 +676,7 @@ IRAM_ATTR void ppu_renderline(uint8 *bmp, int scanline, bool draw_flag)
             ppu.vaddr = (ppu.vaddr & ~0x041F) | (ppu.vaddr_latch & 0x041F);
       }
 
-      uint8 *vidbuf = NES_SCREEN_GETPTR(bmp, 0, scanline);
+      uint8 *vidbuf = draw_flag ? NES_SCREEN_GETPTR(bmp, 0, scanline) : NULL;
 
       if (draw_flag && OPT(PPU_DRAW_BACKGROUND))
          ppu_renderbg(vidbuf);

@@ -183,7 +183,8 @@ typedef struct
    dmc_t dmc;
    uint8 control_reg;
 
-   int samples_per_frame;
+   int samples_per_frame; // Nominal floor; envelope lookup tables use this size.
+   int sample_remainder;
    int sample_rate;
    bool stereo;
 
@@ -220,6 +221,8 @@ void apu_shutdown(void);
 void apu_setext(const apuext_t *ext);
 
 void apu_emulate(void);
+// Advance the fractional sample clock once per emulated frame.
+int apu_frame_samples(void);
 
 void apu_setopt(apu_option_t n, int val);
 int  apu_getopt(apu_option_t n);
