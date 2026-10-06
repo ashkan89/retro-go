@@ -223,7 +223,7 @@ extern "C" void lynx_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
     set_display_mode();
 
     long skipFrames = 0;
@@ -281,13 +281,8 @@ extern "C" void lynx_main(void)
         if (skipFrames == 0)
         {
             int elapsed = rg_system_timer() - startTime;
-            if (app->frameskip > 0)
-                skipFrames = app->frameskip;
-            // The Lynx uses a variable framerate so we use the count of generated audio samples as reference instead
-            else if (elapsed > app->frameTime + 1500)
-                skipFrames = 1; // (elapsed / frameTime)
-            else if (drawFrame && slowFrame)
-                skipFrames = 1;
+            skipFrames = rg_system_get_next_frameskip(
+                elapsed > app->frameTime + 1500 || (drawFrame && slowFrame));
         }
         else if (skipFrames > 0)
         {

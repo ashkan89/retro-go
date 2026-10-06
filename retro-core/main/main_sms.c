@@ -170,7 +170,7 @@ void sms_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
     rg_system_set_tick_rate((sms.display == DISPLAY_NTSC) ? FPS_NTSC : FPS_PAL);
     app->frameskip = 0;
 
@@ -283,12 +283,8 @@ void sms_main(void)
         if (skipFrames == 0)
         {
             int elapsed = rg_system_timer() - startTime;
-            if (app->frameskip > 0)
-                skipFrames = app->frameskip;
-            else if (elapsed > app->frameTime + 1500) // Allow some jitter
-                skipFrames = 1; // (elapsed / frameTime)
-            else if (drawFrame && slowFrame)
-                skipFrames = 1;
+            skipFrames = rg_system_get_next_frameskip(
+                elapsed > app->frameTime + 1500 || (drawFrame && slowFrame));
         }
         else if (skipFrames > 0)
         {

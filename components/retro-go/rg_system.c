@@ -663,7 +663,7 @@ static void system_monitor_task(void *arg)
             (int)roundf((battery.volts * 1000) ?: battery.level));
 
         // Auto frameskip
-        if (statistics.ticks > app.tickRate * 2)
+        if (!app.frameskipManual && statistics.ticks > app.tickRate * 2)
         {
             float speed = ((float)statistics.totalFPS / app.tickRate) * 100.f / app.speed;
             // We don't fully go back to 0 frameskip because if we dip below 95% once, we're clearly
@@ -895,6 +895,8 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    app.frameskipManual = rg_settings_get_boolean(NS_APP, "FrameskipManual", false);
+    app.frameskipValue = RG_MIN(5, RG_MAX(0, (int)rg_settings_get_number(NS_APP, "FrameskipValue", 0)));
     if (app.bootFlags & RG_BOOT_RECOVERY)
     {
         enterRecoveryMode = true;
@@ -1830,13 +1832,35 @@ int rg_system_get_log_level(void)
     return app.logLevel;
 }
 
+void rg_system_set_frameskip(bool manual, int value)
+{
+    app.frameskipValue = RG_MIN(5, RG_MAX(0, value));
+    if (app.frameskipManual && !manual)
+        app.frameskip = 1;
+    app.frameskipManual = manual;
+    rg_settings_set_boolean(NS_APP, "FrameskipManual", manual);
+    rg_settings_set_number(NS_APP, "FrameskipValue", app.frameskipValue);
+}
+
+int rg_system_get_frameskip(void)
+{
+    return app.frameskipManual ? app.frameskipValue : app.frameskip;
+}
+
+int rg_system_get_next_frameskip(bool behind)
+{
+    int skip = rg_system_get_frameskip();
+    return !app.frameskipManual && skip == 0 && behind ? 1 : skip;
+}
+
 void rg_system_set_app_speed(float speed)
 {
     float newSpeed = RG_MIN(2.5f, RG_MAX(0.5f, speed));
     if (newSpeed == app.speed)
         return;
     // FIXME: We need to store the actual default frameskip so we can return to it...
-    app.frameskip = (newSpeed - 0.5f) * 3;
+    if (!app.frameskipManual)
+        app.frameskip = (newSpeed - 0.5f) * 3;
     app.frameTime = 1000000.f / (app.tickRate * newSpeed);
     app.speed = newSpeed;
     update_audio_sample_rate();
@@ -1924,7 +1948,8 @@ void rg_system_set_overclock(int level)
     // ets_update_cpu_frequency(real_mhz);
 #endif
 
-    app.frameskip = 1;
+    if (!app.frameskipManual)
+        app.frameskip = 1;
 
     overclockLevel = level;
     overclockMhz = real_mhz;

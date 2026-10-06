@@ -180,6 +180,8 @@ typedef struct
     int tickRate;
     int frameTime;
     int frameskip;
+    bool frameskipManual;
+    int frameskipValue;
     int overclock;
     int tickTimeout;
     bool lowMemoryMode;
@@ -194,6 +196,11 @@ typedef struct
     rg_handlers_t handlers;
     bool initialized;
 } rg_app_t;
+
+// Manual values are saved per emulator and remain independent of automatic tuning.
+void rg_system_set_frameskip(bool manual, int value);
+int rg_system_get_frameskip(void);
+int rg_system_get_next_frameskip(bool behind);
 
 typedef struct
 {

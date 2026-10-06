@@ -14,6 +14,7 @@
 #include "rg_text.h"
 
 #include "bitmaps/image_hourglass.h"
+#include "bitmaps/image_update.h"
 #include "fonts/fonts.h"
 
 /**
@@ -1325,13 +1326,22 @@ void rg_gui_draw_icons(void)
     if (show_update)
     {
         right += icon_height + gap;
-        int x = get_horizontal_position(-right, icon_height);
-        int center = x + icon_height / 2;
-        // Upward arrow above a tray: a firmware upgrade is available.
-        rg_gui_draw_rect(center, icon_top + 1, 2, icon_height - 4, 0, pal->accent, pal->accent);
-        for (int i = 0; i < icon_height / 3; ++i)
-            rg_gui_draw_rect(center - i, icon_top + 1 + i, 2 + i * 2, 1, 0, pal->accent, pal->accent);
-        rg_gui_draw_rect(x, icon_top + icon_height - 2, icon_height, 2, 0, pal->accent, pal->accent);
+        uint16_t pixels[icon_height * icon_height];
+        uint16_t colors[] = {
+            rg_gui_can_blend() ? C_TRANSPARENT : gui.style.box_background,
+            pal->accent, pal->highlight,
+        };
+        for (int y = 0; y < icon_height; ++y)
+            for (int x = 0; x < icon_height; ++x)
+            {
+                char pixel = image_update_pixels[y * 16 / icon_height][x * 16 / icon_height];
+                pixels[y * icon_height + x] = colors[pixel == ' ' ? 0 : pixel - '0'];
+            }
+        const rg_image_t icon = {
+            .width = icon_height, .height = icon_height, .stride = icon_height * 2,
+            .format = RG_PIXEL_565_LE, .data = pixels,
+        };
+        rg_gui_draw_image(-right, icon_top, icon_height, icon_height, false, &icon);
     }
 
     if (gui.show_clock)
@@ -1367,7 +1377,7 @@ void rg_gui_draw_status_bars(void)
         return;
 
     snprintf(header, max_len, "SPEED: %d%% (%d %d) / BUSY: %d%%", (int)roundf(stats.speedPercent),
-             (int)roundf(stats.totalFPS), (int)app->frameskip, (int)roundf(stats.busyPercent));
+             (int)roundf(stats.totalFPS), rg_system_get_frameskip(), (int)roundf(stats.busyPercent));
 
     if (app->romPath && strlen(app->romPath) > max_len - 1)
         snprintf(footer, max_len, "...%s", app->romPath + (strlen(app->romPath) - (max_len - 4)));
@@ -3201,17 +3211,48 @@ static rg_gui_event_t multiplayer_cb(rg_gui_option_t *option, rg_gui_event_t eve
 }
 #endif
 
+static rg_gui_event_t frameskip_mode_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    const rg_app_t *app = rg_system_get_app();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+    {
+        rg_system_set_frameskip(!app->frameskipManual, app->frameskipValue);
+        return RG_DIALOG_UPDATE;
+    }
+    strcpy(option->value, app->frameskipManual ? _("Manual") : _("Auto"));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t frameskip_value_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    const rg_app_t *app = rg_system_get_app();
+    option->flags = app->frameskipManual ? RG_DIALOG_FLAG_NORMAL : RG_DIALOG_FLAG_HIDDEN;
+    if (app->frameskipManual && (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER))
+    {
+        int value = (app->frameskipValue + (event == RG_DIALOG_PREV ? 5 : 1)) % 6;
+        rg_system_set_frameskip(true, value);
+    }
+    sprintf(option->value, "%d", app->frameskipValue);
+    return RG_DIALOG_VOID;
+}
+
 static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     if (event == RG_DIALOG_ENTER)
     {
         const rg_app_t *app = rg_system_get_app();
-        rg_gui_option_t options[24] = {
+        rg_gui_option_t options[32] = {
             {0, _("None"), NULL, RG_DIALOG_FLAG_MESSAGE, 0},
             RG_DIALOG_END,
         };
+        if (!app->isLauncher)
+        {
+            options[0] = (rg_gui_option_t){0, _("Frameskip mode"), "-", RG_DIALOG_FLAG_NORMAL, &frameskip_mode_cb};
+            options[1] = (rg_gui_option_t){0, _("Frameskip"), "-", RG_DIALOG_FLAG_HIDDEN, &frameskip_value_cb};
+            options[2] = (rg_gui_option_t)RG_DIALOG_END;
+        }
         if (app->handlers.options)
-            app->handlers.options(options);
+            app->handlers.options(options + (app->isLauncher ? 0 : 2));
         rg_display_force_redraw();
         rg_gui_dialog(option->label, options, 0);
         return RG_DIALOG_REDRAW;

@@ -50,7 +50,7 @@ void app_main(void)
     rg_surface_fill(current, NULL, 0);
     rg_surface_fill(surfaces[1], NULL, 0);
     if (app->bootFlags & RG_BOOT_RESUME) rg_emu_load_state(app->saveSlot);
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(core->refresh_rate);
     app->frameskip = 0;
     unsigned frame = 0;
@@ -59,7 +59,7 @@ void app_main(void)
         if (keys & RG_KEY_MENU) rg_gui_game_menu();
         else if (keys & RG_KEY_OPTION) rg_gui_options_menu();
         int64_t start = rg_system_timer();
-        unsigned skip = app->frameskip > 0 ? app->frameskip : 0;
+        unsigned skip = rg_system_get_frameskip();
         RenderFlag = frame++ % (skip + 1) == 0;
         rg_surface_t *next = current == surfaces[0] ? surfaces[1] : surfaces[0];
         // Do not overwrite a surface still being transferred or wait behind a

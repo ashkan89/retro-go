@@ -215,11 +215,12 @@ int check_display(void) {
 '''
 
 POLICY_STUB = r'''
-typedef struct { int frameskip; float speed; } test_app_t;
+typedef struct { int frameskip, frameskipValue; bool frameskipManual; float speed; } test_app_t;
 static test_app_t test_app;
 static int policy_elapsed;
 static int rg_system_timer(void) { return policy_elapsed; }
 static void nsf_draw_overlay(void) {}
+POLICY_HELPERS
 static int frame_policy(int skipFrames, bool nsfPlayer) {
     test_app_t *app = &test_app;
     int startTime = 0;
@@ -248,6 +249,11 @@ int check_frame_policy(void) {
     test_app.frameskip = 2; policy_elapsed = 1000;
     if (frame_policy(0, false) != 2) return 74;
     if (frame_policy(0, true) != 10) return 75;
+    test_app.frameskipManual = true; policy_elapsed = 50000;
+    for (int n = 0; n <= 5; ++n) {
+        test_app.frameskipValue = n;
+        if (frame_policy(0, false) != n) return 76;
+    }
     return 0;
 }
 '''
@@ -329,7 +335,10 @@ def main():
     source = (PRELUDE + apu_source + loop + RUNNER + DISPLAY_STUB
               + "\n#define nes nes_getptr()\n" + blit + "\n#undef nes\n"
               + DISPLAY_RUNNER.replace("DRAW_EXPRESSION", draw_expression)
-              + "\n#define nes nes_getptr()\n" + POLICY_STUB + policy + POLICY_RUNNER
+              + "\n#define nes nes_getptr()\n" + POLICY_STUB.replace("POLICY_HELPERS",
+                  "#define app test_app\n" + section(ROOT / "components/retro-go/rg_system.c",
+                      "int rg_system_get_frameskip", "void rg_system_set_app_speed") + "\n#undef app\n")
+              + policy + POLICY_RUNNER
               + "\n#undef nes\n"
               + PPU_STUB + section(NES / "ppu.c", "INLINE uint32 get_patpix", "bool ppu_enabled")
               + PPU_RUNNER)

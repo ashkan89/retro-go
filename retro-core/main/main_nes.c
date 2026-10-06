@@ -261,7 +261,7 @@ void nes_main(void)
 
     nes->audio_func = submit_audio;
 
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(nes->refresh_rate);
     // Apply after overclock setup, which can reset the shared frameskip to 1.
     // NES normally renders every frame; retain timing-based overload fallback.
@@ -325,10 +325,8 @@ void nes_main(void)
             int elapsed = rg_system_timer() - startTime;
             if (nsfPlayer)
                 skipFrames = 10, nsf_draw_overlay();
-            else if (app->frameskip > 0)
-                skipFrames = app->frameskip;
-            else if (elapsed > frameTime + 1500) // Allow some jitter
-                skipFrames = 1; // (elapsed / frameTime)
+            else
+                skipFrames = rg_system_get_next_frameskip(elapsed > frameTime + 1500);
         }
         else if (skipFrames > 0)
         {

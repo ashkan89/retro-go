@@ -184,7 +184,7 @@ void gw_main(void)
         LoadState_done = rg_emu_load_state(app->saveSlot);
     }
 
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
 
     /* emulate watch mode */
     if (!LoadState_done)
@@ -229,6 +229,7 @@ void gw_main(void)
 
     rg_system_set_tick_rate(GW_REFRESH_RATE);
 
+    int skipFrames = 0;
     while (true)
     {
         /* refresh internal G&W timer on emulated CPU state transition */
@@ -256,7 +257,11 @@ void gw_main(void)
         }
 
         int64_t startTime = rg_system_timer();
-        bool drawFrame = true;
+        bool drawFrame = skipFrames == 0;
+        if (drawFrame)
+            skipFrames = rg_system_get_frameskip();
+        else
+            skipFrames--;
 
         /* Emulate and Blit */
         // Call the emulator function with number of clock cycles

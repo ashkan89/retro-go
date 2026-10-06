@@ -64,10 +64,7 @@ void osd_vsync(void)
     // See if we need to skip a frame to keep up
     if (skipFrames == 0)
     {
-        if (app->frameskip > 0)
-            skipFrames = app->frameskip;
-        else if (drawFrame && slowFrame)
-            skipFrames = 1;
+        skipFrames = rg_system_get_next_frameskip(drawFrame && slowFrame);
     }
     else if (skipFrames > 0)
     {
@@ -261,7 +258,7 @@ void pce_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(60);
     app->frameskip = 1;
 

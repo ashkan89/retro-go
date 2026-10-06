@@ -145,6 +145,13 @@ void I_FinishUpdate(void)
 
 bool I_StartDisplay(void)
 {
+    static int skipFrames;
+    if (skipFrames > 0)
+    {
+        skipFrames--;
+        return false;
+    }
+    skipFrames = rg_system_get_frameskip();
     return true;
 }
 

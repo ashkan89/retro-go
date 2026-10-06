@@ -313,7 +313,7 @@ void gbc_main(void)
         gnuboy_load_sram(sramFile);
 
     update_rtc_time();
-    rg_system_apply_saved_overclock();
+    // rg_system_apply_saved_overclock();
 
     // Ready!
 
@@ -383,12 +383,8 @@ void gbc_main(void)
         if (skipFrames == 0)
         {
             int elapsed = rg_system_timer() - startTime;
-            if (app->frameskip > 0)
-                skipFrames = app->frameskip;
-            else if (elapsed > app->frameTime + 1500) // Allow some jitter
-                skipFrames = 1; // (elapsed / frameTime)
-            else if (drawFrame && slowFrame)
-                skipFrames = 1;
+            skipFrames = rg_system_get_next_frameskip(
+                elapsed > app->frameTime + 1500 || (drawFrame && slowFrame));
         }
         else if (skipFrames > 0)
         {

@@ -279,6 +279,14 @@ unsigned int Joystick(void)
 
 void Keyboard(void)
 {
+    static int skipFrames;
+    // UPeriod controls both scanline rendering and presentation. Use whole
+    // frames so Manual N renders exactly one out of every N + 1 frames.
+    UPeriod = skipFrames == 0 ? 100 : 0;
+    if (skipFrames == 0)
+        skipFrames = rg_system_get_frameskip();
+    else
+        skipFrames--;
     // Keyboard() is a convenient place to do our vsync stuff :)
     rg_system_tick(rg_system_timer() - FrameStartTime);
     FrameStartTime = rg_system_timer();
@@ -489,7 +497,7 @@ void app_main(void)
         "fmsx",
         "-ram", "2",
         "-vram", "2",
-        "-skip", "50",
+        "-skip", "0",
         "-home", BiosFolder,
         "-joy", "1",
         NULL, NULL, NULL,
