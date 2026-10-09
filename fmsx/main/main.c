@@ -514,6 +514,7 @@ void app_main(void)
     // work. The shared I2S queue provides hardware-clock back-pressure.
     audioQueue = rg_task_create("audioTask", &audioTask, NULL, 4096, RG_TASK_PRIORITY_8, RG_TASK_AFFINITY_AUDIO);
 
+    rg_system_apply_saved_overclock();
     RG_LOGI("fMSX start");
     fmsx_main(argc, (char **)argv);
 

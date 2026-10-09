@@ -1977,9 +1977,6 @@ void rg_system_set_overclock(int level)
     // ets_update_cpu_frequency(real_mhz);
 #endif
 
-    if (!app.frameskipManual)
-        app.frameskip = 1;
-
     overclockLevel = level;
     overclockMhz = real_mhz;
     if (app.initialized)
@@ -1997,13 +1994,18 @@ void rg_system_set_overclock(int level)
 
 int rg_system_get_overclock(void)
 {
-    return requestedOverclockLevel;
+    // The launcher edits the saved preference; games report the applied clock.
+    return app.isLauncher || strcmp(app.name, "launcher") == 0
+        ? requestedOverclockLevel : overclockLevel;
 }
 
 void rg_system_apply_saved_overclock(void)
 {
-    if (!app.isLauncher && strcmp(app.name, "launcher") != 0)
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S3
+    if (!app.isLauncher && strcmp(app.name, "launcher") != 0 &&
+        requestedOverclockLevel != overclockLevel)
         rg_system_set_overclock(requestedOverclockLevel);
+#endif
 }
 
 static int suspend_experimental_overclock(void)

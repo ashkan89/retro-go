@@ -170,9 +170,9 @@ void sms_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
-    // rg_system_apply_saved_overclock();
+    rg_system_apply_saved_overclock();
     rg_system_set_tick_rate((sms.display == DISPLAY_NTSC) ? FPS_NTSC : FPS_PAL);
-    app->frameskip = 0;
+    app->frameskip = 1;
 
     int skipFrames = 0;
     int colecoKey = 0;

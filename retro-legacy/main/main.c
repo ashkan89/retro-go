@@ -50,9 +50,9 @@ void app_main(void)
     rg_surface_fill(current, NULL, 0);
     rg_surface_fill(surfaces[1], NULL, 0);
     if (app->bootFlags & RG_BOOT_RESUME) rg_emu_load_state(app->saveSlot);
-    // rg_system_apply_saved_overclock();
+    rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(core->refresh_rate);
-    app->frameskip = 0;
+    app->frameskip = 1;
     unsigned frame = 0;
     while (true) {
         uint32_t keys = rg_input_read_gamepad();

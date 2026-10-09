@@ -590,6 +590,7 @@ void app_main()
     heap_caps_malloc_extmem_enable(0);
 #endif
 
+    rg_system_apply_saved_overclock();
     Z_Init();
     D_DoomMain();
 }

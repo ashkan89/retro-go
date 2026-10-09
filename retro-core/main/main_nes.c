@@ -261,11 +261,10 @@ void nes_main(void)
 
     nes->audio_func = submit_audio;
 
-    // rg_system_apply_saved_overclock();
+    rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(nes->refresh_rate);
-    // Apply after overclock setup, which can reset the shared frameskip to 1.
-    // NES normally renders every frame; retain timing-based overload fallback.
-    app->frameskip = 0;
+    // Seed Auto mode; saved manual values are selected by the shared policy.
+    app->frameskip = 1;
 
     int skipFrames = 0;
 

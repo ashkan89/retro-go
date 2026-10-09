@@ -256,6 +256,7 @@ void app_main(void)
         rg_emu_load_state(app->saveSlot);
     }
 
+    rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(60);
     app->frameskip = 3;
 

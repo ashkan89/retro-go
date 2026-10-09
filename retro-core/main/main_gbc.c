@@ -313,7 +313,7 @@ void gbc_main(void)
         gnuboy_load_sram(sramFile);
 
     update_rtc_time();
-    // rg_system_apply_saved_overclock();
+    rg_system_apply_saved_overclock();
 
     // Ready!
 
