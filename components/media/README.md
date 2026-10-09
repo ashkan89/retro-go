@@ -365,14 +365,24 @@ main task     UI render + input       (reads a snapshot, never the decoder)
 
 | Task | Priority | Core | Stack | Purpose |
 | --- | --- | --- | --- | --- |
-| `media_audio` | 6 | `RG_TASK_AFFINITY_AUDIO` | 4 KB | Drain PCM into I2S |
-| `media_dec` | 5 | `RG_TASK_AFFINITY_AUDIO` | 22 KB | Decode + DSP block production |
+| `media_audio` | 8 | `RG_TASK_AFFINITY_AUDIO` | 4 KB | Drain PCM into I2S |
+| `media_dec` | 7 | `RG_TASK_AFFINITY_AUDIO` | 22 KB | Decode into PCM |
 | `media_io` | 4 | `RG_TASK_AFFINITY_IO` | 4 KB | SD prefetch |
 | `media_scan` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | Library indexing |
 | `media_art` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | JPEG/PNG decode |
 
-Affinities come from the target's `config.h`; nothing is pinned by hand. Priorities sit
-below `rg_audio`'s own I2S writer (9) and above the launcher's main loop (1).
+The launcher enables `RG_SEPARATE_DISPLAY_AUDIO`: display scaling (priority 6) and SPI
+completion (7) use `RG_TASK_AFFINITY_DISPLAY`, which defaults to the UI/main core for this
+application. On the eight ESP32-S3 DIY targets this puts rendering on core 0 and decoding,
+PCM output and the I2S writer on core 1. Other applications retain their target's existing
+display affinity. Single-core ports cannot provide physical core isolation.
+
+`rg_task_create()` uses FreeRTOS `xTaskCreatePinnedToCore()` on ESP-IDF. Media output (8)
+and decoding (7) sit below the shared I2S writer (9). Source reads, ring semaphores and
+I2S back-pressure block these tasks when there is no work; they never busy-wait at high
+priority. Task priority defaults may be overridden with `MEDIA_AUDIO_TASK_PRIORITY` and
+`MEDIA_DECODE_TASK_PRIORITY`. The audio task performs no rendering, filesystem reads,
+metadata parsing or FFT transforms.
 
 `media_dec` needs an unusually large stack because minimp3 places a ~16 KB
 `mp3dec_scratch_t` (bit reservoir, granule buffers, synthesis state) on the stack inside
@@ -384,15 +394,31 @@ raised from 8 to 16 slots; with `rg_display`, `rg_input` and `rg_sysmon` already
 old table had exactly one free slot left and a rescan-while-playing would have hit
 `RG_ASSERT(task, "Out of task slots")`.
 
-**SD I/O, decoding and rendering never block one another.** The UI reads a
-`media_snapshot_t` captured once per frame and posts commands; it never holds a decoder
-lock.
+The UI reads a `media_snapshot_t` captured once per frame and posts commands. Decoder
+publication and detachment use a short mutex; snapshot readers return the previous
+snapshot when that mutex is busy. File/network opens and closes happen outside it.
+Track metadata is copied into UI-owned storage, and workers coalesce notifications for
+delivery by `media_player_tick()` on the UI task.
+
+PCM output is held during initial buffering and starvation recovery. The target follows
+the ring's actual capacity when memory allocation falls back to a smaller ring. Prebuffer
+and live pre-roll checks also run while a decoded block waits for space, preventing a
+paused/full-ring deadlock. Short files and EOF bypass the normal startup threshold.
+
+Flush and sample-rate changes serialize with PCM chunk processing. EQ controls publish
+pending settings that the output task applies between blocks; only that task changes
+coefficients and filter history. The visualizer tap uses internal RAM and atomic sample
+publication; FFT analysis remains on the UI core. At low buffer levels the UI limits itself
+to 15 FPS and defers FFT analysis. Dimmed screens also skip FFT work.
 
 ### Playback position
 
-Progress is derived from frames actually handed to the hardware
-(`media_audio_position_ms()`), not from a wall clock, so the progress bar and the lyrics
-cannot drift away from what is being heard.
+Progress comes from PCM frames submitted to the output pipeline
+(`media_audio_position_ms()`), rather than elapsed wall time. Frame counters and seek bases
+are read together under the output mutex to prevent torn 64-bit reads on the 32-bit MCU.
+The counter leads physical playback by the bounded software/I2S DMA reserve. At EOF, a
+silent DMA block completes the final partial block, and the controller waits for the
+reserve to play out before changing track/rate. Padding never advances track position.
 
 ### Resource manager
 
@@ -417,7 +443,7 @@ Selected at runtime from the detected PSRAM size (`media_profile.c`).
 | FFT | 128 pt / 16 bands | 256 / 20 | 512 / 24 |
 | Target FPS | 30 | 30 | 60 |
 | Blurred background | off | on | on |
-| Crossfade allowed | no | yes | yes |
+| Second-decoder memory budget | no | yes | yes |
 | Particle visualizer | no | no | yes |
 | Resident index | 4 K tracks max | 8 K | 20 K |
 
@@ -472,8 +498,9 @@ MEDIA_EQ_ENABLE       MEDIA_FFT_ENABLE  MEDIA_LYRICS_ENABLE  MEDIA_ARTWORK_ENABL
 MEDIA_DEBUG_STATS
 ```
 
-The launcher partition was raised from `0x180000` to `0x1C0000` on all six ESP32-S3 targets
-to carry the decoders, DSP and UI (see each target's `env.py`).
+Launcher partitions are `0x1C0000` on N16R8 and `0x170000` on N8R2 targets.
+The full release packer checks these actual budgets; the standalone IDF build uses a larger
+dummy partition, so its size check alone is insufficient (see each target's `env.py`).
 
 ---
 
@@ -527,11 +554,11 @@ detection and dual-DAC routing that need hardware to validate.
 * **AAC/M4A, Ogg Vorbis and Opus have no decoder.** Their tags, duration and artwork parse
   correctly and the codec registry already knows about them, so adding a `codec_*.c` is the
   only work required. Files in these formats currently report *Unsupported format*.
-* **Gapless** is exact for FLAC and WAV. MP3 does not compensate encoder/decoder delay, so a
-  few milliseconds of silence remain between MP3 tracks.
-* **Crossfade** is exposed as a setting and disabled where the profile cannot afford a second
-  decoder; the mixing path itself is not implemented, so the option currently behaves as
-  "off" at playback time.
+* **Gapless transitions and crossfade are not implemented.** The settings controls have
+  been removed and saved values are ignored. WAV/FLAC decoders do not add codec delay, but
+  opening the next track only after draining still introduces a transition gap. MP3 also
+  needs encoder/decoder-delay compensation. A next-track decoder and sample-accurate
+  transition/mixing path are required before these features can be advertised.
 * **Waveform overview** (`waveform_overview` in the profile) is reserved but not generated;
   the seek bar is linear.
 * **Remote listings block the UI while they load.** A "Connecting..." message is shown, but a
@@ -548,3 +575,42 @@ detection and dual-DAC routing that need hardware to validate.
   always codepoint-aligned, and all text layout goes through `media_ui_draw_marquee`, so
   bidi/shaping can be added in one place later. Glyphs the current font lacks render as the
   font's replacement rather than corrupting the string.
+
+
+## 13. Validation and release readiness
+
+`python tools/test_media_audio.py --cc /path/to/clang-or-zig` compiles the production ring,
+PCM output, EQ and FFT implementations and the controller's actual buffering helpers with
+a mocked sink. It checks 64 physical/cursor wrap cases, a 2 MB concurrent producer/consumer
+transfer, startup buffering, dry pause, starvation episodes, FIFO delivery, final partial
+chunks and DMA padding, position/seek bases, stop-before-task-entry, six EQ sample rates,
+all FFT sizes, network prebuffer, live pre-roll, low-memory buffer fallback and short-file
+startup. CI and release workflows run these tests with the native C compiler.
+
+Background housekeeping is polled at 10 Hz from the launcher UI loop, so sleep timers,
+play statistics, resume positions, station titles and headphone-disconnect pause continue
+when the player screen is closed. The existing `pause_on_unplug` preference is now exposed
+in settings and acted on when the route changes from headphones to speaker. Background
+playback no longer allocates lyrics or requests artwork; those resume on foreground entry.
+The host harness also verifies foreground exclusion, background polling frequency,
+headphone-disconnect behavior and display/audio affinities for all eight release targets
+with both launcher and emulator defaults.
+
+ESP-IDF 5.5.5 launcher builds are checked for N16R8 ILI9341 and N8R2 ST7796,
+including their actual target partition budgets. N8R2 launcher PNG code uses size
+optimization to preserve flash headroom; audio/decoder optimizations are retained. These host
+checks and compilation do not measure real DMA deadlines, analog noise or task stack usage.
+Before release, test MP3/WAV/FLAC at 8/32/44.1/48 kHz on both an N8R2 and N16R8 device:
+
+- Run full-screen visualizers and artwork, browse large libraries and rescan during playback.
+  Compare buffer levels and underrun counts before/after sustained CPU and SD load.
+- Exercise rapid seek/next/previous/pause, short tracks, mixed sample-rate queues, corrupt
+  and missing files, repeat-one with failed tracks, and headphone/speaker switching.
+- Disconnect/reconnect streaming Wi-Fi, interrupt live pre-roll, dim/wake the display,
+  leave/re-enter background playback, expire the sleep timer and launch an emulator.
+- Confirm the final audio fragment is audible, no old PCM survives beyond the hardware
+  reserve on a seek, stack headroom remains positive and repeated sessions reclaim memory.
+
+Known format, networking and transition limitations in section 12 remain. Production
+readiness requires device results; priority/core isolation cannot compensate for sustained
+throughput below the track's sample rate or for a stalled network longer than the reserve.

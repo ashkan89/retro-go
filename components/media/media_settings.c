@@ -63,8 +63,9 @@ void media_settings_load(void)
     settings.normalization = (media_normalize_t)media_clampi(
         (int)rg_settings_get_number(NS, KEY("Normalize"), MEDIA_NORMALIZE_OFF), 0,
         MEDIA_NORMALIZE_COUNT - 1);
-    settings.gapless = rg_settings_get_boolean(NS, KEY("Gapless"), true);
-    settings.crossfade_s = media_clampi((int)rg_settings_get_number(NS, KEY("Crossfade"), 0), 0, 5);
+    // Reserved until a next-track decoder/mixer exists; do not restore nonfunctional options.
+    settings.gapless = false;
+    settings.crossfade_s = 0;
 
     settings.artwork_background =
         rg_settings_get_boolean(NS, KEY("ArtBackground"), profile->background_blur);
@@ -83,10 +84,6 @@ void media_settings_load(void)
     settings.pause_on_unplug = rg_settings_get_boolean(NS, KEY("PauseOnUnplug"), true);
     settings.skip_on_error = rg_settings_get_boolean(NS, KEY("SkipOnError"), true);
     settings.show_debug = rg_settings_get_boolean(NS, KEY("Debug"), false);
-
-    // Crossfade needs a second decoder's worth of buffers; refuse it where it would not fit.
-    if (!profile->crossfade_allowed)
-        settings.crossfade_s = 0;
 
     // A visualiser saved on a bigger device must not brick the UI on a smaller one.
     if (!media_viz_available(settings.visualizer))

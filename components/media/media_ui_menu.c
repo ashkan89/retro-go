@@ -85,43 +85,6 @@ static rg_gui_event_t normalize_cb(rg_gui_option_t *option, rg_gui_event_t event
     return RG_DIALOG_VOID;
 }
 
-static rg_gui_event_t gapless_cb(rg_gui_option_t *option, rg_gui_event_t event)
-{
-    media_settings_t *cfg = media_settings();
-    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
-        cfg->gapless = !cfg->gapless;
-    strcpy(option->value, cfg->gapless ? "On" : "Off");
-    return RG_DIALOG_VOID;
-}
-
-static rg_gui_event_t crossfade_cb(rg_gui_option_t *option, rg_gui_event_t event)
-{
-    static const int values[] = {0, 1, 2, 3, 5};
-    media_settings_t *cfg = media_settings();
-
-    if (!media_profile()->crossfade_allowed)
-    {
-        option->flags = RG_DIALOG_FLAG_DISABLED;
-        strcpy(option->value, "N/A");
-        return RG_DIALOG_VOID;
-    }
-
-    int index = 0;
-    for (size_t i = 0; i < RG_COUNT(values); ++i)
-    {
-        if (values[i] == cfg->crossfade_s)
-            index = (int)i;
-    }
-    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
-        cfg->crossfade_s = values[cycle(index, (int)RG_COUNT(values), event)];
-
-    if (cfg->crossfade_s)
-        sprintf(option->value, "%d s", cfg->crossfade_s);
-    else
-        strcpy(option->value, "Off");
-    return RG_DIALOG_VOID;
-}
-
 static rg_gui_event_t stream_delay_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     static const int values[] = {0, 12, 15, 20};
@@ -222,6 +185,15 @@ static rg_gui_event_t scan_startup_cb(rg_gui_option_t *option, rg_gui_event_t ev
     if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
         cfg->scan_on_startup = !cfg->scan_on_startup;
     strcpy(option->value, cfg->scan_on_startup ? "On" : "Off");
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t pause_unplug_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    media_settings_t *cfg = media_settings();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+        cfg->pause_on_unplug = !cfg->pause_on_unplug;
+    strcpy(option->value, cfg->pause_on_unplug ? "On" : "Off");
     return RG_DIALOG_VOID;
 }
 
@@ -495,8 +467,7 @@ void media_ui_settings_menu(void)
         {0, "Scan on startup",     value_buffers[3], RG_DIALOG_FLAG_NORMAL, &scan_startup_cb},
         RG_DIALOG_SEPARATOR,
         {0, "Normalization",       value_buffers[4], RG_DIALOG_FLAG_NORMAL, &normalize_cb},
-        {0, "Gapless playback",    value_buffers[5], RG_DIALOG_FLAG_NORMAL, &gapless_cb},
-        {0, "Crossfade",           value_buffers[6], RG_DIALOG_FLAG_NORMAL, &crossfade_cb},
+        {0, "Pause on unplug",     value_buffers[5], RG_DIALOG_FLAG_NORMAL, &pause_unplug_cb},
         {0, "Skip failed tracks",  value_buffers[7], RG_DIALOG_FLAG_NORMAL, &skip_error_cb},
         RG_DIALOG_SEPARATOR,
         {0, "Live stream buffer",  value_buffers[8], RG_DIALOG_FLAG_NORMAL, &stream_delay_cb},

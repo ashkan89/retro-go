@@ -18,14 +18,15 @@ static struct
     bool ready;
 
     int16_t *tap;           // Ring of recent mono samples, MEDIA_VIZ_TAP_SAMPLES
-    volatile uint32_t write; // Producer cursor (audio task)
+    uint32_t write; // Producer cursor (audio task)
+    bool reset_pending;    // Audio requests; only the UI resets analysis state.
     uint32_t read;          // Last analysed position (UI task)
 
     float *re, *im;
     float *window;
     float *twiddle_re, *twiddle_im;
     uint16_t *reverse;
-    uint8_t *band_start, *band_end;
+    uint16_t *band_start, *band_end; // A 512-point transform has an end bin of 256.
 
     float agc;              // Slowly tracked reference magnitude
     media_spectrum_t out;
@@ -59,15 +60,15 @@ bool media_fft_init(int size, int bands)
     fft.size = size;
     fft.bands = bands;
 
-    fft.tap = rg_alloc(MEDIA_VIZ_TAP_SAMPLES * sizeof(int16_t), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    fft.tap = rg_alloc(MEDIA_VIZ_TAP_SAMPLES * sizeof(int16_t), MEM_FAST | MEM_8BIT | MEM_NOPANIC);
     fft.re = rg_alloc((size_t)size * sizeof(float), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
     fft.im = rg_alloc((size_t)size * sizeof(float), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
     fft.window = rg_alloc((size_t)size * sizeof(float), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
     fft.twiddle_re = rg_alloc((size_t)(size / 2) * sizeof(float), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
     fft.twiddle_im = rg_alloc((size_t)(size / 2) * sizeof(float), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
     fft.reverse = rg_alloc((size_t)size * sizeof(uint16_t), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
-    fft.band_start = rg_alloc((size_t)bands, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
-    fft.band_end = rg_alloc((size_t)bands, MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    fft.band_start = rg_alloc((size_t)bands * sizeof(uint16_t), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    fft.band_end = rg_alloc((size_t)bands * sizeof(uint16_t), MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
 
     if (!fft.tap || !fft.re || !fft.im || !fft.window || !fft.twiddle_re || !fft.twiddle_im ||
         !fft.reverse || !fft.band_start || !fft.band_end)
@@ -78,6 +79,9 @@ bool media_fft_init(int size, int bands)
     }
 
     memset(fft.tap, 0, MEDIA_VIZ_TAP_SAMPLES * sizeof(int16_t));
+    fft.write = fft.read = 0;
+    fft.reset_pending = false;
+    memset(&fft.out, 0, sizeof(fft.out));
 
     for (int i = 0; i < size; ++i)
         fft.window[i] = 0.5f * (1.0f - cosf(2.0f * (float)M_PI * i / (size - 1)));
@@ -108,8 +112,8 @@ bool media_fft_init(int size, int bands)
         float hi = powf((float)max_bin, (float)(i + 1) / bands);
         int start = media_clampi((int)lo, 1, max_bin - 1);
         int end = media_clampi((int)hi, start + 1, max_bin);
-        fft.band_start[i] = (uint8_t)start;
-        fft.band_end[i] = (uint8_t)end;
+        fft.band_start[i] = (uint16_t)start;
+        fft.band_end[i] = (uint16_t)end;
     }
 
     fft.out.bands = bands;
@@ -138,14 +142,17 @@ int media_fft_size(void)
 
 void media_fft_reset(void)
 {
-    if (fft.tap)
-        memset(fft.tap, 0, MEDIA_VIZ_TAP_SAMPLES * sizeof(int16_t));
+    __atomic_store_n(&fft.reset_pending, true, __ATOMIC_RELEASE);
+}
+
+static void apply_reset(void)
+{
+    if (!__atomic_exchange_n(&fft.reset_pending, false, __ATOMIC_ACQ_REL))
+        return;
     memset(fft.out.value, 0, sizeof(fft.out.value));
     memset(fft.out.peak, 0, sizeof(fft.out.peak));
-    fft.out.rms_left = fft.out.rms_right = 0;
-    fft.out.peak_left = fft.out.peak_right = 0;
     fft.agc = 1.0f;
-    fft.read = fft.write;
+    fft.read = __atomic_load_n(&fft.write, __ATOMIC_ACQUIRE);
 }
 
 void media_fft_feed(const int16_t *pcm, size_t frames)
@@ -154,7 +161,7 @@ void media_fft_feed(const int16_t *pcm, size_t frames)
         return;
 
     // Deliberately lossy: the visualiser is allowed to miss samples, the audio task is not.
-    uint32_t w = fft.write;
+    uint32_t w = __atomic_load_n(&fft.write, __ATOMIC_ACQUIRE);
     float sum_l = 0, sum_r = 0, peak_l = 0, peak_r = 0;
 
     for (size_t i = 0; i < frames; ++i)
@@ -162,7 +169,8 @@ void media_fft_feed(const int16_t *pcm, size_t frames)
         int l = pcm[i * 2 + 0];
         int r = pcm[i * 2 + 1];
 
-        fft.tap[w & (MEDIA_VIZ_TAP_SAMPLES - 1)] = (int16_t)((l + r) / 2);
+        __atomic_store_n(&fft.tap[w & (MEDIA_VIZ_TAP_SAMPLES - 1)],
+                         (int16_t)((l + r) / 2), __ATOMIC_RELAXED);
         w++;
 
         sum_l += (float)l * l;
@@ -174,8 +182,7 @@ void media_fft_feed(const int16_t *pcm, size_t frames)
             peak_r = ar;
     }
 
-    __sync_synchronize();
-    fft.write = w;
+    __atomic_store_n(&fft.write, w, __ATOMIC_RELEASE);
 
     // Level meters are cheap enough to update straight from the audio task.
     float rms_l = sqrtf(sum_l / frames) / 32768.0f;
@@ -225,10 +232,11 @@ static void fft_transform(void)
 
 bool media_fft_analyze(void)
 {
+    apply_reset();
     if (!fft.ready)
         return false;
 
-    uint32_t w = fft.write;
+    uint32_t w = __atomic_load_n(&fft.write, __ATOMIC_ACQUIRE);
     if (w == fft.read)
         return false; // No new audio since the last pass
     fft.read = w;
@@ -239,7 +247,7 @@ bool media_fft_analyze(void)
     for (int i = 0; i < n; ++i)
     {
         uint32_t index = w - (uint32_t)n + (uint32_t)i;
-        float sample = (float)fft.tap[index & (MEDIA_VIZ_TAP_SAMPLES - 1)] / 32768.0f;
+        float sample = (float)__atomic_load_n(&fft.tap[index & (MEDIA_VIZ_TAP_SAMPLES - 1)], __ATOMIC_RELAXED) / 32768.0f;
         int dst = fft.reverse[i];
         fft.re[dst] = sample * fft.window[i];
         fft.im[dst] = 0.0f;
@@ -315,11 +323,11 @@ size_t media_fft_copy_waveform(int16_t *out, size_t count)
     if (count > MEDIA_VIZ_TAP_SAMPLES)
         count = MEDIA_VIZ_TAP_SAMPLES;
 
-    uint32_t w = fft.write;
+    uint32_t w = __atomic_load_n(&fft.write, __ATOMIC_ACQUIRE);
     for (size_t i = 0; i < count; ++i)
     {
         uint32_t index = w - (uint32_t)count + (uint32_t)i;
-        out[i] = fft.tap[index & (MEDIA_VIZ_TAP_SAMPLES - 1)];
+        out[i] = __atomic_load_n(&fft.tap[index & (MEDIA_VIZ_TAP_SAMPLES - 1)], __ATOMIC_RELAXED);
     }
 
     return count;

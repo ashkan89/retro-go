@@ -19,19 +19,35 @@
 #undef RG_LOG_TAG
 #define RG_LOG_TAG "MEDIA_AUDIO"
 
+// The shared writer commits complete DMA blocks. Supply silence after a final partial
+// block, then let the bounded software/DMA reserve play before changing track or rate.
+#ifndef RG_AUDIO_DMA_BUFFER_COUNT
+#define RG_AUDIO_DMA_BUFFER_COUNT 4
+#endif
+#ifndef RG_AUDIO_DMA_BUFFER_LENGTH
+#define RG_AUDIO_DMA_BUFFER_LENGTH 180
+#endif
+#ifndef RG_AUDIO_QUEUE_LENGTH
+#define RG_AUDIO_QUEUE_LENGTH 1536
+#endif
+
 static struct
 {
     media_audio_owner_t owner;
 
     media_ring_t *pcm;
+    rg_mutex_t *lock;           // Serializes chunk processing with flush/rate changes.
     rg_task_t *task;
     volatile bool running;
     volatile bool stop;
     volatile bool alive;
 
     volatile bool paused;
+    bool buffering;
     volatile bool draining;
     volatile bool drained;
+    bool drain_padded;
+    int64_t drain_deadline_us;
 
     uint32_t sample_rate;
     int previous_system_rate;   // What retro-go was configured for before we took over
@@ -62,24 +78,25 @@ bool media_audio_acquire(media_audio_owner_t owner)
 {
     if (owner == MEDIA_AUDIO_OWNER_NONE)
         return false;
-    if (audio.owner != MEDIA_AUDIO_OWNER_NONE && audio.owner != owner)
+    media_audio_owner_t expected = MEDIA_AUDIO_OWNER_NONE;
+    if (!__atomic_compare_exchange_n(&audio.owner, &expected, owner, false,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) && expected != owner)
     {
         RG_LOGW("Audio focus denied: already held by %d", audio.owner);
         return false;
     }
-    audio.owner = owner;
     return true;
 }
 
 void media_audio_release(media_audio_owner_t owner)
 {
-    if (audio.owner == owner)
-        audio.owner = MEDIA_AUDIO_OWNER_NONE;
+    __atomic_compare_exchange_n(&audio.owner, &owner, MEDIA_AUDIO_OWNER_NONE, false,
+                                __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
 
 media_audio_owner_t media_audio_get_owner(void)
 {
-    return audio.owner;
+    return __atomic_load_n(&audio.owner, __ATOMIC_ACQUIRE);
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -119,34 +136,59 @@ static void audio_task(void *arg)
 
     while (!audio.stop)
     {
-        if (audio.paused && audio.fade <= 0.0f)
+        rg_mutex_take(audio.lock, -1);
+        if (audio.buffering || (audio.paused && audio.fade <= 0.0f))
         {
             // Fully faded out: stop consuming so the buffer is intact when we resume.
+            rg_mutex_give(audio.lock);
             rg_task_delay(10);
             continue;
         }
 
-        size_t got = media_ring_read(audio.pcm, audio.chunk, chunk_bytes, 20);
+        size_t got = media_ring_read(audio.pcm, audio.chunk, chunk_bytes, 0);
         size_t frames = got / (MEDIA_PCM_CHANNELS * sizeof(int16_t));
 
         if (frames == 0)
         {
             if (audio.draining)
             {
-                audio.drained = true;
-                rg_task_delay(10);
+                if (!audio.drain_padded)
+                {
+                    memset(audio.chunk, 0, chunk_bytes);
+                    size_t remaining = RG_AUDIO_DMA_BUFFER_LENGTH;
+                    while (remaining)
+                    {
+                        size_t count = remaining < chunk_frames ? remaining : chunk_frames;
+                        rg_audio_submit((const rg_audio_frame_t *)audio.chunk, count);
+                        remaining -= count;
+                    }
+                    uint64_t reserve = RG_AUDIO_QUEUE_LENGTH +
+                        RG_AUDIO_DMA_BUFFER_COUNT * RG_AUDIO_DMA_BUFFER_LENGTH;
+                    audio.drain_deadline_us = rg_system_timer() +
+                        (int64_t)((reserve * 1000000ULL + audio.sample_rate - 1) / audio.sample_rate);
+                    audio.drain_padded = true;
+                }
+                audio.drained = rg_system_timer() >= audio.drain_deadline_us;
             }
             else if (!audio.paused)
             {
                 // A genuine underrun. The hardware keeps playing its own DMA reserve, so this
                 // is recoverable; we just note it and let the controller rebuffer.
+                // Count an episode, not every empty poll, and bank PCM before resuming.
                 audio.underruns++;
-                rg_task_delay(4);
+                audio.buffering = true;
+                audio.fade = 0.0f;
             }
             else
             {
-                rg_task_delay(10);
+                // An empty paused ring cannot finish a sample-driven fade.
+                audio.fade = 0.0f;
             }
+            rg_mutex_give(audio.lock);
+            if (audio.draining || audio.paused)
+                rg_task_delay(10);
+            else
+                media_ring_wait_readable(audio.pcm, 20);
             continue;
         }
 
@@ -162,15 +204,16 @@ static void audio_task(void *arg)
 
         rg_audio_submit((const rg_audio_frame_t *)audio.chunk, frames);
         audio.frames_played += frames;
+        rg_mutex_give(audio.lock);
     }
 
 #ifdef ESP_PLATFORM
     RG_LOGI("Audio task exiting, stack headroom was %u bytes",
-            (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+            (unsigned)uxTaskGetStackHighWaterMark(NULL));
 #endif
 
-    audio.running = false;
     audio.alive = false;
+    audio.running = false; // Last access to audio state; stop() waits for this.
 }
 
 bool media_audio_start(void)
@@ -179,6 +222,11 @@ bool media_audio_start(void)
         return true;
 
     const media_profile_t *profile = media_profile();
+
+    if (!audio.lock)
+        audio.lock = rg_mutex_create();
+    if (!audio.lock)
+        return false;
 
     if (!audio.pcm)
     {
@@ -205,8 +253,10 @@ bool media_audio_start(void)
     audio.previous_system_rate = rg_audio_get_sample_rate();
     audio.stop = false;
     audio.paused = false;
+    audio.buffering = true;
     audio.draining = false;
     audio.drained = false;
+    audio.drain_padded = false;
     audio.fade = 0.0f;
     audio.fade_target = 1.0f;
     audio.frames_played = 0;
@@ -215,7 +265,7 @@ bool media_audio_start(void)
     audio.underruns = 0;
     audio.running = true;
 
-    audio.task = rg_task_create("media_audio", &audio_task, NULL, 4 * 1024, RG_TASK_PRIORITY_6,
+    audio.task = rg_task_create("media_audio", &audio_task, NULL, 4 * 1024, MEDIA_AUDIO_TASK_PRIORITY,
                                 RG_TASK_AFFINITY_AUDIO);
     if (!audio.task)
     {
@@ -234,7 +284,9 @@ void media_audio_stop(void)
         return;
 
     // Fade out before tearing anything down, otherwise the amplifier clicks.
+    rg_mutex_take(audio.lock, -1);
     audio.fade_target = 0.0f;
+    rg_mutex_give(audio.lock);
     for (int i = 0; i < 10 && audio.fade > 0.0f && audio.alive; ++i)
         rg_task_delay(MEDIA_FADE_MS / 4 + 1);
 
@@ -242,10 +294,10 @@ void media_audio_stop(void)
     if (audio.pcm)
         media_ring_abort(audio.pcm);
 
-    for (int i = 0; i < 200 && audio.alive; ++i)
+    for (int i = 0; i < 200 && audio.running; ++i)
         rg_task_delay(5);
 
-    if (audio.alive)
+    if (audio.running)
     {
         RG_LOGE("Audio task did not stop");
         return;
@@ -284,15 +336,22 @@ void media_audio_deinit(void)
     audio.pcm = NULL;
     free(audio.chunk);
     audio.chunk = NULL;
+    if (audio.lock)
+        rg_mutex_free(audio.lock);
+    audio.lock = NULL;
 }
 
 bool media_audio_set_sample_rate(uint32_t sample_rate)
 {
-    if (sample_rate < MEDIA_PCM_SAMPLE_RATE_MIN || sample_rate > MEDIA_PCM_SAMPLE_RATE_MAX)
+    if (!audio.lock || sample_rate < MEDIA_PCM_SAMPLE_RATE_MIN || sample_rate > MEDIA_PCM_SAMPLE_RATE_MAX)
         return false;
 
+    rg_mutex_take(audio.lock, -1);
     if (sample_rate == audio.sample_rate && (int)sample_rate == rg_audio_get_sample_rate())
+    {
+        rg_mutex_give(audio.lock);
         return true;
+    }
 
     // Reconfiguring I2S restarts the clock; mute across it so the transient never reaches
     // the speaker, and fade back in afterwards.
@@ -308,6 +367,7 @@ bool media_audio_set_sample_rate(uint32_t sample_rate)
     audio.sample_rate = sample_rate;
     media_eq_set_sample_rate(sample_rate);
     audio.fade_target = audio.paused ? 0.0f : 1.0f;
+    rg_mutex_give(audio.lock);
 
     RG_LOGI("Output rate is now %u Hz", (unsigned)sample_rate);
     return true;
@@ -333,6 +393,7 @@ void media_audio_flush(uint32_t position_ms)
     if (!audio.pcm)
         return;
 
+    rg_mutex_take(audio.lock, -1);
     // Ramp down first so the discontinuity at the seek point is not audible.
     audio.fade = 0.0f;
     media_ring_reset(audio.pcm);
@@ -340,18 +401,53 @@ void media_audio_flush(uint32_t position_ms)
     audio.base_ms = position_ms;
     audio.frames_at_base = audio.frames_played;
     audio.drained = false;
+    audio.drain_padded = false;
     audio.fade_target = audio.paused ? 0.0f : 1.0f;
 
     media_eq_flush();
     media_fft_reset();
+    rg_mutex_give(audio.lock);
+}
+
+void media_audio_set_buffering(bool buffering)
+{
+    if (!audio.lock)
+        return;
+    rg_mutex_take(audio.lock, -1);
+    audio.buffering = buffering;
+    if (buffering)
+        audio.fade = 0.0f;
+    rg_mutex_give(audio.lock);
+}
+
+bool media_audio_get_buffering(void)
+{
+    if (!audio.lock)
+        return true;
+    rg_mutex_take(audio.lock, -1);
+    bool buffering = audio.buffering;
+    rg_mutex_give(audio.lock);
+    return buffering;
+}
+
+size_t media_audio_capacity_frames(void)
+{
+    return media_ring_capacity(audio.pcm) / (MEDIA_PCM_CHANNELS * sizeof(int16_t));
 }
 
 void media_audio_set_paused(bool paused)
 {
-    if (audio.paused == paused)
+    if (!audio.lock)
         return;
+    rg_mutex_take(audio.lock, -1);
+    if (audio.paused == paused)
+    {
+        rg_mutex_give(audio.lock);
+        return;
+    }
     audio.paused = paused;
     audio.fade_target = paused ? 0.0f : 1.0f;
+    rg_mutex_give(audio.lock);
 }
 
 bool media_audio_get_paused(void)
@@ -363,7 +459,11 @@ void media_audio_set_gain(float gain)
 {
     if (!(gain > 0.0f) || !isfinite(gain))
         gain = 0.0f;
+    if (!audio.lock)
+        return;
+    rg_mutex_take(audio.lock, -1);
     audio.gain = media_clampf(gain, 0.0f, 4.0f);
+    rg_mutex_give(audio.lock);
 }
 
 float media_audio_get_gain(void)
@@ -373,9 +473,19 @@ float media_audio_get_gain(void)
 
 void media_audio_set_draining(bool draining)
 {
+    if (!audio.lock)
+        return;
+    rg_mutex_take(audio.lock, -1);
     audio.draining = draining;
+    // Short files and the final partial chunk must play even below the prebuffer target.
+    if (draining)
+        audio.buffering = false;
     if (!draining)
+    {
         audio.drained = false;
+        audio.drain_padded = false;
+    }
+    rg_mutex_give(audio.lock);
 }
 
 bool media_audio_drained(void)
@@ -385,10 +495,14 @@ bool media_audio_drained(void)
 
 uint32_t media_audio_position_ms(void)
 {
-    if (!audio.sample_rate)
-        return audio.base_ms;
+    if (!audio.lock)
+        return 0;
+    rg_mutex_take(audio.lock, -1);
     uint64_t frames = audio.frames_played - audio.frames_at_base;
-    return audio.base_ms + (uint32_t)((frames * 1000ULL) / audio.sample_rate);
+    uint32_t position = audio.base_ms + (audio.sample_rate ?
+        (uint32_t)((frames * 1000ULL) / audio.sample_rate) : 0);
+    rg_mutex_give(audio.lock);
+    return position;
 }
 
 int media_audio_fill_percent(void)
@@ -410,5 +524,10 @@ uint32_t media_audio_underruns(void)
 
 uint64_t media_audio_frames_played(void)
 {
-    return audio.frames_played;
+    if (!audio.lock)
+        return 0;
+    rg_mutex_take(audio.lock, -1);
+    uint64_t frames = audio.frames_played;
+    rg_mutex_give(audio.lock);
+    return frames;
 }

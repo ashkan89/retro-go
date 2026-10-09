@@ -49,6 +49,11 @@ uint32_t media_audio_get_sample_rate(void);
  */
 size_t media_audio_write(const int16_t *pcm, size_t frames, int timeout_ms);
 
+/** Hold PCM while the controller banks a reserve. Independent of the listener's pause. */
+void media_audio_set_buffering(bool buffering);
+bool media_audio_get_buffering(void);
+size_t media_audio_capacity_frames(void);
+
 /** Drop everything buffered and resynchronise the frame counter to `position_ms`. */
 void media_audio_flush(uint32_t position_ms);
 

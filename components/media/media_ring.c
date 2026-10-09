@@ -18,12 +18,14 @@ struct media_ring_s
     uint8_t *data;
     size_t capacity;  // Always a power of two
     size_t mask;
-    volatile uint32_t head; // Write cursor, owned by the producer
-    volatile uint32_t tail; // Read cursor, owned by the consumer
-    volatile bool aborted;
+    uint32_t head; // Write cursor, owned by the producer
+    uint32_t tail; // Read cursor, owned by the consumer
+    bool aborted;
 #ifdef ESP_PLATFORM
     SemaphoreHandle_t space; // Given by the consumer after freeing bytes
     SemaphoreHandle_t data_ready; // Given by the producer after writing bytes
+#else
+    void *space, *data_ready; // Host polling fallback.
 #endif
     char name[16];
 };
@@ -101,7 +103,11 @@ size_t media_ring_used(const media_ring_t *ring)
 {
     if (!ring)
         return 0;
-    return (size_t)(ring->head - ring->tail);
+    // A diagnostic reader can observe different instants. Clamp to the actual capacity.
+    uint32_t tail = __atomic_load_n(&ring->tail, __ATOMIC_ACQUIRE);
+    uint32_t head = __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE);
+    size_t used = (uint32_t)(head - tail);
+    return used > ring->capacity ? ring->capacity : used;
 }
 
 size_t media_ring_free_space(const media_ring_t *ring)
@@ -153,7 +159,7 @@ size_t media_ring_write(media_ring_t *ring, const void *data, size_t len, int ti
 
     while (written < len)
     {
-        if (ring->aborted)
+        if (__atomic_load_n(&ring->aborted, __ATOMIC_ACQUIRE))
             break;
 
         size_t space = media_ring_free_space(ring);
@@ -184,8 +190,7 @@ size_t media_ring_write(media_ring_t *ring, const void *data, size_t len, int ti
 
         memcpy(ring->data + offset, src + written, chunk);
         // Publish the data before the cursor so the consumer never sees uninitialised bytes
-        __sync_synchronize();
-        ring->head += chunk;
+        __atomic_store_n(&ring->head, ring->head + chunk, __ATOMIC_RELEASE);
         written += chunk;
 
         GIVE_SEM(ring->data_ready);
@@ -205,7 +210,7 @@ size_t media_ring_read(media_ring_t *ring, void *data, size_t len, int timeout_m
 
     while (read < len)
     {
-        if (ring->aborted)
+        if (__atomic_load_n(&ring->aborted, __ATOMIC_ACQUIRE))
             break;
 
         size_t used = media_ring_used(ring);
@@ -235,14 +240,23 @@ size_t media_ring_read(media_ring_t *ring, void *data, size_t len, int timeout_m
             chunk = contiguous;
 
         memcpy(dst + read, ring->data + offset, chunk);
-        __sync_synchronize();
-        ring->tail += chunk;
+        __atomic_store_n(&ring->tail, ring->tail + chunk, __ATOMIC_RELEASE);
         read += chunk;
 
         GIVE_SEM(ring->space);
     }
 
     return read;
+}
+
+bool media_ring_wait_readable(media_ring_t *ring, int timeout_ms)
+{
+    if (!ring || media_ring_aborted(ring))
+        return false;
+    if (media_ring_used(ring))
+        return true;
+    wait_sem(ring->data_ready, timeout_ms);
+    return !media_ring_aborted(ring) && media_ring_used(ring) != 0;
 }
 
 size_t media_ring_peek(const media_ring_t *ring, void *data, size_t len)
@@ -274,7 +288,7 @@ size_t media_ring_skip(media_ring_t *ring, size_t len)
     if (len > used)
         len = used;
 
-    ring->tail += len;
+    __atomic_store_n(&ring->tail, ring->tail + len, __ATOMIC_RELEASE);
     GIVE_SEM(ring->space);
     return len;
 }
@@ -283,7 +297,7 @@ void media_ring_reset(media_ring_t *ring)
 {
     if (!ring)
         return;
-    ring->tail = ring->head;
+    __atomic_store_n(&ring->tail, __atomic_load_n(&ring->head, __ATOMIC_ACQUIRE), __ATOMIC_RELEASE);
     GIVE_SEM(ring->space);
 }
 
@@ -291,7 +305,7 @@ void media_ring_abort(media_ring_t *ring)
 {
     if (!ring)
         return;
-    ring->aborted = true;
+    __atomic_store_n(&ring->aborted, true, __ATOMIC_RELEASE);
     GIVE_SEM(ring->space);
     GIVE_SEM(ring->data_ready);
 }
@@ -300,10 +314,10 @@ void media_ring_resume(media_ring_t *ring)
 {
     if (!ring)
         return;
-    ring->aborted = false;
+    __atomic_store_n(&ring->aborted, false, __ATOMIC_RELEASE);
 }
 
 bool media_ring_aborted(const media_ring_t *ring)
 {
-    return ring && ring->aborted;
+    return ring && __atomic_load_n(&ring->aborted, __ATOMIC_ACQUIRE);
 }

@@ -9,6 +9,10 @@ macro(rg_setup_compile_options)
         ${ARGV}
     )
 
+    if(RG_SEPARATE_DISPLAY_AUDIO)
+        component_compile_options(-DRG_SEPARATE_DISPLAY_AUDIO=1)
+    endif()
+
     # The PSRAM cache bug is responsible for many subtile bugs and crashes. The workaround has a
     # significant performance impact but the alternative is instability... Enabling the fix here
     # instead of sdkconfig prevents the new libc and wifi from being linked in which increases

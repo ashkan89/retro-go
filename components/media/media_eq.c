@@ -50,13 +50,22 @@ static struct
 
     float preamp;           // Headroom compensation for positive gains
     float limiter_gain;     // Smoothed, 1.0 = no reduction
-    bool dirty;
 } eq = {
     .preset = MEDIA_EQ_PRESET_FLAT,
     .sample_rate = 44100,
     .preamp = 1.0f,
     .limiter_gain = 1.0f,
 };
+
+/* UI edits only pending settings. The output task owns coefficients and filter history. */
+static struct
+{
+    rg_mutex_t *lock;
+    bool enabled, dirty, flush;
+    media_eq_preset_t preset;
+    int gains[MEDIA_EQ_BANDS];
+    uint32_t sample_rate;
+} pending = {.sample_rate = 44100, .dirty = true, .flush = true};
 
 const char *media_eq_preset_name(media_eq_preset_t preset)
 {
@@ -130,64 +139,67 @@ static void recompute(void)
     // Pre-attenuate by the largest boost so a bass-heavy preset cannot clip on its own.
     // Overlapping bands can still add a little, which is what the limiter is there for.
     eq.preamp = max_positive > 0 ? powf(10.0f, -(float)max_positive / 20.0f) : 1.0f;
-    eq.dirty = false;
 }
 
 void media_eq_init(void)
 {
+    if (!pending.lock)
+        pending.lock = rg_mutex_create();
+    if (!pending.lock)
+        RG_LOGW("EQ controls unavailable: no memory for synchronization");
     media_eq_flush();
-    recompute();
 }
 
 void media_eq_set_enabled(bool enabled)
 {
-    if (eq.enabled != enabled)
+    if (!pending.lock)
+        return;
+    rg_mutex_take(pending.lock, -1);
+    if (pending.enabled != enabled)
     {
-        eq.enabled = enabled;
-        media_eq_flush();
+        pending.enabled = enabled;
+        pending.dirty = pending.flush = true;
     }
+    rg_mutex_give(pending.lock);
 }
 
 bool media_eq_get_enabled(void)
 {
-    return eq.enabled;
+    return pending.enabled;
 }
 
 void media_eq_set_gain(int band, int gain_db)
 {
-    if (band < 0 || band >= MEDIA_EQ_BANDS)
+    if (!pending.lock || band < 0 || band >= MEDIA_EQ_BANDS)
         return;
-    gain_db = media_clampi(gain_db, MEDIA_EQ_GAIN_MIN, MEDIA_EQ_GAIN_MAX);
-    if (eq.gains[band] == gain_db)
-        return;
-
-    eq.gains[band] = gain_db;
-    eq.preset = MEDIA_EQ_PRESET_CUSTOM;
-    recompute();
+    rg_mutex_take(pending.lock, -1);
+    pending.gains[band] = media_clampi(gain_db, MEDIA_EQ_GAIN_MIN, MEDIA_EQ_GAIN_MAX);
+    pending.preset = MEDIA_EQ_PRESET_CUSTOM;
+    pending.dirty = true;
+    rg_mutex_give(pending.lock);
 }
 
 int media_eq_get_gain(int band)
 {
-    return (band >= 0 && band < MEDIA_EQ_BANDS) ? eq.gains[band] : 0;
+    return (band >= 0 && band < MEDIA_EQ_BANDS) ? pending.gains[band] : 0;
 }
 
 void media_eq_set_preset(media_eq_preset_t preset)
 {
-    if (preset < 0 || preset >= MEDIA_EQ_PRESET_COUNT)
+    if (!pending.lock || preset < 0 || preset >= MEDIA_EQ_PRESET_COUNT)
         return;
-
-    eq.preset = preset;
+    rg_mutex_take(pending.lock, -1);
+    pending.preset = preset;
     if (preset != MEDIA_EQ_PRESET_CUSTOM)
-    {
         for (int i = 0; i < MEDIA_EQ_BANDS; ++i)
-            eq.gains[i] = presets[preset][i];
-    }
-    recompute();
+            pending.gains[i] = presets[preset][i];
+    pending.dirty = true;
+    rg_mutex_give(pending.lock);
 }
 
 media_eq_preset_t media_eq_get_preset(void)
 {
-    return eq.preset;
+    return pending.preset;
 }
 
 void media_eq_reset(void)
@@ -197,17 +209,52 @@ void media_eq_reset(void)
 
 void media_eq_set_sample_rate(uint32_t sample_rate)
 {
-    if (sample_rate < 8000 || sample_rate > 192000 || sample_rate == eq.sample_rate)
+    if (!pending.lock || sample_rate < 8000 || sample_rate > 192000)
         return;
-    eq.sample_rate = sample_rate;
-    recompute();
-    media_eq_flush();
+    rg_mutex_take(pending.lock, -1);
+    if (pending.sample_rate != sample_rate)
+    {
+        pending.sample_rate = sample_rate;
+        pending.dirty = pending.flush = true;
+    }
+    rg_mutex_give(pending.lock);
 }
 
 void media_eq_flush(void)
 {
-    memset(eq.state, 0, sizeof(eq.state));
-    eq.limiter_gain = 1.0f;
+    if (!pending.lock)
+        return;
+    rg_mutex_take(pending.lock, -1);
+    pending.flush = true;
+    rg_mutex_give(pending.lock);
+}
+
+/* Called only by the output task, once per block. The control lock covers a small copy;
+ * expensive coefficient calculation and all sample processing happen after it is released. */
+static void apply_pending(void)
+{
+    if (!pending.lock)
+        return;
+    rg_mutex_take(pending.lock, -1);
+    bool dirty = pending.dirty;
+    bool flush = pending.flush;
+    if (dirty)
+    {
+        eq.enabled = pending.enabled;
+        eq.preset = pending.preset;
+        eq.sample_rate = pending.sample_rate;
+        memcpy(eq.gains, pending.gains, sizeof(eq.gains));
+        pending.dirty = false;
+    }
+    pending.flush = false;
+    rg_mutex_give(pending.lock);
+    if (dirty)
+        recompute();
+    if (flush)
+    {
+        memset(eq.state, 0, sizeof(eq.state));
+        eq.limiter_gain = 1.0f;
+    }
 }
 
 static inline float biquad_step(const biquad_coeffs_t *c, biquad_state_t *s, float x)
@@ -225,8 +272,7 @@ void media_eq_process(int16_t *pcm, size_t frames, float extra_gain)
     if (!pcm || !frames)
         return;
 
-    if (eq.dirty)
-        recompute();
+    apply_pending();
 
     if (!(extra_gain > 0.0f) || !isfinite(extra_gain))
         extra_gain = 0.0f;

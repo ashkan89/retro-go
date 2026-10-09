@@ -100,6 +100,15 @@
 /* Number of PCM frames handed to rg_audio_submit() per iteration of the audio task. */
 #define MEDIA_AUDIO_CHUNK_FRAMES    256
 
+/* I2S writer is priority 9. These tasks preempt display (6) and background work;
+ * each blocks on buffer/DMA readiness rather than spinning at high priority. */
+#ifndef MEDIA_AUDIO_TASK_PRIORITY
+#define MEDIA_AUDIO_TASK_PRIORITY RG_TASK_PRIORITY_8
+#endif
+#ifndef MEDIA_DECODE_TASK_PRIORITY
+#define MEDIA_DECODE_TASK_PRIORITY RG_TASK_PRIORITY_7
+#endif
+
 /* Fade ramp applied on start/stop/seek/pause to avoid clicks (milliseconds). */
 #define MEDIA_FADE_MS               12
 

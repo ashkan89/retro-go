@@ -966,7 +966,6 @@ void media_ui_run(void)
     int64_t fps_window = rg_system_timer();
     uint32_t fps_frames = 0;
 
-    const int64_t frame_interval = 1000000 / media_clampi(cfg->visualizer_fps, 10, 60);
     const int64_t fft_interval = 1000000 / 25;
 
     while (mui.running)
@@ -1022,7 +1021,9 @@ void media_ui_run(void)
         }
 
         /* --- Visualiser -------------------------------------------------------------- */
-        if (mui.frame_us >= next_fft)
+        bool audio_pressure = media_player_pressure() >= 2;
+        bool screen_visible = !rg_system_screen_is_dimmed();
+        if (screen_visible && !audio_pressure && mui.frame_us >= next_fft)
         {
             next_fft = mui.frame_us + fft_interval;
             if (media_fft_ready() && mui.snapshot.state == MEDIA_STATE_PLAYING)
@@ -1038,7 +1039,11 @@ void media_ui_run(void)
         // rendering a 480x320 frame and pushing it over SPI 30 times a second into a dark
         // panel is pure waste, and the cycles are better spent on decoding. Playback itself
         // runs on its own tasks and is unaffected.
-        bool screen_visible = !rg_system_screen_is_dimmed();
+        // Re-read settings each frame: changing FPS in the menu takes effect immediately.
+        int fps = media_clampi(cfg->visualizer_fps, 10, media_profile()->target_fps);
+        if (audio_pressure && fps > 15)
+            fps = 15;
+        int64_t frame_interval = 1000000 / fps;
         bool animating = screen_visible &&
                          (media_anim_running(&mui.progress_anim) ||
                           mui.frame_us < mui.overlay_until_us ||

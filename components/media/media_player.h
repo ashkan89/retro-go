@@ -52,7 +52,7 @@ void media_player_toggle_favorite(void);
 
 media_snapshot_t media_player_snapshot(void);
 
-/** Metadata of the track being played. Valid until the next track change. */
+/** UI-owned metadata copy, stable until the next call. Call from the UI task only. */
 const media_track_t *media_player_track(void);
 const char *media_player_path(void);
 

@@ -63,8 +63,8 @@ typedef struct
     int32_t lyrics_offset_ms;
 
     media_normalize_t normalization;
-    bool gapless;
-    int crossfade_s;
+    bool gapless;                   // Reserved; false until track-transition support exists.
+    int crossfade_s;                // Reserved; currently forced to 0.
 
     bool artwork_background;
     bool dynamic_theme;

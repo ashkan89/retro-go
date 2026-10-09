@@ -51,6 +51,9 @@ void media_run(void);
 /** Open the player directly on a browser view (used by the launcher tab shortcuts). */
 void media_run_at(int browse_mode);
 
+/** Poll background playback housekeeping from the launcher's UI loop. Internally throttled. */
+void media_tick(void);
+
 bool media_is_playing(void);
 bool media_has_library(void);
 

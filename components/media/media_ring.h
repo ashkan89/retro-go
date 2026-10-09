@@ -31,6 +31,9 @@ size_t media_ring_write(media_ring_t *ring, const void *data, size_t len, int ti
 /** Copy up to `len` bytes out. Same blocking rules. Returns bytes read. */
 size_t media_ring_read(media_ring_t *ring, void *data, size_t len, int timeout_ms);
 
+/** Wait for data without consuming it. No lock is held while the consumer sleeps. */
+bool media_ring_wait_readable(media_ring_t *ring, int timeout_ms);
+
 /** Read without consuming. Never blocks. */
 size_t media_ring_peek(const media_ring_t *ring, void *data, size_t len);
 

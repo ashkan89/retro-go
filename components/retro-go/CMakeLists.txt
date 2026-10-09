@@ -15,6 +15,10 @@ endif()
 list(APPEND COMPONENT_REQUIRES mbedtls)
 register_component()
 
+if(RG_SEPARATE_DISPLAY_AUDIO)
+    component_compile_options(-DRG_SEPARATE_DISPLAY_AUDIO=1)
+endif()
+
 # Small size is preferred because of the small cache and most things here aren't performance sensitive!
 # rg_display and rg_audio benefit from higher optimization (which of -O2 or -O3 is better depends...)
 
@@ -29,6 +33,12 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS
     -O2
 )
+
+# N8R2 launchers have a 0x170000 app budget. PNG artwork runs in the low-priority
+# artwork task, so prefer smaller code here and retain optimization in audio/render paths.
+if(RG_SEPARATE_DISPLAY_AUDIO AND RG_BUILD_TARGET MATCHES "_N8R2_")
+    set_source_files_properties(libs/lodepng/lodepng.c PROPERTIES COMPILE_FLAGS -Os)
+endif()
 
 if(RG_ENABLE_NETPLAY)
     component_compile_options(-DRG_ENABLE_NETWORKING -DRG_ENABLE_NETPLAY)

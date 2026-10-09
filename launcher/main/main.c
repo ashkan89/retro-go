@@ -337,6 +337,7 @@ static void retro_loop(void)
     while (true)
     {
         updater_poll();
+        media_tick();
         // At the moment the HTTP server has absolute priority because it may change UI elements.
         // It's also risky to let the user do file accesses at the same time (thread safety, SPI, etc)...
         if (gui.http_lock)

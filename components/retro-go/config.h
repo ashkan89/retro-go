@@ -218,6 +218,15 @@
 #define RG_TASK_AFFINITY_AUDIO RG_TASK_AFFINITY_IO
 #endif
 
+// Applications with background music can isolate rendering without changing emulator ports.
+#ifndef RG_TASK_AFFINITY_DISPLAY
+#if RG_SEPARATE_DISPLAY_AUDIO
+#define RG_TASK_AFFINITY_DISPLAY RG_TASK_AFFINITY_MAIN
+#else
+#define RG_TASK_AFFINITY_DISPLAY RG_TASK_AFFINITY_IO
+#endif
+#endif
+
 #ifndef RG_ZIP_SUPPORT
 #define RG_ZIP_SUPPORT 1
 #endif

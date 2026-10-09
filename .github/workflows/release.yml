@@ -32,6 +32,7 @@ jobs:
           echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
           python -m unittest discover -s tools/tests -v
           python tools/test_nes_timing.py --cc cc
+          python tools/test_media_audio.py --cc cc
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
           /tmp/test-update-version
   build:

@@ -48,10 +48,10 @@ void media_eq_set_preset(media_eq_preset_t preset);
 media_eq_preset_t media_eq_get_preset(void);
 void media_eq_reset(void);
 
-/** Must be called whenever the output rate changes; recomputes every coefficient. */
+/** Request a new output rate; the output task recomputes coefficients before its next block. */
 void media_eq_set_sample_rate(uint32_t sample_rate);
 
-/** Clear filter history. Call on seek and track change to avoid a transient. */
+/** Request a filter-history reset before the next block. Call on seek and track change. */
 void media_eq_flush(void);
 
 /**

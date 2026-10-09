@@ -125,6 +125,18 @@ bool media_is_playing(void)
     return snapshot.state == MEDIA_STATE_PLAYING || snapshot.state == MEDIA_STATE_BUFFERING;
 }
 
+void media_tick(void)
+{
+    static int64_t next_tick_us;
+    if (!player_started || foreground)
+        return;
+    int64_t now = rg_system_timer();
+    if (now < next_tick_us)
+        return;
+    next_tick_us = now + 100000;
+    media_player_tick();
+}
+
 bool media_has_library(void)
 {
     return media_library_ready();
