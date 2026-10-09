@@ -35,9 +35,10 @@ set_source_files_properties(
 )
 
 # N8R2 launchers have a 0x170000 app budget. PNG artwork runs in the low-priority
-# artwork task, so prefer smaller code here and retain optimization in audio/render paths.
+# artwork task. The separate display core also lets the small-flash launcher favour
+# compact display/surface/helpers code while keeping I2S at -O2.
 if(RG_SEPARATE_DISPLAY_AUDIO AND RG_BUILD_TARGET MATCHES "_N8R2_")
-    set_source_files_properties(libs/lodepng/lodepng.c PROPERTIES COMPILE_FLAGS -Os)
+    set_source_files_properties(libs/lodepng/lodepng.c rg_display.c rg_surface.c rg_utils.c PROPERTIES COMPILE_FLAGS -Os)
 endif()
 
 if(RG_ENABLE_NETPLAY)

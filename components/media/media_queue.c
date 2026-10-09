@@ -261,8 +261,12 @@ int media_queue_index(void)
 
 void media_queue_set_index(int index)
 {
+    QUEUE_LOCK();
     if (index < -1 || index >= q.count)
+    {
+        QUEUE_UNLOCK();
         return;
+    }
     q.index = index;
 
     // Keep the shuffle cursor in step so "next" after a manual pick stays sensible.
@@ -274,6 +278,7 @@ void media_queue_set_index(int index)
             break;
         }
     }
+    QUEUE_UNLOCK();
 }
 
 const char *media_queue_current(void)
@@ -283,11 +288,16 @@ const char *media_queue_current(void)
 
 void media_queue_set_shuffle(bool shuffle)
 {
+    QUEUE_LOCK();
     if (q.shuffle == shuffle)
+    {
+        QUEUE_UNLOCK();
         return;
+    }
     q.shuffle = shuffle;
     if (shuffle)
         media_queue_reshuffle();
+    QUEUE_UNLOCK();
 }
 
 bool media_queue_get_shuffle(void)
@@ -297,8 +307,10 @@ bool media_queue_get_shuffle(void)
 
 void media_queue_set_repeat(media_repeat_t repeat)
 {
+    QUEUE_LOCK();
     if (repeat >= 0 && repeat < MEDIA_REPEAT_COUNT)
         q.repeat = repeat;
+    QUEUE_UNLOCK();
 }
 
 media_repeat_t media_queue_get_repeat(void)
@@ -366,7 +378,14 @@ int media_queue_next_index(bool manual)
 
         // Bag exhausted. Repeat-all (or a manual press) starts a fresh permutation.
         if (q.repeat == MEDIA_REPEAT_ALL || q.repeat == MEDIA_REPEAT_FOLDER || manual)
-            return -2; // Signals "reshuffle then take the first entry"
+        {
+            // A stable lookahead lets gapless prepare the same entry advance() will use.
+            // Avoid repeating the boundary track when the bag has more than one item.
+            uint32_t preview = q.rand_state;
+            int next = q.count > 1 ? (int)(media_rand(&preview) % (uint32_t)(q.count - 1)) : 0;
+            if (q.count > 1 && next >= q.index) next++;
+            return next;
+        }
         return -1;
     }
 
@@ -406,13 +425,22 @@ int media_queue_advance(bool manual)
 {
     int next = media_queue_next_index(manual);
 
-    if (next == -2)
+    if (next >= 0 && q.shuffle && q.order_count == q.count &&
+        q.order_position + 1 >= q.order_count && (manual || q.repeat != MEDIA_REPEAT_TRACK))
     {
         media_queue_reshuffle();
         if (q.order_count <= 0)
             return -1;
         q.order_position = 0;
-        q.index = q.order[0];
+        for (int i = 0; i < q.order_count; ++i)
+            if (q.order[i] == next)
+            {
+                uint16_t swap = q.order[0];
+                q.order[0] = q.order[i];
+                q.order[i] = swap;
+                break;
+            }
+        q.index = next;
         return q.index;
     }
 

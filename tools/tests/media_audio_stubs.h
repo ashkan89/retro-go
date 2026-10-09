@@ -20,6 +20,15 @@
 #define MEM_NOPANIC 8
 #define RG_TASK_PRIORITY_7 7
 #define RG_TASK_PRIORITY_8 8
+#define RG_TASK_PRIORITY_2 2
+#define RG_TASK_PRIORITY_3 3
+#define RG_TASK_AFFINITY_MAIN 0
+#define RG_MAX(a,b) ((a) > (b) ? (a) : (b))
+#define RG_MIN(a,b) ((a) < (b) ? (a) : (b))
+#define RG_COUNT(a) (sizeof(a) / sizeof((a)[0]))
+#define C_NONE -2
+#define C_RGB(r,g,b) ((((r) >> 3) << 11) | (((g) >> 2) << 5) | (((b) >> 3) & 31))
+typedef int32_t rg_color_t;
 #define RG_TASK_AFFINITY_AUDIO 1
 typedef struct { int unused; } rg_task_t;
 typedef struct { bool held; } rg_mutex_t;
@@ -29,7 +38,8 @@ static rg_audio_route_t current_route;
 static rg_audio_route_t rg_audio_get_route(void) { return current_route; }
 static int64_t clock_us;
 static void (*delay_hook)(void);
-static void *rg_alloc(size_t bytes, int flags) { (void)flags; return malloc(bytes); }
+static bool fail_alloc;
+static void *rg_alloc(size_t bytes, int flags) { (void)flags; return fail_alloc ? NULL : malloc(bytes); }
 static int64_t rg_system_timer(void) { return clock_us; }
 static void rg_task_delay(uint32_t ms)
 {
@@ -50,7 +60,7 @@ static rg_task_t *rg_task_create(const char *name, void (*fn)(void *), void *arg
                                size_t stack, int priority, int affinity)
 {
     (void)name; (void)fn; (void)arg; (void)stack;
-    assert(priority == 8 && affinity == 1);
+    assert((priority == 8 && affinity == 1) || ((priority == 2 || priority == 3) && affinity == 0));
     static rg_task_t task;
     return &task;
 }

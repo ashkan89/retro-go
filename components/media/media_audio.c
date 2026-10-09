@@ -13,6 +13,7 @@
 #include "media_config.h"
 #include "media_eq.h"
 #include "media_fft.h"
+#include "media_lighting.h"
 #include "media_ring.h"
 #include "media_util.h"
 
@@ -59,6 +60,9 @@ static struct
     uint64_t frames_played;
     uint32_t base_ms;           // Position corresponding to frames_played == 0
     uint64_t frames_at_base;
+    uint64_t track_boundary;
+    uint32_t track_position_ms;
+    bool track_marked;
 
     uint32_t underruns;
 
@@ -148,6 +152,15 @@ static void audio_task(void *arg)
         size_t got = media_ring_read(audio.pcm, audio.chunk, chunk_bytes, 0);
         size_t frames = got / (MEDIA_PCM_CHANNELS * sizeof(int16_t));
 
+        // The ring may contain both tracks. Apply the position marker without dropping
+        // PCM or restarting the hardware clock (observation is bounded by one chunk).
+        if (audio.track_marked && audio.frames_played >= audio.track_boundary)
+        {
+            audio.frames_at_base = audio.track_boundary;
+            audio.base_ms = audio.track_position_ms;
+            audio.track_marked = false;
+        }
+
         if (frames == 0)
         {
             if (audio.draining)
@@ -201,9 +214,16 @@ static void audio_task(void *arg)
 
         // Non-blocking tap for the visualiser: it sees exactly what is being played.
         media_fft_feed(audio.chunk, frames);
+        media_lighting_feed(audio.chunk, frames);
 
         rg_audio_submit((const rg_audio_frame_t *)audio.chunk, frames);
         audio.frames_played += frames;
+        if (audio.track_marked && audio.frames_played >= audio.track_boundary)
+        {
+            audio.frames_at_base = audio.track_boundary;
+            audio.base_ms = audio.track_position_ms;
+            audio.track_marked = false;
+        }
         rg_mutex_give(audio.lock);
     }
 
@@ -261,6 +281,7 @@ bool media_audio_start(void)
     audio.fade_target = 1.0f;
     audio.frames_played = 0;
     audio.frames_at_base = 0;
+    audio.track_marked = false;
     audio.base_ms = 0;
     audio.underruns = 0;
     audio.running = true;
@@ -400,6 +421,7 @@ void media_audio_flush(uint32_t position_ms)
 
     audio.base_ms = position_ms;
     audio.frames_at_base = audio.frames_played;
+    audio.track_marked = false;
     audio.drained = false;
     audio.drain_padded = false;
     audio.fade_target = audio.paused ? 0.0f : 1.0f;
@@ -503,6 +525,16 @@ uint32_t media_audio_position_ms(void)
         (uint32_t)((frames * 1000ULL) / audio.sample_rate) : 0);
     rg_mutex_give(audio.lock);
     return position;
+}
+
+void media_audio_mark_track(uint64_t frame, uint32_t position_ms)
+{
+    if (!audio.lock) return;
+    rg_mutex_take(audio.lock, -1);
+    audio.track_boundary = frame;
+    audio.track_position_ms = position_ms;
+    audio.track_marked = true;
+    rg_mutex_give(audio.lock);
 }
 
 int media_audio_fill_percent(void)

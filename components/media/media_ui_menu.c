@@ -8,6 +8,7 @@
 #include "media_audio.h"
 #include "media_fft.h"
 #include "media_metadata.h"
+#include "media_lighting.h"
 #include "media_net.h"
 #include "media_playlist.h"
 #include "media_ui_internal.h"
@@ -82,6 +83,43 @@ static rg_gui_event_t normalize_cb(rg_gui_option_t *option, rg_gui_event_t event
         cfg->normalization = (media_normalize_t)cycle((int)cfg->normalization,
                                                       MEDIA_NORMALIZE_COUNT, event);
     strcpy(option->value, names[cfg->normalization % MEDIA_NORMALIZE_COUNT]);
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t gapless_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    media_settings_t *cfg = media_settings();
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER)
+        cfg->gapless = !cfg->gapless;
+    strcpy(option->value, cfg->gapless ? "On" : "Off");
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t crossfade_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    media_settings_t *cfg = media_settings();
+    int maximum = media_profile()->profile == MEDIA_MEMORY_LOW ? 3 : 5;
+    cfg->crossfade_s = cycle(cfg->crossfade_s, maximum + 1, event);
+    if (cfg->crossfade_s) sprintf(option->value, "%d s", cfg->crossfade_s);
+    else strcpy(option->value, "Off");
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t lighting_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    media_settings_t *cfg = media_settings();
+    cfg->lighting = (media_light_t)cycle(cfg->lighting, MEDIA_LIGHT_COUNT, event);
+    strcpy(option->value, media_lighting_name(cfg->lighting));
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t light_brightness_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    media_settings_t *cfg = media_settings();
+    if (event == RG_DIALOG_PREV) cfg->lighting_brightness -= 5;
+    if (event == RG_DIALOG_NEXT || event == RG_DIALOG_ENTER) cfg->lighting_brightness += 5;
+    cfg->lighting_brightness = media_clampi(cfg->lighting_brightness, 0, 100);
+    sprintf(option->value, "%d%%", cfg->lighting_brightness);
     return RG_DIALOG_VOID;
 }
 
@@ -456,7 +494,7 @@ void media_ui_visualizer_menu(void)
 
 void media_ui_settings_menu(void)
 {
-    char value_buffers[16][32];
+    char value_buffers[20][32];
     for (size_t i = 0; i < RG_COUNT(value_buffers); ++i)
         value_buffers[i][0] = 0;
 
@@ -467,6 +505,8 @@ void media_ui_settings_menu(void)
         {0, "Scan on startup",     value_buffers[3], RG_DIALOG_FLAG_NORMAL, &scan_startup_cb},
         RG_DIALOG_SEPARATOR,
         {0, "Normalization",       value_buffers[4], RG_DIALOG_FLAG_NORMAL, &normalize_cb},
+        {0, "Gapless playback",    value_buffers[15], RG_DIALOG_FLAG_NORMAL, &gapless_cb},
+        {0, "Crossfade",           value_buffers[16], RG_DIALOG_FLAG_NORMAL, &crossfade_cb},
         {0, "Pause on unplug",     value_buffers[5], RG_DIALOG_FLAG_NORMAL, &pause_unplug_cb},
         {0, "Skip failed tracks",  value_buffers[7], RG_DIALOG_FLAG_NORMAL, &skip_error_cb},
         RG_DIALOG_SEPARATOR,
@@ -476,6 +516,8 @@ void media_ui_settings_menu(void)
         {0, "Dynamic theme",       value_buffers[10], RG_DIALOG_FLAG_NORMAL, &dynamic_theme_cb},
         {0, "Low effects mode",    value_buffers[11], RG_DIALOG_FLAG_NORMAL, &low_effects_cb},
         {0, "Visualizer FPS",      value_buffers[12], RG_DIALOG_FLAG_NORMAL, &viz_fps_cb},
+        {0, "Audio lighting",      value_buffers[17], media_lighting_available() ? RG_DIALOG_FLAG_NORMAL : RG_DIALOG_FLAG_DISABLED, &lighting_cb},
+        {0, "LED brightness",      value_buffers[18], media_lighting_available() ? RG_DIALOG_FLAG_NORMAL : RG_DIALOG_FLAG_DISABLED, &light_brightness_cb},
         RG_DIALOG_SEPARATOR,
         {0, "Lyrics",              value_buffers[13], RG_DIALOG_FLAG_NORMAL, &lyrics_toggle_cb},
         {0, "Debug overlay",       value_buffers[14], RG_DIALOG_FLAG_NORMAL, &debug_cb},

@@ -35,12 +35,12 @@ void media_ui_load_theme(void)
 {
     // Read once per session rather than per frame: it is a JSON lookup, and a theme cannot
     // change while the player owns the screen.
-    mui.base.background = rg_gui_get_theme_color("media", "background", C_BLACK);
-    mui.base.surface = rg_gui_get_theme_color("media", "surface", C_RGB(22, 22, 26));
+    mui.base.background = rg_gui_get_theme_color("media", "background", C_RGB(8, 13, 23));
+    mui.base.surface = rg_gui_get_theme_color("media", "surface", C_RGB(19, 29, 43));
     mui.base.text = rg_gui_get_theme_color("media", "text", C_RGB(240, 240, 244));
     mui.base.text_dim = rg_gui_get_theme_color("media", "text_dim", C_RGB(140, 140, 150));
     mui.base.divider = rg_gui_get_theme_color("media", "divider", C_RGB(48, 48, 54));
-    mui.base.accent = rg_gui_get_theme_color("media", "accent", C_RGB(90, 170, 255));
+    mui.base.accent = rg_gui_get_theme_color("media", "accent", C_RGB(65, 220, 190));
     mui.base.accent_dim = rg_gui_get_theme_color("media", "accent_dim", C_RGB(50, 100, 160));
     mui.base.highlight = rg_gui_get_theme_color("media", "highlight", C_RGB(160, 205, 255));
 }
@@ -84,7 +84,7 @@ static void compute_layout(void)
     l->width = rg_display_get_width();
     l->height = rg_display_get_height();
     l->safe = rg_gui_get_safe_area();
-    l->line_h = RG_MAX(rg_gui_get_font_height(), 8);
+    l->line_h = RG_MAX(TEXT_RECT("Ag", 0).height, 8); // Includes renderer padding.
     l->pad = RG_MAX(l->width / 60, 3);
 
     l->header_h = l->line_h + l->pad * 2;
@@ -179,7 +179,8 @@ void media_ui_draw_header(const char *title, const char *right)
     rg_gui_draw_rect(0, 0, l->width, l->header_h, 0, 0, media_color_scale(mui.theme.surface, 200));
     rg_gui_draw_rect(0, l->header_h - 1, l->width, 1, 0, 0, mui.theme.divider);
 
-    rg_gui_draw_text(l->pad * 2, l->pad, l->width / 2, title ?: "", mui.theme.text, C_TRANSPARENT,
+    rg_gui_draw_rect(l->pad, l->pad + 2, 2, l->line_h - 4, 0, 0, mui.theme.accent);
+    rg_gui_draw_text(l->pad * 2, l->pad, l->width / 2 - l->pad * 3, title ?: "", mui.theme.text, C_TRANSPARENT,
                      RG_TEXT_ALIGN_LEFT);
 
     if (right && *right)
@@ -208,11 +209,30 @@ void media_ui_draw_marquee(int x, int y, int w, const char *text, rg_color_t col
     if (!text || !*text || w <= 0)
         return;
 
-    rg_rect_t size = TEXT_RECT(text, 0);
+    // Metadata is a single-line label. Sanitize embedded newlines/control bytes so a
+    // malicious or malformed tag cannot alter the widget's vertical footprint.
+    char clean[MEDIA_MAX_PATH + 1];
+    media_utf8_copy(clean, sizeof(clean), text);
+    for (char *p = clean; *p; ++p) if ((unsigned char)*p < 32) *p = ' ';
+    text = clean;
+    rg_rect_t size = rg_gui_draw_text(0, 0, 0, text, 0, 0, flags | RG_TEXT_DUMMY_DRAW);
 
     if (size.width <= w || !active)
     {
-        rg_gui_draw_text(x, y, w, text, color, C_TRANSPARENT, flags | RG_TEXT_ALIGN_LEFT);
+        if (size.width > w)
+        {
+            char clipped[MEDIA_MAX_PATH + 1];
+            media_utf8_copy(clipped, sizeof(clipped), text);
+            size_t length = strlen(clipped);
+            while (length && rg_gui_draw_text(0, 0, 0, clipped, 0, 0,
+                       flags | RG_TEXT_DUMMY_DRAW).width > w)
+            {
+                do { length--; } while (length && ((unsigned char)clipped[length] & 0xC0) == 0x80);
+                clipped[length] = 0;
+            }
+            rg_gui_draw_text(x, y, w, clipped, color, C_TRANSPARENT, flags | RG_TEXT_ALIGN_LEFT);
+        }
+        else rg_gui_draw_text(x, y, w, text, color, C_TRANSPARENT, flags | RG_TEXT_ALIGN_LEFT);
         return;
     }
 
@@ -230,7 +250,7 @@ void media_ui_draw_marquee(int x, int y, int w, const char *text, rg_color_t col
         rg_utf8_decode(&next);
         if (next == p)
             break;
-        if (TEXT_RECT(next, 0).width <= w)
+        if (rg_gui_draw_text(0, 0, 0, next, 0, 0, flags | RG_TEXT_DUMMY_DRAW).width <= w)
         {
             offsets[++steps] = (size_t)(next - text);
             break; // The remainder now fits; this is the last useful position
@@ -290,9 +310,9 @@ void media_ui_draw_overlay(void)
 
     media_ui_draw_panel(x, y, w, h, media_color_scale(mui.theme.surface, 235), mui.theme.divider);
 
-    rg_gui_draw_text(x + l->pad * 2, y + l->pad, w - l->pad * 4, mui.overlay_title, mui.theme.text,
+    rg_gui_draw_text(x + l->pad * 2, y + l->pad, w / 2 - l->pad * 2, mui.overlay_title, mui.theme.text,
                      C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
-    rg_gui_draw_text(x + l->pad * 2, y + l->pad, w - l->pad * 4, mui.overlay_value,
+    rg_gui_draw_text(x + w / 2, y + l->pad, w / 2 - l->pad * 2, mui.overlay_value,
                      mui.theme.accent, C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
 
     if (mui.overlay_percent >= 0)
@@ -899,6 +919,9 @@ static void on_player_event(media_event_t event, intptr_t arg, void *user)
     // when that actually happens.
     switch (event)
     {
+    case MEDIA_EVENT_TRANSITION_FALLBACK:
+        media_ui_show_overlay("Crossfade", "Using gapless", -1);
+        break;
     case MEDIA_EVENT_TRACK_CHANGED:
         mui.marquee_reset_at = rg_system_timer();
         mui.lyric_index = -1;

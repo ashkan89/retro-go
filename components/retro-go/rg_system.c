@@ -105,15 +105,19 @@ static int overclockLevel, overclockMhz;
 static int requestedOverclockLevel;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
+static rg_color_t ledOverride = C_NONE;
 static rg_mutex_t *ledLock;
 static bool hapticEnabled = true;
 static int hapticStrength = 100;
 static rg_stats_t statistics;
 static rg_app_t app;
 // Slot 0 is reserved, so this is one more than the number of concurrent rg_task_create()
-// tasks. The media player alone runs up to five (audio, decode, IO, artwork, scanning) on
-// top of rg_display/rg_input/rg_sysmon, which overflowed the previous size of 8.
+// tasks. Continuous playback adds a next-track worker/source and reactive lighting.
+#if defined(RG_SEPARATE_DISPLAY_AUDIO) && RG_SEPARATE_DISPLAY_AUDIO
+static rg_task_t tasks[20];
+#else
 static rg_task_t tasks[16];
+#endif
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_VIBRATOR)
 static esp_timer_handle_t hapticTimer;
 #endif
@@ -607,18 +611,18 @@ static void update_indicators(bool reset_animation)
 {
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
     bool disk_visible = app.indicatorsMask & (1 << RG_INDICATOR_ACTIVITY_DISK);
-    static int animation_step = 0;
     rg_color_t newColor = 0; // LED off
-
-    if (reset_animation)
-        animation_step = 0;
-    else
-        animation_step++;
+    (void)reset_animation;
+    // Disk hooks and audio-reactive updates can arrive many times a second. Warning
+    // cadence follows time, rather than accelerating with I/O or restarting every read.
+    int64_t now = rg_system_timer();
 
     if (indicators & (3 << RG_INDICATOR_CRITICAL))
-        newColor = C_RED; // Make it flash rapidly!
+        newColor = (now / 250000 & 1) ? 0 : C_RED;
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
-        newColor = (animation_step & 1) ? C_NONE : C_RED;
+        newColor = (now / 500000 & 1) ? 0 : C_RED;
+    else if (__atomic_load_n(&ledOverride, __ATOMIC_ACQUIRE) >= 0)
+        newColor = __atomic_load_n(&ledOverride, __ATOMIC_RELAXED);
     else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_WRITE)))
         newColor = C_RED;
     else if (disk_visible && (indicators & (1 << RG_INDICATOR_ACTIVITY_DISK_READ)))
@@ -988,7 +992,26 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     return &app;
 }
 
-// FIXME: None of this is threadsafe. It works for now, but eventually it needs fixing...
+// The UI, source and next-track workers may create tasks concurrently. Reserve the
+// function field atomically and publish it as free only after every other field is reset.
+static rg_task_t *task_reserve(void (*func)(void *))
+{
+    for (size_t i = 1; i < RG_COUNT(tasks); ++i)
+    {
+        void (*expected)(void *) = NULL;
+        if (__atomic_compare_exchange_n(&tasks[i].func, &expected, func, false,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return &tasks[i];
+    }
+    return NULL;
+}
+
+static void task_release(rg_task_t *task)
+{
+    // func is the first field. Keep its reservation throughout clearing queue/handle/name.
+    memset((uint8_t *)task + sizeof(task->func), 0, sizeof(*task) - sizeof(task->func));
+    __atomic_store_n(&task->func, NULL, __ATOMIC_RELEASE);
+}
 
 #ifdef ESP_PLATFORM
 static void task_wrapper(void *arg)
@@ -998,7 +1021,7 @@ static void task_wrapper(void *arg)
     task->queue = xQueueCreate(1, sizeof(rg_task_msg_t));
     (task->func)(task->arg);
     vQueueDelete(task->queue);
-    memset(task, 0, sizeof(rg_task_t));
+    task_release(task);
     vTaskDelete(NULL);
 }
 #else
@@ -1007,7 +1030,7 @@ static int task_wrapper(void *arg)
     rg_task_t *task = arg;
     task->handle = SDL_ThreadID();
     (task->func)(task->arg);
-    memset(task, 0, sizeof(rg_task_t));
+    task_release(task);
     return 0;
 }
 #endif
@@ -1015,18 +1038,12 @@ static int task_wrapper(void *arg)
 rg_task_t *rg_task_create(const char *name, void (*taskFunc)(void *arg), void *arg, size_t stackSize, int priority, int affinity)
 {
     RG_ASSERT_ARG(name && taskFunc);
-    rg_task_t *task = NULL;
-
-    for (size_t i = 1; i < RG_COUNT(tasks); ++i)
+    rg_task_t *task = task_reserve(taskFunc);
+    if (!task)
     {
-        if (tasks[i].func)
-            continue;
-        task = memset(&tasks[i], 0, sizeof(rg_task_t));
-        break;
+        RG_LOGE("No task slot for '%s'", name);
+        return NULL;
     }
-    RG_ASSERT(task, "Out of task slots");
-
-    task->func = taskFunc;
     task->arg = arg;
     task->handle = 0;
     strncpy(task->name, name, 15);
@@ -1045,7 +1062,7 @@ rg_task_t *rg_task_create(const char *name, void (*taskFunc)(void *arg), void *a
 #endif
 
     RG_LOGE("Task creation failed: name='%s', fn='%p', stack=%d\n", name, taskFunc, (int)stackSize);
-    memset(task, 0, sizeof(rg_task_t));
+    task_release(task);
 
     return NULL;
 }
@@ -1718,20 +1735,26 @@ bool rg_system_set_led_color(rg_color_t color)
     static int64_t led_last_update;
     const int64_t now = rg_system_timer();
 
+    if (ledLock && !rg_mutex_take(ledLock, 50))
+        return false;
+
     if (color == ledColor)
+    {
+        if (ledLock) rg_mutex_give(ledLock);
         return true;
+    }
 
     // Rate limited uniformly, including turning the LED off: exempting "off" would still
     // leave one frame per SD transaction. A suppressed change is not forgotten -- ledColor
     // is left stale, so update_indicators() re-drives it, and the once-a-second sweep in
     // system_monitor_task() guarantees the LED converges within a second at worst.
     if ((now - led_last_update) < 15000)
+    {
+        if (ledLock) rg_mutex_give(ledLock);
         return true;
+    }
 
     led_last_update = now;
-
-    if (ledLock)
-        rg_mutex_take(ledLock, 1000);
 
 #if defined(ESP_PLATFORM) && defined(RG_GPIO_LED) && defined(RG_GPIO_LED_WS2812)
     success = led_rmt_set_color(color);
@@ -1758,6 +1781,12 @@ bool rg_system_set_led_color(rg_color_t color)
 rg_color_t rg_system_get_led_color(void)
 {
     return ledColor;
+}
+
+void rg_system_set_led_override(rg_color_t color)
+{
+    __atomic_store_n(&ledOverride, color, __ATOMIC_RELEASE);
+    update_indicators(false);
 }
 
 bool rg_system_set_haptic(bool on)

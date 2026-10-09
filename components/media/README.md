@@ -98,7 +98,7 @@ a path on the card or an `http(s)://` URL, and every decoder below works over ei
 
 | Format | Decoder | Seek | Gapless | Notes |
 | --- | --- | --- | --- | --- |
-| MP3 | minimp3 (CC0) | yes | no | CBR, VBR (Xing/Info, VBRI) and free-format. Encoder delay is not compensated. |
+| MP3 | minimp3 (CC0) | yes | with trim tags | CBR, VBR (Xing/Info, VBRI), free-format; LAME-compatible encoder delay/padding is removed. |
 | WAV | in-tree | yes | yes | PCM 8/16/24/32-bit and 32-bit float, 1–8 channels |
 | FLAC | dr_flac (public domain) | yes | yes | 1–8 channels, any bit depth |
 | AAC / M4A | — | — | — | Tags and artwork parse; no decoder is vendored (`MEDIA_CODEC_AAC`) |
@@ -107,9 +107,12 @@ a path on the card or an `http(s)://` URL, and every decoder below works over ei
 Anything else reports **Unsupported format** and, with *Skip failed tracks* on, playback
 moves to the next entry.
 
-Everything is normalised to interleaved signed 16-bit stereo at the track's native rate.
-Mono is duplicated, channels beyond stereo are folded down, and the I2S clock is
-reconfigured (muted, then faded back in) whenever the rate changes between tracks.
+Decoders normalise to interleaved signed 16-bit stereo at the track's native rate. Mono
+is duplicated and channels beyond stereo are folded down. Continuous finite-file sessions
+(gapless or crossfade) use a fixed 44.1 kHz output clock, streaming rate conversion and a
+fourth-order anti-alias filter when downsampling. Their track switches preserve I2S and
+queued PCM. With both transitions disabled, ordinary opens use the native output rate
+and mute/fade across clock changes (the output stage supports 8–48 kHz).
 
 ### Metadata
 
@@ -350,7 +353,7 @@ SD card
 [media_io]        media_source.c   -> compressed ring (PSRAM)
    |
    v
-[media_dec]       media_player.c + codecs/  -> PCM ring (PSRAM)
+[media_dec]       codecs -> rate conversion -> track gain -> tail/mixer -> PCM ring (PSRAM)
    |
    v
 [media_audio]     media_audio.c    -> EQ -> gain -> limiter -> fade -> rg_audio_submit()
@@ -360,6 +363,8 @@ speaker / headphones
 
 [media_scan]  library indexing        (priority 1, yields per file)
 [media_art]   artwork decode          (priority 1, backs off under pressure)
+[media_next]  next file open/tags/prime (priority 3, UI core)
+[media_light] reactive LED updates    (priority 2, UI core, ~30 Hz)
 main task     UI render + input       (reads a snapshot, never the decoder)
 ```
 
@@ -368,6 +373,8 @@ main task     UI render + input       (reads a snapshot, never the decoder)
 | `media_audio` | 8 | `RG_TASK_AFFINITY_AUDIO` | 4 KB | Drain PCM into I2S |
 | `media_dec` | 7 | `RG_TASK_AFFINITY_AUDIO` | 22 KB | Decode into PCM |
 | `media_io` | 4 | `RG_TASK_AFFINITY_IO` | 4 KB | SD prefetch |
+| `media_next` | 3 | `RG_TASK_AFFINITY_MAIN` | 22 KB | Prepare next decoder and metadata |
+| `media_light` | 2 | `RG_TASK_AFFINITY_MAIN` | 3 KB | GPIO48 RGB effects through the existing RMT driver |
 | `media_scan` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | Library indexing |
 | `media_art` | 1 | `RG_TASK_AFFINITY_MAIN` | 8 KB | JPEG/PNG decode |
 
@@ -463,9 +470,13 @@ All under the `launcher` namespace with a `Media.` prefix, stored via
 `rg_settings_*` (NVS-backed). Nothing large is ever written to NVS.
 
 Background playback · Resume playback · Remember queue · Scan on startup · Normalization ·
-Gapless · Crossfade · Skip failed tracks · **Live stream buffer** · Album-art background ·
+Gapless · Crossfade · Pause on unplug · Skip failed tracks · **Live stream buffer** · Album-art background ·
 Dynamic theme · Low effects · Visualizer + FPS · Lyrics + offset · EQ enable/preset/7 band
-gains · Sleep timer · Debug overlay · Media root.
+gains · Audio lighting + brightness · Sleep timer · Debug overlay · Media root.
+
+Gapless defaults on; crossfade defaults off. Crossfade offers 0–3 seconds on 2 MB boards
+and 0–5 seconds on larger boards. A changed transition mode/duration takes effect on the
+next track; an overlap already playing completes. LED changes apply immediately.
 
 Play statistics are debounced (30 s) and written atomically; favourites are written
 immediately because they are an explicit user action.
@@ -538,7 +549,11 @@ disk-activity indicator around *every* block transfer, and each toggle is a bloc
 transmit plus a 300 µs latch delay held under the LED mutex; streaming audio from the card
 turned that into a constant stream of WS2812 frames on the same lock the IO task needs.
 
-**`rg_task_t tasks[]` grew from 8 to 16.** See the note in §4.
+**Task slots are reserved atomically.** Next-track and source workers can create tasks
+concurrently with the UI. A slot is released only after its name, queue and handle are
+cleared, preventing one task from overwriting another's registration. The launcher has
+20 slots for simultaneous playback, prefetch, artwork, scanning and lighting; other apps
+retain 16. Exhaustion returns a creation failure instead of panicking.
 
 **`CONFIG_I2S_SKIP_LEGACY_CONFLICT_CHECK=y`** on the six ESP32-S3 targets removes the
 `legacy i2s driver is deprecated` notice printed on every boot. Note this also disables
@@ -554,11 +569,12 @@ detection and dual-DAC routing that need hardware to validate.
 * **AAC/M4A, Ogg Vorbis and Opus have no decoder.** Their tags, duration and artwork parse
   correctly and the codec registry already knows about them, so adding a `codec_*.c` is the
   only work required. Files in these formats currently report *Unsupported format*.
-* **Gapless transitions and crossfade are not implemented.** The settings controls have
-  been removed and saved values are ignored. WAV/FLAC decoders do not add codec delay, but
-  opening the next track only after draining still introduces a transition gap. MP3 also
-  needs encoder/decoder-delay compensation. A next-track decoder and sample-accurate
-  transition/mixing path are required before these features can be advertised.
+* **Live broadcasts have no transition endpoint.** Gapless/crossfade apply to finite local
+  and HTTP files. Playlist URLs and broadcasts open normally. A missing, slow or unready
+  next file can require buffering; insufficient crossfade memory or an unknown-length
+  incoming file falls back to gapless (shown by an overlay).
+  MP3s without valid delay/padding tags retain their encoded silence because its length
+  cannot safely be inferred. Manual skip and seek cancel the automatic overlap.
 * **Waveform overview** (`waveform_overview` in the profile) is reserved but not generated;
   the seek bar is linear.
 * **Remote listings block the UI while they load.** A "Connecting..." message is shown, but a
@@ -571,10 +587,8 @@ detection and dual-DAC routing that need hardware to validate.
   offers category, folder, album, artist and genre navigation instead.
 * **Bookmarks** for long recordings are not implemented; the resume-position mechanism
   (automatic for files longer than 15 minutes) covers the common podcast/audiobook case.
-* **RTL shaping** is not performed. UTF-8 metadata is preserved byte-exact and truncation is
-  always codepoint-aligned, and all text layout goes through `media_ui_draw_marquee`, so
-  bidi/shaping can be added in one place later. Glyphs the current font lacks render as the
-  font's replacement rather than corrupting the string.
+* **Font coverage varies.** Metadata is UTF-8 and clipping is codepoint-aligned. The shared
+  GUI shapes Persian/Arabic; choose a Sans font containing the corresponding glyphs.
 
 
 ## 13. Validation and release readiness
@@ -587,6 +601,15 @@ chunks and DMA padding, position/seek bases, stop-before-task-entry, six EQ samp
 all FFT sizes, network prebuffer, live pre-roll, low-memory buffer fallback and short-file
 startup. CI and release workflows run these tests with the native C compiler.
 
+The feature suite also runs the actual rate converter, tail FIFO, crossfade mixer,
+controller transition helpers, shuffle lookahead and LED arbitration. It verifies sample
+counts at six rates, downsampling alias rejection, exact one-second MP3 lengths and replay at 22.05/44.1/48 kHz, fade
+endpoints/headroom/block continuity, lossless joins, stale queue handling, sleep boundaries,
+allocation fallback, 20,000 concurrent task-slot reservations, warning priority, LED teardown and non-overlapping
+player geometry at six screen sizes. The generated MP3 fixtures contain original tones.
+Add `--preview-dir .cache/media-previews` to render Now Playing using the actual drawing
+helpers and repository Sans glyphs into host PPM framebuffers.
+
 Background housekeeping is polled at 10 Hz from the launcher UI loop, so sleep timers,
 play statistics, resume positions, station titles and headphone-disconnect pause continue
 when the player screen is closed. The existing `pause_on_unplug` preference is now exposed
@@ -597,9 +620,13 @@ headphone-disconnect behavior and display/audio affinities for all eight release
 with both launcher and emulator defaults.
 
 ESP-IDF 5.5.5 launcher builds are checked for N16R8 ILI9341 and N8R2 ST7796,
-including their actual target partition budgets. N8R2 launcher PNG code uses size
-optimization to preserve flash headroom; audio/decoder optimizations are retained. These host
+including their actual target partition budgets. N8R2 launcher display/helpers, artwork
+and UI FFT use size optimization; I2S, output DSP, decoders and the mixer retain `-O2`. These host
 checks and compilation do not measure real DMA deadlines, analog noise or task stack usage.
+The checked release binaries are 1,518,240 bytes for N16R8 ILI9341 (316,768 bytes spare)
+and 1,505,456 bytes for N8R2 ST7796 (1,872 bytes spare). These are measured against the
+target launcher budgets, rather than the larger temporary IDF build partition. N8R2 has
+very little room for further additions; recheck its budget after every firmware change.
 Before release, test MP3/WAV/FLAC at 8/32/44.1/48 kHz on both an N8R2 and N16R8 device:
 
 - Run full-screen visualizers and artwork, browse large libraries and rescan during playback.
@@ -610,6 +637,39 @@ Before release, test MP3/WAV/FLAC at 8/32/44.1/48 kHz on both an N8R2 and N16R8 
   leave/re-enter background playback, expire the sleep timer and launch an emulator.
 - Confirm the final audio fragment is audible, no old PCM survives beyond the hardware
   reserve on a seek, stack headroom remains positive and repeated sessions reclaim memory.
+- Listen to adjacent lossless tracks and trimmed MP3s; exercise every crossfade duration,
+  mixed rates, short songs, queue edits, repeat/shuffle wraps and timed/end-of-album sleep.
+- Run every RGB mode while rendering, browsing and streaming. Pause/resume, silence,
+  background playback, low battery and critical warnings must retain the correct ownership.
+
+## 14. Continuous transitions, player layout and lighting
+
+The next-track worker prepares a separate decoder and metadata on core 0. The decode
+task retains the outgoing final PCM window, including for unknown/inaccurate durations,
+then mixes it with the incoming samples using complementary ramps. Short incoming tracks
+limit the overlap to half their available duration. ReplayGain is applied per track before
+mixing; EQ, limiting and the sleep fade run once on output. A gapless join appends samples
+without drain padding, flush, mute or I2S restart. Timeline markers and delayed metadata
+publication change the song details at the output boundary instead of when decoding gets
+ahead. Queue identities are checked before mixing and again before promotion; a manual
+Next during a fade selects the incoming song. Sleep-at-track/album rules prevent unwanted
+automatic transitions. Decoder delay compensation follows
+[upstream minimp3](https://github.com/lieff/minimp3/blob/master/minimp3_ex.h).
+
+Now Playing reserves status, artwork/details, timeline, times and transport areas before
+drawing. Optional next/codec rows yield space to metadata on small screens or large fonts.
+Titles wrap or scroll within their own box, control bytes in tags become spaces, and the
+theme guarantees accent contrast. Lyrics use an active-line card; visualizer times,
+overlays, headers and information columns have separate width budgets.
+
+On WS2812 boards, **Settings → Audio lighting** selects Off, Rainbow, Music Sync,
+Bass Pulse, Beat Dance or Spectrum, with a separate brightness control. The audio task
+publishes only a bounded integer energy/bass envelope. The lighting task smooths it,
+detects transients and sends colours through `rg_system_set_led_override()` at ~30 Hz;
+it never runs RMT or FFT in the audio task. Spectrum maps bass, overall energy and residual
+energy into RGB. Music overrides normal SD/activity lighting; battery/critical warnings
+take priority and blink by wall-clock time. Pause, mute, stop, stale audio and teardown restore
+status lighting. Brightness also honours the existing board driver limit and gamma.
 
 Known format, networking and transition limitations in section 12 remain. Production
 readiness requires device results; priority/core isolation cannot compensate for sustained

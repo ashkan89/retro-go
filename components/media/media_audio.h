@@ -74,3 +74,6 @@ int media_audio_fill_percent(void);
 size_t media_audio_buffered_frames(void);
 uint32_t media_audio_underruns(void);
 uint64_t media_audio_frames_played(void);
+
+/** Schedule a position reset at an absolute submitted-frame boundary, preserving queued PCM. */
+void media_audio_mark_track(uint64_t frame, uint32_t position_ms);

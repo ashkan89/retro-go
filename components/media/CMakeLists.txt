@@ -25,6 +25,7 @@ set_source_files_properties(
     media_eq.c
     media_fft.c
     media_audio.c
+    media_transition.c
     media_image.c
     PROPERTIES COMPILE_FLAGS -O2
 )
@@ -34,6 +35,11 @@ set_source_files_properties(
     codecs/codec_flac.c
     PROPERTIES COMPILE_FLAGS "-O2 -Wno-unused-but-set-variable -Wno-type-limits"
 )
+
+if(RG_BUILD_TARGET MATCHES "_N8R2_")
+    # Artwork and UI FFT are off the audio path; spend the smaller board's flash on playback.
+    set_source_files_properties(media_image.c media_fft.c PROPERTIES COMPILE_FLAGS -Os)
+endif()
 
 if(RG_BUILD_RELEASE)
     component_compile_options(-DRG_BUILD_RELEASE=1)

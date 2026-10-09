@@ -40,6 +40,17 @@ typedef enum
     MEDIA_PAGE_COUNT,
 } media_page_t;
 
+typedef enum
+{
+    MEDIA_LIGHT_OFF = 0,
+    MEDIA_LIGHT_RAINBOW,
+    MEDIA_LIGHT_MUSIC,
+    MEDIA_LIGHT_BASS,
+    MEDIA_LIGHT_BEAT,
+    MEDIA_LIGHT_SPECTRUM,
+    MEDIA_LIGHT_COUNT,
+} media_light_t;
+
 typedef struct
 {
     char root[MEDIA_MAX_PATH + 1];
@@ -63,8 +74,10 @@ typedef struct
     int32_t lyrics_offset_ms;
 
     media_normalize_t normalization;
-    bool gapless;                   // Reserved; false until track-transition support exists.
-    int crossfade_s;                // Reserved; currently forced to 0.
+    bool gapless;
+    int crossfade_s;                // 0..3 s on 2 MB boards, 0..5 s otherwise.
+    media_light_t lighting;
+    int lighting_brightness;        // 0..100%; multiplied by the board's brightness limit.
 
     bool artwork_background;
     bool dynamic_theme;

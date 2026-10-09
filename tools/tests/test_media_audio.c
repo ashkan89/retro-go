@@ -3,6 +3,7 @@
 #include "media_ring.c"
 #include "media_eq.c"
 #include "media_fft.c"
+void media_lighting_feed(const int16_t *pcm, size_t frames) { (void)pcm; (void)frames; }
 #include "media_audio.c"
 #ifdef _WIN32
 #include <windows.h>

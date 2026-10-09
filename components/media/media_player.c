@@ -15,12 +15,14 @@
 #include "media_eq.h"
 #include "media_fft.h"
 #include "media_library.h"
+#include "media_lighting.h"
 #include "media_lyrics.h"
 #include "media_metadata.h"
 #include "media_net.h"
 #include "media_player.h"
 #include "media_queue.h"
 #include "media_settings.h"
+#include "media_transition.h"
 #include "media_util.h"
 
 #undef RG_LOG_TAG
@@ -34,6 +36,20 @@ typedef enum
     CMD_SEEK,
     CMD_STOP,
 } command_t;
+
+typedef struct
+{
+    volatile bool done;
+    media_decoder_t *decoder;
+    media_pcm_reader_t reader;
+    media_track_t track;
+    char path[MEDIA_MAX_PATH + 1];
+    char from[MEDIA_MAX_PATH + 1];
+    int index;
+    uint32_t id;
+    uint32_t rate;
+    uint32_t serial;
+} prepared_track_t;
 
 static struct
 {
@@ -52,6 +68,20 @@ static struct
 
     media_decoder_t *decoder;
     int16_t *block;
+    int16_t *mix_block;
+    media_pcm_reader_t reader;
+    media_tail_t tail;
+    prepared_track_t *prepared; // Worker owns it until done is published with release ordering.
+    bool prepare_attempted;
+    bool continuous;
+    bool finishing;
+    bool overlapping;
+    size_t overlap_frames, overlap_done;
+    uint64_t written_frames;
+    bool announcement_pending;
+    uint64_t announcement_frame;
+    media_track_t announcement_track;
+    char announcement_path[MEDIA_MAX_PATH + 1];
 
     media_state_t state;
     media_err_t last_error;
@@ -115,6 +145,20 @@ static struct
 #define PREROLL_STALL_US (8 * 1000000LL)
 
 static size_t bytes_for_ms(uint32_t ms);
+static void cancel_transition(void);
+static void emit(media_event_t event, intptr_t arg);
+
+static void configure_tail(uint32_t rate)
+{
+    int seconds = player.continuous ? media_clampi(media_settings()->crossfade_s, 0,
+        media_profile()->profile == MEDIA_MEMORY_LOW ? 3 : 5) : 0;
+    size_t frames = (size_t)seconds * rate;
+    if (player.tail.capacity != frames && !media_tail_init(&player.tail, frames))
+    {
+        RG_LOGW("Crossfade reserve unavailable; using gapless for this track");
+        emit(MEDIA_EVENT_TRANSITION_FALLBACK, 0);
+    }
+}
 
 static void emit(media_event_t event, intptr_t arg)
 {
@@ -188,6 +232,7 @@ static float compute_gain(const media_track_t *track)
 
 static void release_track_resources(void)
 {
+    cancel_transition();
     // UI source queries finish before detaching; closing may block on network I/O, so do
     // that outside the lock. Lyrics belong to the UI and are freed on generation change.
     rg_mutex_take(player.lock, -1);
@@ -394,7 +439,7 @@ static bool open_current(void)
 
     rg_mutex_take(player.lock, -1);
     // Fill in anything the tag parser could not determine from the decoder itself.
-    if (!player.track.duration_ms)
+    if ((!player.track.duration_ms || player.decoder->gapless) && player.decoder->duration_ms)
         player.track.duration_ms = player.decoder->duration_ms;
     if (!player.track.sample_rate)
         player.track.sample_rate = player.decoder->sample_rate;
@@ -404,17 +449,24 @@ static bool open_current(void)
         player.track.bits_per_sample = player.decoder->bits_per_sample;
     if (!player.track.bitrate)
         player.track.bitrate = player.decoder->bitrate;
+    player.track.gapless_ok = player.decoder->gapless;
+    player.track.codec = player.decoder->ops->codec;
 
     rg_mutex_give(player.lock);
 
-    if (!media_audio_set_sample_rate(player.decoder->sample_rate))
+    // Continuous finite-file sessions use one clock. Convert later tracks to this rate instead
+    // of muting/restarting I2S between 44.1/48 kHz (or high-resolution) files.
+    player.continuous = !media_source_is_live(player.decoder->source) &&
+        (media_settings()->gapless || media_settings()->crossfade_s > 0);
+    uint32_t output_rate = player.continuous ? 44100 : player.decoder->sample_rate;
+    if (!media_audio_set_sample_rate(output_rate))
     {
         set_error(MEDIA_ERR_UNSUPPORTED, "Sample rate");
         player.consecutive_failures++;
         return false;
     }
     media_audio_flush(0);
-    media_audio_set_gain(compute_gain(&player.track));
+    media_audio_set_gain(1.0f); // Track gain is applied before the transition mixer.
     player.last_error = MEDIA_OK;
     player.error_text[0] = 0;
 
@@ -438,6 +490,10 @@ static bool open_current(void)
         }
     }
 
+    media_pcm_reader_init(&player.reader, player.decoder, output_rate);
+    player.written_frames = media_audio_frames_played();
+    player.prepare_attempted = false;
+    configure_tail(output_rate);
     player.live = media_source_is_live(player.decoder->source);
 
     if (player.live)
@@ -654,6 +710,291 @@ static void service_buffering(void)
     }
 }
 
+static bool prepared_done(void)
+{
+    return player.prepared && __atomic_load_n(&player.prepared->done, __ATOMIC_ACQUIRE);
+}
+
+static void discard_prepared(void)
+{
+    if (prepared_done())
+    {
+        media_decoder_close(player.prepared->decoder);
+        free(player.prepared);
+        player.prepared = NULL;
+    }
+}
+
+static void cancel_transition(void)
+{
+    // A pending worker is never freed underneath its open/read. Its immutable `from`
+    // identity makes the result stale; the controller reaps it after completion.
+    discard_prepared();
+    media_tail_free(&player.tail);
+    player.finishing = player.overlapping = player.announcement_pending = false;
+    player.prepare_attempted = false;
+    memset(&player.reader, 0, sizeof(player.reader));
+}
+
+static void prepare_task(void *arg)
+{
+    prepared_track_t *job = arg;
+    media_err_t err;
+    bool network = media_net_is_url(job->path);
+    job->decoder = media_decoder_open(job->path, network ? media_profile()->network_buffer : 32 * 1024, &err);
+    if (job->decoder && media_source_is_live(job->decoder->source))
+    {
+        // A broadcast has no finite end to overlap. Open it normally after this file.
+        media_decoder_close(job->decoder);
+        job->decoder = NULL;
+    }
+    if (job->decoder)
+    {
+        media_track_t *track = &job->track;
+        track->replaygain_track = track->replaygain_album = MEDIA_REPLAYGAIN_NONE;
+        if (network)
+        {
+            media_net_display_name(track->title, sizeof(track->title), job->path);
+            media_utf8_copy(track->album, sizeof(track->album), "Network file");
+        }
+        else if (!job->id || !media_library_get_track(job->id, track))
+        {
+            media_metadata_t *meta = calloc(1, sizeof(*meta));
+            if (meta && media_metadata_read(job->path, meta))
+                media_metadata_apply(track, meta);
+            free(meta);
+        }
+        media_utf8_copy(track->path, sizeof(track->path), job->path);
+        if (!track->title[0]) media_path_stem(track->title, sizeof(track->title), job->path);
+        track->id = job->id;
+        track->favorite = job->id && media_library_is_favorite(job->id);
+        track->sample_rate = job->decoder->sample_rate;
+        track->duration_ms = job->decoder->duration_ms;
+        track->channels = job->decoder->channels;
+        track->bits_per_sample = job->decoder->bits_per_sample;
+        track->bitrate = job->decoder->bitrate;
+        track->codec = job->decoder->ops->codec;
+        track->gapless_ok = job->decoder->gapless;
+        media_pcm_reader_init(&job->reader, job->decoder, job->rate);
+        int16_t unused[2];
+        media_pcm_reader_read(&job->reader, unused, 0); // Prime the codec/lookahead off audio core.
+        if (job->reader.ended || job->reader.failed)
+        {
+            media_decoder_close(job->decoder);
+            job->decoder = NULL;
+        }
+    }
+    __atomic_store_n(&job->done, true, __ATOMIC_RELEASE); // Last access to the job.
+}
+
+static void prepare_next(void)
+{
+    if (player.prepared && (strcmp(player.prepared->from, player.path) ||
+        player.prepared->serial != player.command_serial))
+    {
+        discard_prepared();
+        player.prepare_attempted = false;
+    }
+    if (!player.continuous || player.prepared || player.prepare_attempted ||
+        player.announcement_pending || player.sleep_end_of_track || !player.decoder)
+        return;
+    // Prepare after first PCM has been banked. The worker opens/tags/primes on core 0,
+    // priority 3; the real-time decode/output tasks never perform this work for it.
+    if (media_audio_fill_percent() < 40 && !player.finishing && player.tail.count == 0)
+        return;
+    prepared_track_t *job = calloc(1, sizeof(*job));
+    if (!job) { player.prepare_attempted = true; return; }
+    media_queue_lock();
+    job->index = media_queue_next_index(false);
+    const char *path = media_queue_path(job->index);
+    if (path) media_utf8_copy(job->path, sizeof(job->path), path);
+    job->id = media_queue_id(job->index);
+    media_queue_unlock();
+    if (!job->path[0] || media_net_url_is_playlist(job->path))
+    {
+        free(job);
+        player.prepare_attempted = true;
+        return;
+    }
+    media_utf8_copy(job->from, sizeof(job->from), player.path);
+    job->rate = media_audio_get_sample_rate();
+    job->serial = player.command_serial;
+    player.prepared = job;
+    player.prepare_attempted = true;
+    if (!rg_task_create("media_next", prepare_task, job, 22 * 1024, RG_TASK_PRIORITY_3,
+                        RG_TASK_AFFINITY_MAIN))
+    {
+        player.prepared = NULL;
+        free(job);
+    }
+}
+
+static void track_gain(int16_t *pcm, size_t frames, const media_track_t *track)
+{
+    float gain = compute_gain(track);
+    if (gain == 1.0f) return;
+    for (size_t i = 0; i < frames * 2; ++i)
+        pcm[i] = (int16_t)media_clampf((float)pcm[i] * gain, -32768, 32767);
+}
+
+static void write_pcm(int16_t *pcm, size_t frames)
+{
+    size_t written = 0;
+    while (written < frames && !player.stop && player.command == CMD_NONE)
+    {
+        size_t count = media_audio_write(pcm + written * 2, frames - written, 20);
+        written += count;
+        player.written_frames += count;
+        service_buffering();
+        prepare_next();
+    }
+}
+
+static void announce_transition(void)
+{
+    if (!player.announcement_pending || media_audio_frames_played() < player.announcement_frame)
+        return;
+    rg_mutex_take(player.lock, -1);
+    player.track = player.announcement_track;
+    media_utf8_copy(player.path, sizeof(player.path), player.announcement_path);
+    player.track_valid = true;
+    player.generation++;
+    rg_mutex_give(player.lock);
+    player.play_counted = false;
+    player.last_position_save_us = rg_system_timer();
+    player.net_tags_requested = player.net_tags_applied = false;
+    player.net_tags_attempts = 0;
+    player.stream_art[0] = 0;
+    player.announcement_pending = false;
+    player.prepare_attempted = false;
+    emit(MEDIA_EVENT_TRACK_CHANGED, player.generation);
+    emit(MEDIA_EVENT_METADATA_READY, player.track.id);
+}
+
+static bool accept_prepared(void)
+{
+    if ((!media_settings()->gapless && !media_settings()->crossfade_s) ||
+        !prepared_done() || !player.prepared->decoder || player.sleep_end_of_track ||
+        (player.sleep_end_of_album && player.track.album_hash != player.prepared->track.album_hash))
+        return false;
+    prepared_track_t *job = player.prepared;
+    media_queue_lock();
+    int index = media_queue_next_index(false);
+    const char *path = media_queue_path(index);
+    bool valid = index == job->index && path && !strcmp(path, job->path) &&
+        !strcmp(job->from, player.path) && job->serial == player.command_serial;
+    media_queue_unlock();
+    if (!valid) return false; // Editing/shuffling the queue invalidates the prepared identity.
+    player.announcement_track = job->track;
+    media_utf8_copy(player.announcement_path, sizeof(player.announcement_path), job->path);
+    player.overlap_frames = player.tail.count;
+    if (!media_settings()->crossfade_s) player.overlap_frames = 0;
+    // Don't fade an entire short incoming song away. Preserve at least its second half.
+    uint64_t next_frames = job->decoder->total_frames * job->rate / job->decoder->sample_rate;
+    if (!next_frames && player.overlap_frames)
+    {
+        // An unknown-length incoming file might be only a few samples long. Fading its
+        // whole contents against a multi-second tail could make it inaudible.
+        player.overlap_frames = 0;
+        emit(MEDIA_EVENT_TRANSITION_FALLBACK, 0);
+    }
+    if (next_frames && player.overlap_frames > next_frames / 2)
+        player.overlap_frames = (size_t)(next_frames / 2);
+    player.overlap_done = 0;
+    player.overlapping = true;
+    return true;
+}
+
+static void finish_continuous(void)
+{
+    prepare_next();
+    if (!player.overlapping)
+        accept_prepared();
+    if (!player.overlapping && player.prepared && !prepared_done())
+    {
+        // The final window buys the worker time. For gapless, the ordinary PCM reserve
+        // covers this interval. An unavailable/late file degrades to normal buffering.
+        rg_task_delay(5);
+        return;
+    }
+    if (player.tail.count)
+    {
+        size_t unmixed = player.overlapping ? player.tail.count -
+            (player.overlap_frames - player.overlap_done) : player.tail.count;
+        size_t count = RG_MIN(player.tail.count, MEDIA_DECODE_BLOCK_FRAMES);
+        if (unmixed) count = RG_MIN(count, unmixed);
+        else if (player.overlapping)
+        {
+            int got = media_pcm_reader_read(&player.prepared->reader, player.mix_block, count);
+            if (got < 0) { player.overlapping = false; discard_prepared(); return; }
+            if (got == 0)
+            {
+                // Keep the outgoing tail if a misleading duration exhausted the next file.
+                player.overlap_frames = player.overlap_done;
+                unmixed = player.tail.count;
+            }
+            else
+            {
+                count = (size_t)got;
+                track_gain(player.mix_block, count, &player.announcement_track);
+            }
+        }
+        media_tail_pop(&player.tail, player.block, count);
+        if (player.overlapping && !unmixed)
+        {
+            media_crossfade_mix(player.block, player.mix_block, count,
+                                player.overlap_done, player.overlap_frames);
+            player.overlap_done += count;
+        }
+        write_pcm(player.block, count);
+        return;
+    }
+    if (player.overlapping)
+    {
+        prepared_track_t *job = player.prepared;
+        // Keep the outgoing queue index through the fade. A manual Next during it must
+        // select the incoming song, rather than silently skip over it to the third song.
+        media_queue_lock();
+        int index = media_queue_next_index(false);
+        const char *path = media_queue_path(index);
+        bool valid = index == job->index && path && !strcmp(path, job->path) &&
+            job->serial == player.command_serial && !player.sleep_end_of_track &&
+            (!player.sleep_end_of_album || player.track.album_hash == job->track.album_hash);
+        if (valid) media_queue_advance(false);
+        media_queue_unlock();
+        if (!valid)
+        {
+            player.overlapping = false;
+            discard_prepared();
+            return;
+        }
+        rg_mutex_take(player.lock, -1);
+        media_decoder_t *old = player.decoder;
+        player.decoder = job->decoder;
+        job->decoder = NULL;
+        rg_mutex_give(player.lock);
+        media_decoder_close(old);
+        player.reader = job->reader;
+        player.prepared = NULL;
+        free(job);
+        player.announcement_frame = player.written_frames;
+        player.announcement_pending = true;
+        media_audio_mark_track(player.announcement_frame,
+            (uint32_t)(player.overlap_done * 1000ULL / media_audio_get_sample_rate()));
+        player.finishing = player.overlapping = false;
+        configure_tail(media_audio_get_sample_rate()); // Apply changed duration to the incoming track.
+        announce_transition();
+        return;
+    }
+    media_audio_set_draining(true);
+    if (media_audio_drained())
+    {
+        media_audio_set_draining(false);
+        advance_track(false);
+    }
+    else rg_task_delay(10);
+}
+
 static void decode_task(void *arg)
 {
     (void)arg;
@@ -681,11 +1022,24 @@ static void decode_task(void *arg)
             case CMD_SEEK:
                 if (player.decoder)
                 {
+                    if (player.announcement_pending)
+                    {
+                        // The old decoder has already been replaced. Publish the active
+                        // track before a seek cancels its queued timeline marker.
+                        player.announcement_frame = media_audio_frames_played();
+                        announce_transition();
+                    }
                     uint32_t target = command_seek_ms;
                     set_state(MEDIA_STATE_SEEKING);
                     if (media_decoder_seek(player.decoder, target))
                     {
+                        player.tail.count = player.tail.head = 0;
+                        player.finishing = player.overlapping = false;
+                        discard_prepared();
+                        player.prepare_attempted = false;
+                        media_pcm_reader_init(&player.reader, player.decoder, media_audio_get_sample_rate());
                         media_audio_flush(target);
+                        player.written_frames = media_audio_frames_played();
                         set_state(MEDIA_STATE_BUFFERING);
                     }
                     else
@@ -722,6 +1076,8 @@ static void decode_task(void *arg)
         }
 
         service_buffering();
+        announce_transition();
+        prepare_next();
 
         // While paused we stop decoding once the buffer is comfortably full, so a paused
         // player costs nothing but keeps an instant resume.
@@ -731,7 +1087,13 @@ static void decode_task(void *arg)
             continue;
         }
 
-        int frames = media_decoder_decode(player.decoder, player.block, MEDIA_DECODE_BLOCK_FRAMES);
+        if (player.finishing)
+        {
+            finish_continuous();
+            continue;
+        }
+
+        int frames = media_pcm_reader_read(&player.reader, player.block, MEDIA_DECODE_BLOCK_FRAMES);
 
         if (frames > 0)
         {
@@ -739,14 +1101,10 @@ static void decode_task(void *arg)
             // Every decoded frame must reach the ring. Breaking out on a full ring used to
             // drop the remainder of the block on the floor, which is audible as a skip
             // rather than a gap. Only a new transport command or shutdown abandons it.
-            size_t written = 0;
-            while (written < (size_t)frames && !player.stop && player.command == CMD_NONE)
-            {
-                size_t n = media_audio_write(player.block + written * MEDIA_PCM_CHANNELS,
-                                             (size_t)frames - written, 20);
-                written += n;
-                service_buffering();
-            }
+            track_gain(player.block, frames, player.announcement_pending ?
+                       &player.announcement_track : &player.track);
+            size_t ready = media_tail_push(&player.tail, player.block, frames);
+            write_pcm(player.block, ready);
 
             // The pre-roll owns the transition out of BUFFERING while it runs; the ordinary
             // test would see a full PCM ring, notice that output is paused, and report PAUSED.
@@ -779,6 +1137,12 @@ static void decode_task(void *arg)
         }
         else
         {
+            if (player.continuous)
+            {
+                player.finishing = true;
+                finish_continuous();
+                continue;
+            }
             // End of stream: let the hardware play out what is already buffered before we
             // move on, otherwise the last fraction of a second is lost.
             media_audio_set_draining(true);
@@ -826,11 +1190,14 @@ bool media_player_init(void)
     player.lock = rg_mutex_create();
     player.block = rg_alloc(MEDIA_DECODE_BLOCK_FRAMES * MEDIA_PCM_CHANNELS * sizeof(int16_t),
                             MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
+    player.mix_block = rg_alloc(MEDIA_DECODE_BLOCK_FRAMES * MEDIA_PCM_CHANNELS * sizeof(int16_t),
+                                MEM_SLOW | MEM_8BIT | MEM_NOPANIC);
 
-    if (!player.lock || !player.block)
+    if (!player.lock || !player.block || !player.mix_block)
     {
         RG_LOGE("Failed to allocate the playback controller");
         free(player.block), player.block = NULL;
+        free(player.mix_block), player.mix_block = NULL;
         if (player.lock)
             rg_mutex_free(player.lock), player.lock = NULL;
         return false;
@@ -840,6 +1207,7 @@ bool media_player_init(void)
     {
         RG_LOGE("Audio focus is held by another subsystem");
         free(player.block), player.block = NULL;
+        free(player.mix_block), player.mix_block = NULL;
         rg_mutex_free(player.lock), player.lock = NULL;
         return false;
     }
@@ -857,6 +1225,7 @@ bool media_player_init(void)
     {
         media_audio_release(MEDIA_AUDIO_OWNER_PLAYER);
         free(player.block), player.block = NULL;
+        free(player.mix_block), player.mix_block = NULL;
         rg_mutex_free(player.lock), player.lock = NULL;
         return false;
     }
@@ -884,6 +1253,7 @@ bool media_player_init(void)
         media_audio_stop();
         media_audio_release(MEDIA_AUDIO_OWNER_PLAYER);
         free(player.block), player.block = NULL;
+        free(player.mix_block), player.mix_block = NULL;
         rg_mutex_free(player.lock), player.lock = NULL;
         return false;
     }
@@ -891,6 +1261,7 @@ bool media_player_init(void)
     media_player_set_sleep_timer(cfg->sleep_timer_minutes);
 
     player.initialized = true;
+    if (!media_lighting_start()) RG_LOGW("Audio lighting unavailable");
     RG_LOGI("Playback controller ready");
     return true;
 }
@@ -945,6 +1316,20 @@ void media_player_shutdown(bool keep_playing)
         return;
     }
 
+    for (int i = 0; i < 600 && player.prepared && !prepared_done(); ++i)
+        rg_task_delay(10);
+    if (player.prepared && !prepared_done())
+    {
+        RG_LOGE("Next-track worker did not stop; retaining its resources");
+        return;
+    }
+    discard_prepared();
+
+    if (!media_lighting_stop())
+    {
+        RG_LOGE("Lighting task did not stop; retaining the player");
+        return;
+    }
     media_audio_stop();
     if (media_audio_running())
     {
@@ -963,6 +1348,7 @@ void media_player_shutdown(bool keep_playing)
     media_lyrics_free(player.lyrics);
     player.lyrics = NULL;
     free(player.block), player.block = NULL;
+    free(player.mix_block), player.mix_block = NULL;
     if (player.lock)
         rg_mutex_free(player.lock), player.lock = NULL;
 
@@ -1366,7 +1752,7 @@ static void ensure_network_tags(void)
     player.track.has_embedded_art = meta.has_embedded_art;
     player.track.has_lyrics = meta.has_embedded_lyrics;
 
-    media_audio_set_gain(compute_gain(&player.track));
+    // New ReplayGain tags are consumed by the decoder before mixing queued PCM.
 
     RG_LOGI("Tags for '%s': %s / %s", rg_basename(player.path), player.track.title,
             player.track.artist);
@@ -1543,7 +1929,7 @@ void media_player_tick(void)
         if (remaining < 10 * 1000000LL)
         {
             float ratio = (float)remaining / (10.0f * 1000000.0f);
-            media_audio_set_gain(compute_gain(&player.track) * media_clampf(ratio, 0.0f, 1.0f));
+            media_audio_set_gain(media_clampf(ratio, 0.0f, 1.0f));
         }
     }
 
@@ -1595,7 +1981,7 @@ int media_player_pressure(void)
 
 void media_player_set_sleep_timer(int minutes)
 {
-    media_audio_set_gain(compute_gain(&player.track)); // Replace any previous timer's fade.
+    media_audio_set_gain(1.0f); // Replace any previous timer's fade.
     player.sleep_minutes = minutes;
     player.sleep_end_of_track = false;
     player.sleep_end_of_album = false;

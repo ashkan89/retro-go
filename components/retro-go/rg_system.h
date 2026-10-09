@@ -241,6 +241,8 @@ void rg_system_set_indicator_mask(rg_indicator_t indicator, bool on);
 bool rg_system_get_indicator_mask(rg_indicator_t indicator);
 bool rg_system_set_led_color(rg_color_t color);
 rg_color_t rg_system_get_led_color(void);
+/** Override ordinary status/activity lighting. C_NONE releases it; power warnings win. */
+void rg_system_set_led_override(rg_color_t color);
 bool rg_system_set_haptic(bool on);
 bool rg_system_get_haptic_enabled(void);
 void rg_system_set_haptic_enabled(bool enabled);

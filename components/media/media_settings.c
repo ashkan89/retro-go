@@ -63,9 +63,13 @@ void media_settings_load(void)
     settings.normalization = (media_normalize_t)media_clampi(
         (int)rg_settings_get_number(NS, KEY("Normalize"), MEDIA_NORMALIZE_OFF), 0,
         MEDIA_NORMALIZE_COUNT - 1);
-    // Reserved until a next-track decoder/mixer exists; do not restore nonfunctional options.
-    settings.gapless = false;
-    settings.crossfade_s = 0;
+    settings.gapless = rg_settings_get_boolean(NS, KEY("Gapless"), true);
+    settings.crossfade_s = media_clampi((int)rg_settings_get_number(NS, KEY("Crossfade"), 0),
+        0, profile->profile == MEDIA_MEMORY_LOW ? 3 : 5);
+    settings.lighting = (media_light_t)media_clampi(
+        (int)rg_settings_get_number(NS, KEY("Lighting"), MEDIA_LIGHT_MUSIC), 0, MEDIA_LIGHT_COUNT - 1);
+    settings.lighting_brightness = media_clampi(
+        (int)rg_settings_get_number(NS, KEY("LightBrightness"), 65), 0, 100);
 
     settings.artwork_background =
         rg_settings_get_boolean(NS, KEY("ArtBackground"), profile->background_blur);
@@ -121,6 +125,8 @@ void media_settings_save(void)
     rg_settings_set_number(NS, KEY("Normalize"), settings.normalization);
     rg_settings_set_boolean(NS, KEY("Gapless"), settings.gapless);
     rg_settings_set_number(NS, KEY("Crossfade"), settings.crossfade_s);
+    rg_settings_set_number(NS, KEY("Lighting"), settings.lighting);
+    rg_settings_set_number(NS, KEY("LightBrightness"), settings.lighting_brightness);
     rg_settings_set_boolean(NS, KEY("ArtBackground"), settings.artwork_background);
     rg_settings_set_boolean(NS, KEY("DynamicTheme"), settings.dynamic_theme);
     rg_settings_set_boolean(NS, KEY("LowEffects"), settings.low_effects);

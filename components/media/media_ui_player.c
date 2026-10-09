@@ -9,6 +9,7 @@
 #include "media_audio.h"
 #include "media_fft.h"
 #include "media_ui_internal.h"
+#include "media_ui_geometry.h"
 
 #undef RG_LOG_TAG
 #define RG_LOG_TAG "MEDIA_UI"
@@ -88,8 +89,9 @@ static void draw_status_row(int x, int y, int w)
     snprintf(right, sizeof(right), "%s  %d%%", mui.snapshot.favorite ? "FAV" : "",
              mui.snapshot.volume);
 
-    rg_gui_draw_text(x, y, w / 2, left, mui.theme.text_dim, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
-    rg_gui_draw_text(x + w / 2, y, w / 2, right, mui.theme.accent, C_TRANSPARENT,
+    int right_w = RG_MIN(TEXT_RECT(right, 0).width + 4, w / 3);
+    media_ui_draw_marquee(x, y, w - right_w - 4, left, mui.theme.text_dim, 0, false);
+    rg_gui_draw_text(x + w - right_w, y, right_w, right, mui.theme.accent, C_TRANSPARENT,
                      RG_TEXT_ALIGN_RIGHT);
 }
 
@@ -101,7 +103,7 @@ static void draw_transport(int cx, int y, int size)
 
     // Previous
     for (int i = 0; i < size; ++i)
-        rg_gui_draw_rect(cx - gap - size + i, y + i / 2, 1, size - i, 0, 0, color);
+        rg_gui_draw_rect(cx - gap - i, y + i / 2, 1, size - i, 0, 0, color);
     rg_gui_draw_rect(cx - gap - size - 2, y, 2, size, 0, 0, color);
 
     // Play / pause
@@ -113,7 +115,7 @@ static void draw_transport(int cx, int y, int size)
     else
     {
         for (int i = 0; i < size; ++i)
-            rg_gui_draw_rect(cx - size / 2, y + i / 2, size - i, 1, 0, 0, mui.theme.accent);
+            rg_gui_draw_rect(cx - size / 2 + i, y + i / 2, 1, size - i, 0, 0, mui.theme.accent);
     }
 
     // Next
@@ -126,129 +128,143 @@ static void draw_transport(int cx, int y, int size)
 /* Now Playing                                                                              */
 /* -------------------------------------------------------------------------------------- */
 
+static void draw_song_title(const media_player_geometry_t *g)
+{
+    const char *title = track_title();
+    if (!g->large_title || TEXT_RECT(title, 0).width <= g->text_w)
+    {
+        media_ui_draw_marquee(g->text_x, g->text_y + (g->title_h - mui.layout.line_h) / 2,
+                              g->text_w, title, mui.theme.text, 0, true);
+        return;
+    }
+    // Use two normal, readable lines rather than the legacy renderer's vertically
+    // stretched "bigger" font. Wrap at a word when possible, preserving UTF-8 boundaries.
+    char first[MEDIA_TAG_TITLE_LEN];
+    media_utf8_copy(first, sizeof(first), title);
+    size_t cut = 0, word = 0;
+    for (const char *p = title; *p;)
+    {
+        const char *next = p;
+        rg_utf8_decode(&next);
+        if (next == p) break;
+        size_t end = (size_t)(next - title);
+        if (end >= sizeof(first)) break;
+        char saved = first[end];
+        first[end] = 0;
+        bool fits = TEXT_RECT(first, 0).width <= g->text_w;
+        first[end] = saved;
+        if (!fits) break;
+        cut = end;
+        if (*p == ' ') word = (size_t)(p - title);
+        p = next;
+    }
+    if (word) cut = word;
+    first[cut] = 0;
+    media_ui_draw_marquee(g->text_x, g->text_y, g->text_w, first, mui.theme.text, 0, false);
+    while (title[cut] == ' ') cut++;
+    media_ui_draw_marquee(g->text_x, g->text_y + mui.layout.line_h, g->text_w,
+                          title + cut, mui.theme.text, 0, true);
+}
+
 void media_ui_nowplaying_draw(void)
 {
     media_layout_t *l = &mui.layout;
-
     if (mui.snapshot.state == MEDIA_STATE_STOPPED && !mui.track)
     {
-        media_ui_draw_header("Now Playing", NULL);
-        media_ui_draw_message("Nothing playing", "Pick something from the library.");
+        media_ui_draw_header("Player", NULL);
+        media_ui_draw_message("Your music, ready", "Choose a song from the library.");
         media_ui_draw_footer("B: Library   MENU: Options");
         return;
     }
-
-    char elapsed[16], total[16];
-    media_format_time(elapsed, sizeof(elapsed), mui.snapshot.position_ms);
-    if (mui.snapshot.live)
-        snprintf(total, sizeof(total), "LIVE");
-    else
-        media_format_time(total, sizeof(total), mui.snapshot.duration_ms);
 
     char clock_text[16] = "";
     time_t now = time(NULL);
     struct tm tm_now;
     if (localtime_r(&now, &tm_now))
         snprintf(clock_text, sizeof(clock_text), "%02d:%02d", tm_now.tm_hour, tm_now.tm_min);
-
     media_ui_draw_header("Now Playing", clock_text);
 
-    // Layout: art on the left for wide screens, centred above the text for narrow ones.
-    bool wide = l->width >= l->height * 5 / 4 && l->width >= 400;
+    media_player_geometry_t g = media_player_geometry(l->width, l->content_top,
+        l->height - l->footer_h - l->pad, l->line_h, l->pad);
+    int x = l->pad * 2, w = l->width - l->pad * 4;
+    draw_status_row(x, g.status_y, w);
+
+    // A single cover/details card adapts to landscape and portrait. The timeline and
+    // transport have already reserved their space, so neither tags nor covers can reach them.
+    media_ui_draw_panel(l->pad, g.hero_y - 2, l->width - l->pad * 2, g.hero_h + 4,
+                         mui.theme.surface, C_NONE);
     media_palette_t palette = media_artwork_palette(media_ui_art_path());
-
-    int content_bottom = l->height - l->footer_h - l->pad;
-    int art_size;
-    int text_x, text_w, text_y;
-
-    if (wide)
+    if (g.art_size > 0)
     {
-        art_size = media_clampi(l->content_h - l->pad * 4, 48, l->height / 2 + l->height / 6);
-        media_ui_draw_art(l->pad * 2, l->content_top + l->pad * 2, art_size, media_ui_art_path(),
-                          &palette, NULL);
-        text_x = l->pad * 3 + art_size;
-        text_w = l->width - text_x - l->pad * 2;
-        text_y = l->content_top + l->pad * 2;
+        media_ui_draw_panel(g.art_x - 1, g.art_y - 1, g.art_size + 2, g.art_size + 2,
+                             mui.theme.accent_dim, C_NONE);
+        media_ui_draw_art(g.art_x, g.art_y, g.art_size, media_ui_art_path(), &palette, NULL);
     }
-    else
-    {
-        art_size = media_clampi(l->content_h / 2, 40, l->width / 2);
-        media_ui_draw_art((l->width - art_size) / 2, l->content_top + l->pad, art_size,
-                          media_player_path(), &palette, NULL);
-        text_x = l->pad * 2;
-        text_w = l->width - l->pad * 4;
-        text_y = l->content_top + l->pad * 2 + art_size;
-    }
+    draw_song_title(&g);
+    media_ui_draw_marquee(g.text_x, g.text_y + g.title_h, g.text_w, track_artist(),
+                          mui.theme.accent, 0, true);
+    if (g.album)
+        media_ui_draw_marquee(g.text_x, g.text_y + g.title_h + l->line_h, g.text_w,
+                              track_album(), mui.theme.text_dim, 0, false);
 
-    media_ui_draw_marquee(text_x, text_y, text_w, track_title(), mui.theme.text, RG_TEXT_BIGGER,
-                          true);
-    text_y += l->line_h + 2;
-    media_ui_draw_marquee(text_x, text_y, text_w, track_artist(), mui.theme.accent, 0, true);
-    text_y += l->line_h;
-    media_ui_draw_marquee(text_x, text_y, text_w, track_album(), mui.theme.text_dim, 0, false);
-
-    /* Progress */
-    int bar_y = content_bottom - l->line_h * 3 - l->pad;
-    int bar_x = l->pad * 2;
-    int bar_w = l->width - l->pad * 4;
-
-    // A broadcast has no end to draw a playhead against, so the bar becomes a plain level
-    // strip rather than pretending to be scrubbable.
-    if (mui.snapshot.live)
-        rg_gui_draw_rect(bar_x, bar_y, bar_w, 3, 0, 0, mui.theme.divider);
-    else
-        media_ui_draw_progress(bar_x, bar_y, bar_w, 3, position_percent(), mui.theme.accent,
-                               mui.theme.divider);
-
-    rg_gui_draw_text(bar_x, bar_y + 6, bar_w / 2, elapsed, mui.theme.text_dim, C_TRANSPARENT,
-                     RG_TEXT_ALIGN_LEFT);
-    rg_gui_draw_text(bar_x + bar_w / 2, bar_y + 6, bar_w / 2, total, mui.theme.text_dim,
-                     C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
-
-    /* Transport */
-    draw_transport(l->width / 2, bar_y + 6 + l->line_h + l->pad, RG_MAX(l->line_h / 2, 5));
-
-    /* Quality + next track */
     char quality[64] = "";
     if (mui.snapshot.sample_rate)
     {
         if (mui.snapshot.bitrate)
-            snprintf(quality, sizeof(quality), "%s %ukbps %.1fkHz",
+            snprintf(quality, sizeof(quality), "%s  %ukbps  %u Hz",
                      media_codec_name((media_codec_t)mui.snapshot.codec),
-                     (unsigned)(mui.snapshot.bitrate / 1000), mui.snapshot.sample_rate / 1000.0);
-        else
-            snprintf(quality, sizeof(quality), "%s %.1fkHz",
-                     media_codec_name((media_codec_t)mui.snapshot.codec),
-                     mui.snapshot.sample_rate / 1000.0);
+                     (unsigned)(mui.snapshot.bitrate / 1000), (unsigned)mui.snapshot.sample_rate);
+        else snprintf(quality, sizeof(quality), "%s  %u Hz",
+                      media_codec_name((media_codec_t)mui.snapshot.codec), (unsigned)mui.snapshot.sample_rate);
     }
+    if (g.quality_y >= 0)
+        media_ui_draw_marquee(x, g.quality_y, w, quality, mui.theme.text_dim, 0, false);
 
-    draw_status_row(l->pad * 2, l->content_top + l->pad / 2, l->width - l->pad * 4);
-
-    if (quality[0])
-        rg_gui_draw_text(l->pad * 2, bar_y - l->line_h - 2, l->width - l->pad * 4, quality,
-                         mui.theme.divider, C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
-
-    // Resolving the next track means reading a record off the card, so the result is cached
-    // against its id rather than fetched on every frame.
     static uint32_t next_cached_id;
-    static char next_line[96];
-
+    static char next_line[MEDIA_TAG_TITLE_LEN + 8];
     if (mui.snapshot.next_track_id != next_cached_id)
     {
         next_cached_id = mui.snapshot.next_track_id;
         next_line[0] = 0;
-
         media_track_t next;
         if (next_cached_id && media_library_get_track(next_cached_id, &next))
-            snprintf(next_line, sizeof(next_line), "Next: %.32s - %.24s", next.title,
-                     next.artist[0] ? next.artist : "Unknown");
+            snprintf(next_line, sizeof(next_line), "Next: %s", next.title);
     }
+    if (!mui.snapshot.next_track_id)
+    {
+        char name[MEDIA_TAG_TITLE_LEN] = "";
+        media_queue_lock();
+        const char *path = media_queue_path(media_queue_next_index(false));
+        if (path) media_path_stem(name, sizeof(name), path);
+        media_queue_unlock();
+        if (name[0]) snprintf(next_line, sizeof(next_line), "Next: %s", name);
+        else next_line[0] = 0;
+    }
+    if (g.next_y >= 0)
+        media_ui_draw_marquee(x, g.next_y, w, next_line[0] ? next_line :
+            (mui.snapshot.live ? "Live radio" : "Your listening queue"), mui.theme.text_dim, 0, false);
 
-    if (next_line[0])
-        rg_gui_draw_text(l->pad * 2, bar_y - l->line_h - 2, (l->width - l->pad * 4) * 2 / 3,
-                         next_line, mui.theme.divider, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+    char elapsed[16], total[16];
+    media_format_time(elapsed, sizeof(elapsed), mui.snapshot.position_ms);
+    if (mui.snapshot.live) snprintf(total, sizeof(total), "LIVE");
+    else if (!mui.snapshot.duration_ms) snprintf(total, sizeof(total), "--:--");
+    else media_format_time(total, sizeof(total), mui.snapshot.duration_ms);
+    if (mui.snapshot.live)
+        rg_gui_draw_rect(x, g.bar_y, w, 3, 0, 0, mui.theme.accent_dim);
+    else media_ui_draw_progress(x, g.bar_y, w, 3, position_percent(), mui.theme.accent, mui.theme.divider);
+    rg_gui_draw_text(x, g.time_y, w / 2, elapsed, mui.theme.text_dim, C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
+    rg_gui_draw_text(x + w / 2, g.time_y, w / 2, total, mui.theme.accent, C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
 
-    media_ui_draw_footer("A: Play/Pause   LEFT/RIGHT: Track (hold: seek)   UP/DOWN: Volume");
+    int size = RG_MAX(l->line_h / 2, 5);
+    int cy = g.transport_y + (g.transport_h - size) / 2;
+    int button_w = size * 3;
+    media_ui_draw_panel(l->width / 2 - button_w / 2, g.transport_y, button_w,
+                         g.transport_h, mui.theme.accent_dim, C_NONE);
+    draw_transport(l->width / 2, cy, size);
+    // Rotate concise hints so every control is discoverable on a 320-pixel display.
+    int hint = (int)(mui.frame_us / 4000000 % 3);
+    media_ui_draw_footer(hint == 0 ? "A: Play/Pause   UP/DOWN: Volume" :
+        hint == 1 ? "LEFT/RIGHT: Track   Hold: Seek" : "START: Pages   MENU: Options");
 }
 
 /* -------------------------------------------------------------------------------------- */
@@ -293,7 +309,7 @@ void media_ui_lyrics_draw(void)
         mui.lyric_index = current;
     }
 
-    int row_h = l->line_h + 3;
+    int row_h = l->line_h + l->pad * 2;
     int rows = RG_MAX((l->content_h - l->pad * 2) / row_h, 3);
     int focus_row = rows / 2;
 
@@ -330,11 +346,16 @@ void media_ui_lyrics_draw(void)
         if (lyrics->synced)
             y -= (int)((centre - lroundf(centre)) * row_h);
 
-        if (y < l->content_top || y + l->line_h > l->height - l->footer_h)
+        int text_h = l->line_h;
+        y += (row_h - text_h) / 2;
+        if (y < l->content_top || y + text_h > l->height - l->footer_h)
             continue;
 
-        rg_gui_draw_text(l->pad * 2, y, l->width - l->pad * 4, text, color, C_TRANSPARENT,
-                         (index == current ? RG_TEXT_BIGGER : 0) | RG_TEXT_ALIGN_CENTER);
+        if (index == current)
+            media_ui_draw_panel(l->pad, y - 1, l->width - l->pad * 2, text_h + 2,
+                                 mui.theme.surface, C_NONE);
+        media_ui_draw_marquee(l->pad * 2, y, l->width - l->pad * 4, text, color, 0,
+                              index == current);
     }
 
     char footer[64];
@@ -607,9 +628,10 @@ void media_ui_visualizer_draw(void)
     media_format_time(elapsed, sizeof(elapsed), mui.snapshot.position_ms);
     media_format_time(total, sizeof(total), mui.snapshot.duration_ms);
     snprintf(times, sizeof(times), "%s / %s", elapsed, total);
-    rg_gui_draw_text(x, bar_y + 4, w, times, mui.theme.text_dim, C_TRANSPARENT,
+    int times_w = RG_MIN(TEXT_RECT(times, 0).width + 4, w / 2);
+    rg_gui_draw_text(x + w - times_w, bar_y + 4, times_w, times, mui.theme.text_dim, C_TRANSPARENT,
                      RG_TEXT_ALIGN_RIGHT);
-    media_ui_draw_marquee(x, bar_y + 4, w * 2 / 3, track_artist(), mui.theme.text_dim, 0, false);
+    media_ui_draw_marquee(x, bar_y + 4, w - times_w - l->pad, track_artist(), mui.theme.text_dim, 0, false);
 
     media_ui_draw_footer("MENU: Visualizer   START/SELECT: Page");
 }
@@ -835,9 +857,11 @@ void media_ui_info_draw(void)
             break;
 
         int y = l->content_top + l->pad / 2 + i * row_h;
-        rg_gui_draw_text(l->pad * 2, y, l->width / 3, fields[index].label, mui.theme.text_dim,
+        int label_w = RG_MAX(l->width / 3, TEXT_RECT("Album Artist", 0).width + l->pad);
+        label_w = RG_MIN(label_w, l->width / 2);
+        rg_gui_draw_text(l->pad * 2, y, label_w - l->pad, fields[index].label, mui.theme.text_dim,
                          C_TRANSPARENT, RG_TEXT_ALIGN_LEFT);
-        media_ui_draw_marquee(l->pad * 2 + l->width / 3, y, l->width - l->width / 3 - l->pad * 4,
+        media_ui_draw_marquee(l->pad * 2 + label_w, y, l->width - label_w - l->pad * 4,
                               fields[index].value, mui.theme.text, 0, i == 0);
     }
 

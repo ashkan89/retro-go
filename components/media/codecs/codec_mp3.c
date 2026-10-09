@@ -35,6 +35,7 @@ typedef struct
     size_t len;         // Valid bytes in buf
     size_t pos;         // Consumed bytes in buf
     uint64_t stream_pos; // File offset of buf[0]
+    uint64_t first_audio_offset;
 
     int16_t pending[MINIMP3_MAX_SAMPLES_PER_FRAME];
     int pending_frames;
@@ -44,6 +45,8 @@ typedef struct
     uint32_t xing_bytes;
     uint8_t toc[100];
     bool has_toc;
+    bool has_xing, trim_valid;
+    uint32_t start_delay, delay_remaining, end_padding;
 } mp3_state_t;
 
 /** Frame sync: 11 set bits, plus a valid version, layer, bitrate and sample rate. */
@@ -135,7 +138,7 @@ static size_t mp3_refill(media_decoder_t *dec, mp3_state_t *st)
 }
 
 /** Parse a Xing/Info or VBRI header sitting inside the first audio frame. */
-static void mp3_parse_vbr_header(media_decoder_t *dec, mp3_state_t *st, const uint8_t *frame,
+static void mp3_parse_vbr_header(mp3_state_t *st, const uint8_t *frame,
                                  size_t frame_len, const mp3dec_frame_info_t *info)
 {
     if (frame_len < 40 || info->channels < 1)
@@ -145,13 +148,15 @@ static void mp3_parse_vbr_header(media_decoder_t *dec, mp3_state_t *st, const ui
     int mpeg25 = (frame[1] & 0x10) == 0;
     int version = (frame[1] >> 3) & 3;
     bool is_mpeg1 = !mpeg25 && version == 3;
-    size_t offset = 4 + (is_mpeg1 ? (info->channels == 1 ? 17 : 32) : (info->channels == 1 ? 9 : 17));
+    size_t offset = 4 + ((frame[1] & 1) ? 0 : 2) +
+        (is_mpeg1 ? (info->channels == 1 ? 17 : 32) : (info->channels == 1 ? 9 : 17));
 
     if (offset + 8 > frame_len)
         return;
 
     if (memcmp(frame + offset, "Xing", 4) == 0 || memcmp(frame + offset, "Info", 4) == 0)
     {
+        st->has_xing = true;
         uint32_t flags = ((uint32_t)frame[offset + 4] << 24) | ((uint32_t)frame[offset + 5] << 16) |
                          ((uint32_t)frame[offset + 6] << 8) | frame[offset + 7];
         size_t p = offset + 8;
@@ -179,6 +184,20 @@ static void mp3_parse_vbr_header(media_decoder_t *dec, mp3_state_t *st, const ui
             memcpy(st->toc, frame + p, 100);
             st->has_toc = true;
             p += 100;
+        }
+        if (flags & 0x08) p += 4;
+        // LAME-compatible extensions store two packed 12-bit values at bytes 21..23.
+        // minimp3's synthesis adds 528+1 samples of decoder latency. See minimp3_ex.h.
+        if (st->xing_frames && p + 36 <= frame_len &&
+            (!memcmp(frame + p, "LAME", 4) || !memcmp(frame + p, "Lavc", 4) ||
+             !memcmp(frame + p, "Lavf", 4)))
+        {
+            const uint8_t *tag = frame + p + 21;
+            st->start_delay = (((uint32_t)tag[0] << 4) | (tag[1] >> 4)) + 529;
+            uint32_t padding = ((uint32_t)(tag[1] & 15) << 8) | tag[2];
+            st->end_padding = padding > 529 ? padding - 529 : 0;
+            st->trim_valid = true;
+            st->delay_remaining = st->start_delay;
         }
     }
     else if (offset >= 36 && frame_len >= 36 + 26 && memcmp(frame + 36, "VBRI", 4) == 0)
@@ -226,8 +245,8 @@ static int mp3_open(media_decoder_t *dec)
         if (samples > 0)
         {
             dec->data_offset = st->stream_pos + st->pos + info.frame_offset;
-            mp3_parse_vbr_header(dec, st, frame + info.frame_offset,
-                                 (size_t)(avail - info.frame_offset), &info);
+            mp3_parse_vbr_header(st, frame + info.frame_offset,
+                                 (size_t)(info.frame_bytes - info.frame_offset), &info);
             st->pos += info.frame_bytes;
             break;
         }
@@ -249,7 +268,7 @@ static int mp3_open(media_decoder_t *dec)
     dec->bits_per_sample = 16;
     dec->bitrate = (uint32_t)info.bitrate_kbps * 1000;
     dec->seekable = true;
-    dec->gapless = false; // Encoder/decoder delay is not compensated
+    dec->gapless = st->trim_valid;
 
     uint64_t file_size = media_source_size(dec->source);
     dec->data_size = file_size > dec->data_offset ? file_size - dec->data_offset : 0;
@@ -259,6 +278,12 @@ static int mp3_open(media_decoder_t *dec)
         // samples-per-frame is 1152 for MPEG1 and 576 for MPEG2/2.5
         uint32_t spf = (uint32_t)samples;
         dec->total_frames = (uint64_t)st->xing_frames * spf;
+        if (st->trim_valid)
+        {
+            uint32_t trim = st->start_delay + st->end_padding;
+            if (dec->total_frames > trim) dec->total_frames -= trim;
+            else { st->trim_valid = dec->gapless = false; st->delay_remaining = 0; }
+        }
         dec->duration_ms = (uint32_t)((dec->total_frames * 1000ULL) / dec->sample_rate);
         if (st->xing_bytes && dec->duration_ms)
             dec->bitrate = (uint32_t)(((uint64_t)st->xing_bytes * 8000ULL) / dec->duration_ms);
@@ -269,9 +294,16 @@ static int mp3_open(media_decoder_t *dec)
         dec->total_frames = ((uint64_t)dec->duration_ms * dec->sample_rate) / 1000;
     }
 
-    // The frame we consumed above is real audio; hand it to the caller on the first decode().
-    st->pending_frames = samples;
+    // Xing/Info is a metadata frame. Skip it, then compensate the real audio delay.
+    // Ordinary MP3s retain the first decoded frame exactly as before.
+    st->pending_frames = st->has_xing ? 0 : samples;
     st->pending_read = 0;
+    st->first_audio_offset = dec->data_offset;
+    if (st->has_xing)
+    {
+        st->first_audio_offset += (uint64_t)(info.frame_bytes - info.frame_offset);
+        mp3dec_init(&st->mp3d);
+    }
 
     return MEDIA_OK;
 }
@@ -280,12 +312,25 @@ static int mp3_open(media_decoder_t *dec)
 static int mp3_emit(media_decoder_t *dec, mp3_state_t *st, int16_t *pcm, size_t capacity)
 {
     int available = st->pending_frames - st->pending_read;
+    if (st->delay_remaining && available > 0)
+    {
+        uint32_t skip = st->delay_remaining < (uint32_t)available ? st->delay_remaining : (uint32_t)available;
+        st->pending_read += (int)skip;
+        st->delay_remaining -= skip;
+        available -= (int)skip;
+    }
     if (available <= 0)
         return 0;
 
     int count = available;
     if ((size_t)count > capacity)
         count = (int)capacity;
+    if (st->trim_valid)
+    {
+        uint64_t used = (uint64_t)dec->base_ms * dec->sample_rate / 1000 + dec->frames_decoded;
+        uint64_t remaining = used < dec->total_frames ? dec->total_frames - used : 0;
+        if ((uint64_t)count > remaining) count = (int)remaining;
+    }
 
     const int16_t *src = st->pending + (size_t)st->pending_read * dec->channels;
 
@@ -315,6 +360,9 @@ static int mp3_decode(media_decoder_t *dec, int16_t *pcm, size_t frame_capacity)
     mp3_state_t *st = dec->state;
     if (!st || !frame_capacity)
         return -1;
+    if (st->trim_valid && (uint64_t)dec->base_ms * dec->sample_rate / 1000 +
+        dec->frames_decoded >= dec->total_frames)
+        return 0;
 
     int emitted = mp3_emit(dec, st, pcm, frame_capacity);
     if (emitted)
@@ -363,7 +411,9 @@ static int mp3_decode(media_decoder_t *dec, int16_t *pcm, size_t frame_capacity)
             dec->channels = (uint8_t)(info.channels >= 2 ? 2 : 1);
             st->pending_frames = samples;
             st->pending_read = 0;
-            return mp3_emit(dec, st, pcm, frame_capacity);
+            int count = mp3_emit(dec, st, pcm, frame_capacity);
+            if (count) return count;
+            // Encoder delay can span more than one frame, especially for MPEG2/2.5.
         }
     }
 
@@ -381,7 +431,11 @@ static bool mp3_seek(media_decoder_t *dec, uint32_t position_ms)
         position_ms = dec->duration_ms;
 
     uint64_t offset;
-    if (st->has_toc)
+    if (position_ms == 0)
+    {
+        offset = st->first_audio_offset;
+    }
+    else if (st->has_toc)
     {
         // Xing TOC: 100 entries mapping percent-of-time to percent-of-bytes (0..255)
         double percent = (double)position_ms * 100.0 / (double)dec->duration_ms;
@@ -407,6 +461,7 @@ static bool mp3_seek(media_decoder_t *dec, uint32_t position_ms)
     st->len = st->pos = 0;
     st->stream_pos = offset;
     st->pending_frames = st->pending_read = 0;
+    st->delay_remaining = st->trim_valid ? (position_ms ? 529 : st->start_delay) : 0;
     return true;
 }
 
