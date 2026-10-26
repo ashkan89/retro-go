@@ -58,6 +58,7 @@
 
 /* How many files may be open on the storage at once; see the note at the mount config. */
 #define RG_STORAGE_MAX_OPEN_FILES       8
+#define RG_STORAGE_FORMAT_CLUSTER_SIZE  512
 
 static bool disk_mounted = false;
 static bool format_mount_requested = false;
@@ -263,7 +264,7 @@ void rg_storage_init(void)
         // the artwork worker, the audio reader and whatever the UI is doing), and running out
         // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
         .max_files = RG_STORAGE_MAX_OPEN_FILES,
-        .allocation_unit_size = 0,
+        .allocation_unit_size = format_mount_requested ? RG_STORAGE_FORMAT_CLUSTER_SIZE : 0,
     };
 
     err = esp_vfs_fat_sdspi_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
@@ -307,7 +308,7 @@ void rg_storage_init(void)
         // the artwork worker, the audio reader and whatever the UI is doing), and running out
         // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
         .max_files = RG_STORAGE_MAX_OPEN_FILES,
-        .allocation_unit_size = 0,
+        .allocation_unit_size = format_mount_requested ? RG_STORAGE_FORMAT_CLUSTER_SIZE : 0,
     };
 
     esp_err_t err = esp_vfs_fat_sdmmc_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
@@ -399,6 +400,17 @@ void rg_storage_deinit(void)
     disk_mounted = false;
 }
 
+#if CONFIG_IDF_TARGET_ESP32S3 && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
+static bool sdcard_has_requested_format(const char *drive)
+{
+    FF_DIR dir;
+    if (f_opendir(&dir, drive) != FR_OK) return false;
+    bool matches = dir.obj.fs->fs_type == FS_FAT32 && dir.obj.fs->csize == 1;
+    f_closedir(&dir);
+    return matches;
+}
+#endif
+
 bool rg_storage_format(void)
 {
 #if CONFIG_IDF_TARGET_ESP32S3 && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
@@ -407,25 +419,40 @@ bool rg_storage_format(void)
         return false;
     if (!disk_mounted)
     {
-        // Explicit destructive action only: normal boot never auto-formats.
-        format_mount_requested = true;
+        // First try a non-destructive mount (e.g. a newly inserted FAT card).
         rg_storage_init();
-        format_mount_requested = false;
-        if (!disk_mounted || !card_handle) return false;
+        if (!disk_mounted)
+        {
+            // A blank/unformatted card is quick-formatted by the mount itself.
+            // Do not format it a second time after that succeeds.
+            format_mount_requested = true;
+            rg_storage_init();
+            format_mount_requested = false;
+            if (!disk_mounted || !card_handle) return false;
+            char drive[16];
+            snprintf(drive, sizeof(drive), "%u:/", ff_diskio_get_pdrv_card(card_handle));
+            if (card_handle->csd.sector_size == RG_STORAGE_FORMAT_CLUSTER_SIZE && sdcard_has_requested_format(drive))
+                return true;
+        }
+        if (!card_handle) return false;
     }
-    esp_err_t err = esp_vfs_fat_sdcard_format(RG_STORAGE_ROOT, card_handle);
-    // IDF can free the card when the post-format remount fails, even if
-    // f_mkfs succeeded. Query the registry by pointer value before reusing it.
-    if (ff_diskio_get_pdrv_card(card_handle) == 0xff)
-    {
-        card_handle = NULL;
-        disk_mounted = false;
+    // Explicit FAT32 with one 512-byte sector per allocation unit. FM_ANY
+    // (used by IDF's formatter) can choose a different FAT subtype.
+    BYTE pdrv = ff_diskio_get_pdrv_card(card_handle);
+    if (pdrv == 0xff || card_handle->csd.sector_size != RG_STORAGE_FORMAT_CLUSTER_SIZE)
         return false;
-    }
-    if (err != ESP_OK)
+    char drive[16];
+    snprintf(drive, sizeof(drive), "%u:/", pdrv);
+    void *work = malloc(32 * 1024);
+    if (!work) return false;
+    const MKFS_PARM options = {.fmt = FM_FAT32, .n_fat = 2, .au_size = RG_STORAGE_FORMAT_CLUSTER_SIZE};
+    // FatFs invalidates the registered volume itself; opening the root below
+    // remounts it using the existing VFS registration. Only metadata is written.
+    FRESULT result = f_mkfs(drive, &options, work, 32 * 1024);
+    free(work);
+    if (result != FR_OK || !sdcard_has_requested_format(drive))
     {
-        RG_LOGE("SD format failed: %s", esp_err_to_name(err));
-        // Some IDF failure paths leave the driver registered but FAT unmounted.
+        RG_LOGE("FAT32 format failed or allocation size mismatched (FatFs %d)", result);
         rg_storage_deinit();
         return false;
     }

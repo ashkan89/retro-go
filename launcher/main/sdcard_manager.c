@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <errno.h>
 #include "gui.h"
 #include "applications.h"
 #include "webui.h"
@@ -13,6 +14,7 @@
 #include "../../components/retro-go/libs/miniz/miniz.h"
 
 #define ARCHIVE_PATH RG_STORAGE_ROOT "/.sdcard_structure.zip"
+#define INSTALL_TEMP_PATH RG_STORAGE_ROOT "/.sdcard_install.tmp"
 #define ARCHIVE_LIMIT (64 * 1024 * 1024)
 
 // All rendering stays on the UI task. Formatting runs on the I/O task so the
@@ -59,7 +61,7 @@ static void format_task(void *arg)
 #ifdef RG_ENABLE_NETWORKING
 // Resolve the exact installed version; never fall back to the latest release.
 // Accept only stable firmware versions that can be represented by release tags.
-static bool resolve_archive(char *url, size_t url_size, int *size)
+static bool resolve_archive(const char *asset_name, char *url, size_t url_size, int *size)
 {
     const char *version = rg_system_get_app()->version;
     uint32_t numbers[3];
@@ -101,7 +103,7 @@ static bool resolve_archive(char *url, size_t url_size, int *size)
         const char *name = cJSON_GetStringValue(cJSON_GetObjectItem(asset, "name"));
         const char *link = cJSON_GetStringValue(cJSON_GetObjectItem(asset, "browser_download_url"));
         cJSON *bytes = cJSON_GetObjectItem(asset, "size");
-        if (!name || strcmp(name, "sdcard_structure.zip")) continue;
+        if (!name || strcmp(name, asset_name)) continue;
         if (!link || strncmp(link, "https://github.com/", 19) || strlen(link) >= url_size ||
             !cJSON_IsNumber(bytes) || bytes->valuedouble <= 0 || bytes->valuedouble > ARCHIVE_LIMIT) goto done;
         strcpy(url, link);
@@ -167,7 +169,7 @@ static bool archive_path(mz_zip_archive *zip, mz_uint index, char *path, size_t 
         part += n;
         if (*part) ++part;
     }
-    if ((size_t)snprintf(path, size, "%s/%s", RG_STORAGE_ROOT, name) >= size || !strcasecmp(path, ARCHIVE_PATH)) return false;
+    if ((size_t)snprintf(path, size, "%s/%s", RG_STORAGE_ROOT, name) >= size || !strcasecmp(path, ARCHIVE_PATH) || !strcasecmp(path, INSTALL_TEMP_PATH)) return false;
     return true;
 }
 
@@ -235,7 +237,8 @@ static bool install_archive(void)
             bool parents = rg_storage_mkdir(path);
             *slash = '/';
             if (!parents) goto done;
-            FILE *fp = fopen(path, "wb");
+            // Verify each replacement before removing the existing destination.
+            FILE *fp = fopen(INSTALL_TEMP_PATH, "wb");
             if (!fp) goto done;
             // miniz verifies the uncompressed length and CRC before success.
             bool extracted = extract_entry(&zip, i, fp);
@@ -243,9 +246,12 @@ static bool install_archive(void)
             if (fclose(fp)) failed = true;
             if (!extracted || failed)
             {
-                rg_storage_delete(path);
                 goto done;
             }
+            // FatFs rename cannot replace an existing file. Never recursively
+            // delete a destination: a conflicting directory must fail safely.
+            if (remove(path) != 0 && errno != ENOENT) goto done;
+            if (rename(INSTALL_TEMP_PATH, path) != 0) goto done;
         }
         if (rg_system_timer() - last_draw > 200000)
             progress(stage, total_bytes ? (int)(installed_bytes * 100 / total_bytes) : (int)((i + 1) * 100 / count));
@@ -253,6 +259,7 @@ static bool install_archive(void)
     }
     ok = true;
 done:
+    rg_storage_delete(INSTALL_TEMP_PATH);
     mz_zip_reader_end(&zip);
     return ok;
 }
@@ -262,37 +269,52 @@ static void sdcard_manager_run(void)
     const rg_gui_option_t options[] = {
         {1, _("Format SD card"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
         {2, _("Prepare SD card"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        {3, _("Install data"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
         RG_DIALOG_END,
     };
     int action = rg_gui_dialog(_("SdCard Manager"), options, 0);
-    if (action != 1 && action != 2) return;
+    if (action < 1 || action > 3) return;
     bool prepare = action == 2;
+    bool install_data = action == 3;
+    const char *title = install_data ? _("Install data") : _("Prepare SD card");
 #ifdef RG_ENABLE_NETWORKING
     char url[512];
     int archive_size = 0;
 #endif
-    if (prepare)
+    if (prepare || install_data)
     {
 #ifdef RG_ENABLE_NETWORKING
         rg_network_t info = rg_network_get_info();
         if (info.state != RG_NETWORK_CONNECTED || info.ap_mode)
         {
-            rg_gui_alert(_("Prepare SD card"), _("Connect to Wi-Fi with Internet access first."));
+            rg_gui_alert(title, _("Connect to Wi-Fi with Internet access first."));
             return;
         }
         stage_started = rg_system_timer();
         progress(_("Finding matching release"), -1);
-        if (!resolve_archive(url, sizeof(url), &archive_size))
+        if (!resolve_archive(install_data ? "sdcard_data.zip" : "sdcard_structure.zip", url, sizeof(url), &archive_size))
         {
-            rg_gui_alert(_("Prepare SD card"), _("No sdcard_structure.zip for this firmware release, or release lookup failed. Card was not changed."));
+            rg_gui_alert(title, install_data ?
+                         _("No sdcard_data.zip for this firmware release, or release lookup failed. Card was not changed.") :
+                         _("No sdcard_structure.zip for this firmware release, or release lookup failed. Card was not changed."));
             return;
         }
 #else
-        rg_gui_alert(_("Prepare SD card"), _("This build has no networking support."));
+        rg_gui_alert(title, _("This build has no networking support."));
         return;
 #endif
     }
-    if (!rg_gui_confirm(_("Erase SD card?"), _("ALL files, games, saves and settings on the SD card will be erased. Continue?"), false)) return;
+    if (install_data)
+    {
+        if (!rg_storage_ready())
+        {
+            rg_gui_alert(title, _("Insert a formatted SD card and reboot first."));
+            return;
+        }
+        if (!rg_gui_confirm(_("Overwrite existing data?"),
+                            _("Files from sdcard_data.zip will replace existing files with the same paths. Other files are kept. Continue?"), false)) return;
+    }
+    else if (!rg_gui_confirm(_("Erase SD card?"), _("ALL files, games, saves and settings on the SD card will be erased. Continue?"), false)) return;
 #ifdef RG_ENABLE_NETWORKING
     webui_stop();
 #endif
@@ -302,32 +324,39 @@ static void sdcard_manager_run(void)
     gui_invalidate();
     applications_forget_lists();
     stage_started = rg_system_timer();
-    progress(_("Formatting SD card"), -1);
-    __atomic_store_n(&format_done, 0, __ATOMIC_RELEASE);
-    bool started = rg_task_create("sd_format", format_task, NULL, 4096, RG_TASK_PRIORITY_1, RG_TASK_AFFINITY_IO) != NULL;
-    if (started)
+    bool ok = true;
+    const char *error = NULL;
+    if (!install_data)
     {
-        while (!__atomic_load_n(&format_done, __ATOMIC_ACQUIRE))
+        progress(_("Quick formatting SD card"), -1);
+        __atomic_store_n(&format_done, 0, __ATOMIC_RELEASE);
+        bool started = rg_task_create("sd_format", format_task, NULL, 4096, RG_TASK_PRIORITY_1, RG_TASK_AFFINITY_IO) != NULL;
+        if (started)
         {
-            progress(_("Formatting SD card"), -1);
-            rg_task_delay(100);
+            while (!__atomic_load_n(&format_done, __ATOMIC_ACQUIRE))
+            {
+                progress(_("Quick formatting SD card"), -1);
+                rg_task_delay(100);
+            }
         }
+        ok = started && format_ok;
+        error = started ? _("Formatting failed. The card may need formatting on a computer.") :
+                          _("Could not start formatting. The card was not changed.");
     }
-    bool ok = started && format_ok;
-    const char *error = started ? _("Formatting failed. The card may need formatting on a computer.") :
-                                  _("Could not start formatting. The card was not changed.");
-    if (ok && prepare)
+    if (ok && (prepare || install_data))
     {
 #ifdef RG_ENABLE_NETWORKING
         progress(_("Downloading SD files"), 0);
         ok = download_archive(url, archive_size);
-        error = _("Download failed. The card was formatted but preparation is incomplete. Retry Prepare SD card.");
+        error = install_data ? _("Download failed. No data files were installed. Retry Install data.") :
+                               _("Download failed. The card was formatted but preparation is incomplete. Retry Prepare SD card.");
         if (ok)
         {
             stage_started = rg_system_timer();
             progress(_("Checking SD archive"), -1);
             ok = install_archive();
-            error = _("Installation failed. Preparation is incomplete. Retry Prepare SD card.");
+            error = install_data ? _("Installation failed. Some files may have been replaced. Retry Install data.") :
+                                   _("Installation failed. Preparation is incomplete. Retry Prepare SD card.");
         }
         rg_storage_delete(ARCHIVE_PATH);
 #endif
@@ -338,7 +367,7 @@ static void sdcard_manager_run(void)
     if (rg_gui_confirm(_("Reboot system?"), ok ? _("SD card is ready. Restart the console now?") : _("Restart the console after the failed SD operation?"), true))
         rg_system_restart();
     // Do not resume background card readers until a fresh boot. The old library
-    // and ROM lists refer to files that the format has removed.
+    // and ROM lists may refer to files removed or replaced by this operation.
 }
 void sdcard_manager_show_dialog(void)
 {

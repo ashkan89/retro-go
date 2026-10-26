@@ -548,18 +548,6 @@ void event_handler(int event, void *arg)
     }
 }
 
-#if CONFIG_IDF_TARGET_ESP32S3
-static rg_gui_event_t sdcard_manager_cb(rg_gui_option_t *option, rg_gui_event_t event)
-{
-    if (event == RG_DIALOG_ENTER)
-    {
-        sdcard_manager_show_dialog();
-        return RG_DIALOG_REDRAW;
-    }
-    return RG_DIALOG_VOID;
-}
-#endif
-
 static void options_handler(rg_gui_option_t *dest)
 {
     const rg_gui_option_t options[] = {
@@ -573,9 +561,6 @@ static void options_handler(rg_gui_option_t *dest)
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
         #ifdef RG_ENABLE_NETWORKING
         {0, _("File server"),  "-", RG_DIALOG_FLAG_NORMAL, &webui_switch_cb},
-        #endif
-        #if CONFIG_IDF_TARGET_ESP32S3
-        {0, _("SdCard Manager"), NULL, RG_DIALOG_FLAG_NORMAL, &sdcard_manager_cb},
         #endif
         {0, _("Startup app"),  "-", RG_DIALOG_FLAG_NORMAL, &startup_app_cb},
         RG_DIALOG_END,
@@ -600,6 +585,9 @@ void app_main(void)
         .event = &event_handler,
         .options = &options_handler,
         .about = &about_handler,
+        #if CONFIG_IDF_TARGET_ESP32S3
+        .storageManager = &sdcard_manager_show_dialog,
+        #endif
     };
 
     app = rg_system_init(32000, &handlers, NULL);

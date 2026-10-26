@@ -143,6 +143,7 @@ typedef struct
     int (*memWrite)(int addr, int value);                            // Used by for cheats and debugging
     void (*options)(rg_gui_option_t *dest);                          // Add extra options to rg_gui_options_menu()
     void (*about)(rg_gui_option_t *dest);                            // Add extra options to rg_gui_about_menu()
+    void (*storageManager)(void);                                  // Open storage manager from launcher Options
 } rg_handlers_t;
 
 typedef struct

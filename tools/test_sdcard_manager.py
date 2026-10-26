@@ -32,6 +32,8 @@ def main():
 #define RG_PATH_MAX 255
 #define _(x) (x)
 static char *card_root, *archive_file;
+static char install_temp[RG_PATH_MAX];
+#define INSTALL_TEMP_PATH install_temp
 #define RG_STORAGE_ROOT card_root
 #define ARCHIVE_PATH archive_file
 static uint64_t total_bytes, installed_bytes;
@@ -54,6 +56,7 @@ static bool rg_storage_mkdir(const char *p) {
 int main(int argc, char **argv) {
     if (argc != 3) return 2;
     archive_file = argv[1]; card_root = argv[2];
+    snprintf(install_temp, sizeof(install_temp), "%s/.sdcard_install.tmp", card_root);
     return install_archive() ? 0 : 1;
 }
 ''')
@@ -63,9 +66,13 @@ int main(int argc, char **argv) {
                         "-Dtinfl_decompress=sdcard_tinfl_decompress", "-DMINIZ_NO_DEFLATE_APIS", "-DMINIZ_NO_ZLIB_APIS",
                         "-I", str(miniz), str(harness), str(miniz / "miniz.c"), "-o", str(executable)], check=True)
 
-        def run_case(name, entries, expected, corrupt=False, truncate=False):
+        def run_case(name, entries, expected, corrupt=False, truncate=False, existing=None):
             card = folder / name
             card.mkdir()
+            for filename, content in (existing or {}).items():
+                dest = card / filename
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(content)
             archive = card / ".sdcard_structure.zip"
             with zipfile.ZipFile(archive, "w") as output:
                 for filename, content, method in entries:
@@ -88,6 +95,17 @@ int main(int argc, char **argv) {
                                  ("stored.txt", b"hello", stored)], True)
         assert (card / "nested/large.bin").read_bytes() == payload
         assert (card / "empty.txt").read_bytes() == b""
+        card = run_case("overwrite", [("roms/nes/game.nes", b"replacement", compressed),
+                                      ("new/nested/file.txt", b"new file", stored)], True,
+                        existing={"roms/nes/game.nes": b"old longer game content", "keep/save.sav": b"keep"})
+        assert (card / "roms/nes/game.nes").read_bytes() == b"replacement"
+        assert (card / "new/nested/file.txt").read_bytes() == b"new file"
+        assert (card / "keep/save.sav").read_bytes() == b"keep"
+        assert not (card / ".sdcard_install.tmp").exists()
+        card = run_case("overwrite-crc", [("game.bin", b"CRC_TEST_PAYLOAD", stored)], False,
+                        corrupt=True, existing={"game.bin": b"original game"})
+        assert (card / "game.bin").read_bytes() == b"original game"
+        assert not (card / ".sdcard_install.tmp").exists()
         card = folder / "release-structure"
         card.mkdir()
         archive = card / ".sdcard_structure.zip"
@@ -97,7 +115,7 @@ int main(int argc, char **argv) {
         assert (card / "retro-go/bios/msx").is_dir()
         for i, unsafe in enumerate(("../escape", "/absolute", "nested/../../escape", "a\\escape", "C:/escape",
                                     "./file", "a//file", "x" * 300, ".sdcard_structure.zip", ".SDCARD_STRUCTURE.ZIP",
-                                    "trailing./file", "trailing /file", "bad?/file", "control\nfile")):
+                                    "trailing./file", "trailing /file", "bad?/file", "control\nfile", ".sdcard_install.tmp", ".SDCARD_INSTALL.TMP")):
             card = run_case(f"unsafe{i}", [("before.txt", b"must not be installed", stored),
                                             (unsafe, b"bad", stored)], False)
             assert not (card / "before.txt").exists(), "Preflight must reject before writing any entries"
@@ -106,46 +124,71 @@ int main(int argc, char **argv) {
         run_case("truncated", [("file", b"hello", compressed)], False, truncate=True)
         run_case("empty", [], False)
         storage_source = (ROOT / "components/retro-go/rg_storage.c").read_text()
-        formatter = storage_source[storage_source.index("bool rg_storage_format("):storage_source.index("bool rg_storage_ready(")]
+        formatter = storage_source[storage_source.index("static bool sdcard_has_requested_format("):storage_source.index("bool rg_storage_ready(")]
+        formatter = formatter.replace("\n#endif\n\nbool rg_storage_format", "\n\nbool rg_storage_format", 1)
         harness.write_text(r'''
 #include <stdbool.h>
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #define CONFIG_IDF_TARGET_ESP32S3 1
 #define RG_STORAGE_SDSPI_HOST 1
 #define RG_STORAGE_ROOT "/sd"
-#define ESP_OK 0
+#define RG_STORAGE_FORMAT_CLUSTER_SIZE 512
 #define RG_LOGE(...) ((void)0)
-typedef int esp_err_t;
-static bool disk_mounted, format_mount_requested, init_ok, registered;
-static void *card_handle;
+#define FR_OK 0
+#define FS_FAT32 3
+#define FM_FAT32 2
+typedef unsigned char BYTE;
+typedef int FRESULT;
+typedef struct { int fs_type, csize; } FATFS;
+typedef struct { struct { FATFS *fs; } obj; } FF_DIR;
+typedef struct { int fmt, n_fat, au_size; } MKFS_PARM;
+typedef struct { struct { int sector_size; } csd; } sdmmc_card_t;
+static sdmmc_card_t card;
+static FATFS filesystem;
+static bool disk_mounted, format_mount_requested, init_ok, mountable, registered, remount_ok, correct_format;
+static sdmmc_card_t *card_handle;
 static int format_result, init_calls, format_calls, deinit_calls;
 static void rg_storage_init(void) {
-    assert(format_mount_requested); ++init_calls;
-    if (init_ok) { disk_mounted = true; card_handle = (void *)1; }
+    ++init_calls;
+    if (init_ok && (mountable || format_mount_requested)) { disk_mounted = true; card_handle = &card; }
 }
 static void rg_storage_deinit(void) { ++deinit_calls; card_handle = 0; disk_mounted = false; }
-static int ff_diskio_get_pdrv_card(void *p) { (void)p; return registered ? 0 : 255; }
-static esp_err_t esp_vfs_fat_sdcard_format(const char *p, void *card) {
-    (void)p; assert(card); ++format_calls; return format_result;
+static int ff_diskio_get_pdrv_card(sdmmc_card_t *p) { (void)p; return registered ? 0 : 255; }
+static int f_opendir(FF_DIR *dir, const char *path) {
+    (void)path; dir->obj.fs = &filesystem;
+    filesystem.fs_type = correct_format ? FS_FAT32 : 1; filesystem.csize = 1;
+    return remount_ok ? FR_OK : -1;
+}
+static int f_closedir(FF_DIR *dir) { (void)dir; return FR_OK; }
+static FRESULT f_mkfs(const char *drive, const MKFS_PARM *cfg, void *work, unsigned size) {
+    assert(drive[0] == '0' && work && size == 32768);
+    assert(cfg->fmt == FM_FAT32 && cfg->au_size == 512 && cfg->n_fat == 2);
+    ++format_calls; return format_result;
 }
 ''' + formatter + r'''
 static void reset(void) {
-    disk_mounted = true; card_handle = (void *)1; format_mount_requested = false;
-    init_ok = registered = true; format_result = 0;
+    card.csd.sector_size = 512;
+    disk_mounted = true; card_handle = &card; format_mount_requested = false;
+    init_ok = mountable = registered = remount_ok = correct_format = true; format_result = 0;
     init_calls = format_calls = deinit_calls = 0;
 }
 int main(void) {
     reset(); assert(rg_storage_format()); assert(format_calls == 1 && init_calls == 0);
-    reset(); card_handle = 0; assert(!rg_storage_format()); assert(format_calls == 0); // flash fallback
+    reset(); card_handle = 0; assert(!rg_storage_format()); assert(format_calls == 0);
     reset(); disk_mounted = false; card_handle = 0;
-    assert(rg_storage_format()); assert(init_calls == 1 && !format_mount_requested);
+    assert(rg_storage_format()); assert(init_calls == 1 && format_calls == 1 && !format_mount_requested);
+    reset(); disk_mounted = false; card_handle = 0; mountable = false;
+    assert(rg_storage_format()); assert(init_calls == 2 && format_calls == 0 && !format_mount_requested);
     reset(); disk_mounted = false; card_handle = 0; init_ok = false;
     assert(!rg_storage_format()); assert(!format_mount_requested && format_calls == 0);
-    reset(); registered = false; // IDF freed the card after remount failure despite ESP_OK
-    assert(!rg_storage_format()); assert(!disk_mounted && !card_handle && deinit_calls == 0);
-    reset(); format_result = -1;
-    assert(!rg_storage_format()); assert(deinit_calls == 1 && !disk_mounted);
+    reset(); registered = false; assert(!rg_storage_format()); assert(format_calls == 0);
+    reset(); format_result = -1; assert(!rg_storage_format()); assert(deinit_calls == 1 && !disk_mounted);
+    reset(); remount_ok = false; assert(!rg_storage_format()); assert(deinit_calls == 1);
+    reset(); correct_format = false; assert(!rg_storage_format()); assert(deinit_calls == 1);
+    reset(); card.csd.sector_size = 4096; assert(!rg_storage_format()); assert(format_calls == 0);
     return 0;
 }
 ''')

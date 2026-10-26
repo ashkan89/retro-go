@@ -3260,6 +3260,19 @@ static rg_gui_event_t app_options_cb(rg_gui_option_t *option, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
+#if CONFIG_IDF_TARGET_ESP32S3
+static rg_gui_event_t storage_manager_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    const rg_app_t *app = rg_system_get_app();
+    if (event == RG_DIALOG_ENTER && app->handlers.storageManager)
+    {
+        app->handlers.storageManager();
+        return RG_DIALOG_REDRAW;
+    }
+    return RG_DIALOG_VOID;
+}
+#endif
+
 void rg_gui_options_menu(void)
 {
     rg_gui_option_t options[20] = {
@@ -3293,6 +3306,10 @@ void rg_gui_options_menu(void)
 #endif
 #ifdef RG_ENABLE_NETWORKING
         {0, _("Wi-Fi options"),    NULL, RG_DIALOG_FLAG_NORMAL, &wifi_cb         },
+#endif
+#if CONFIG_IDF_TARGET_ESP32S3
+        {0, _("SdCard Manager"), NULL,
+         rg_system_get_app()->handlers.storageManager ? RG_DIALOG_FLAG_NORMAL : RG_DIALOG_FLAG_HIDDEN, &storage_manager_cb},
 #endif
         {0, _("Launcher options"), NULL, RG_DIALOG_FLAG_NORMAL, &app_options_cb  },
         RG_DIALOG_END,

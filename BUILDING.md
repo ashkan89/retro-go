@@ -191,8 +191,9 @@ Clangd is not supported at this time because I have not found a way to make it w
 
 ### ESP32-S3 SD card manager
 
-Open **Options → Launcher options → SdCard Manager**. **Format SD card** erases the
-card using the firmware's default FAT filesystem. **Prepare SD card** performs the
+Open **Options → SdCard Manager**. **Format SD card** erases the
+card using a quick FAT32 filesystem format with 512-byte allocation units. Only filesystem
+metadata is recreated; the card's data area is not wiped. **Prepare SD card** performs the
 same format, downloads `sdcard_structure.zip` from the `v<installed-version>` GitHub
 release, and installs its folders and default theme. Connect to Wi-Fi with Internet
 access before preparing. Development versions without a matching release cannot
@@ -209,3 +210,12 @@ Games and copyrighted BIOS files are not included.
 The tested N8R2 launcher needs a `0x180000`-byte app slot; an existing `0x170000`
 slot is too small. Rebuild the full image so `rg_tool.py` regenerates the partition
 layout and checks the complete image against the board's flash capacity.
+
+**Install data** downloads `sdcard_data.zip` from the installed firmware's matching
+GitHub release and installs its root-relative files onto the existing SD card.
+It warns before replacing files with the same paths, keeps unrelated files, shows
+progress, and offers a reboot. It does not format the card. Each replacement is
+extracted and CRC-checked in a temporary file before replacing its destination.
+If installation fails midway, completed replacements remain; retry Install data.
+Publish the intended data as a release asset named exactly `sdcard_data.zip`;
+the firmware does not substitute the structure archive when this asset is missing.
