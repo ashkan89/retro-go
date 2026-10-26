@@ -31,8 +31,6 @@
  * which made each read four times as long a window to survive and four times as expensive to retry.
  */
 #define FLASH_CHUNK_SIZE          0x1000
-/* A failed read is retried this many times; see the comment in verify_image_crc(). */
-#define READ_RETRY_COUNT          3
 
 #if defined(CONFIG_IDF_TARGET_ESP32)
 #define BOOTLOADER_OFFSET 0x1000
@@ -84,22 +82,9 @@ static uint32_t read_le32(const uint8_t *data)
  * where the card just needed a moment. A file that is genuinely shorter than its directory entry
  * claims fails every attempt.
  */
-static bool read_exact(FILE *fp, long offset, void *buffer, size_t length)
+static bool read_exact(FILE **fp, const char *path, long offset, void *buffer, size_t length)
 {
-    for (int attempt = 0; attempt <= READ_RETRY_COUNT; ++attempt)
-    {
-        if (attempt > 0)
-        {
-            RG_LOGW("Read of %d bytes at offset %d failed, retry %d/%d", (int)length, (int)offset, attempt,
-                    READ_RETRY_COUNT);
-            clearerr(fp);
-            rg_task_delay(10);
-        }
-        if (fseek(fp, offset, SEEK_SET) == 0 && fread(buffer, 1, length, fp) == length)
-            return true;
-    }
-    RG_LOGE("Could not read %d bytes at offset %d", (int)length, (int)offset);
-    return false;
+    return offset >= 0 && rg_storage_read_at(fp, path, offset, buffer, length);
 }
 
 static rg_rect_t draw_firmware_message(const char *format, ...)
@@ -114,7 +99,7 @@ static rg_rect_t draw_firmware_message(const char *format, ...)
     return rg_gui_draw_message_flags(RG_DIALOG_FLAG_ALIGN_CENTER, "%s", buffer);
 }
 
-static bool read_image_footer(FILE *fp, size_t file_size, image_footer_t *footer)
+static bool read_image_footer(FILE **fp, const char *path, size_t file_size, image_footer_t *footer)
 {
     uint8_t *data = rg_alloc(IMAGE_FOOTER_SIZE, MEM_FAST | MEM_NOPANIC);
     bool success = false;
@@ -123,7 +108,7 @@ static bool read_image_footer(FILE *fp, size_t file_size, image_footer_t *footer
         return false;
     if (file_size <= IMAGE_FOOTER_SIZE)
         goto cleanup;
-    if (!read_exact(fp, file_size - IMAGE_FOOTER_SIZE, data, IMAGE_FOOTER_SIZE))
+    if (!read_exact(fp, path, file_size - IMAGE_FOOTER_SIZE, data, IMAGE_FOOTER_SIZE))
         goto cleanup;
     if (memcmp(data, IMAGE_MAGIC, IMAGE_MAGIC_SIZE) != 0)
         goto cleanup;
@@ -185,7 +170,7 @@ static void forget_verified_image(void)
  * after the wrong problem; and the two numbers that identify the problem in one step were only ever
  * written to the log. `computed_out` is optional.
  */
-static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expected_crc, bool show_progress,
+static const char *verify_image_crc(FILE **fp, const char *path, size_t image_size, uint32_t expected_crc, bool show_progress,
                                     uint32_t *computed_out)
 {
     uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
@@ -194,6 +179,7 @@ static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expect
     static char read_error[80]; // The message carries the offset, which is the useful part
     const char *error;
     int last_percent = -1;
+    int pass = 0;
 
     if (!buffer)
         return "Out of memory while verifying.";
@@ -201,18 +187,22 @@ static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expect
     if (show_progress)
         rg_display_clear(C_BLACK);
 
+retry_verification:
+    crc = 0;
+    remaining = image_size;
+    last_percent = -1;
     while (remaining > 0)
     {
         size_t chunk = RG_MIN(remaining, FLASH_CHUNK_SIZE);
         size_t offset = image_size - remaining;
 
-        if (!read_exact(fp, offset, buffer, chunk))
+        if (!read_exact(fp, path, offset, buffer, chunk))
         {
             RG_LOGE("Short read at offset %d of %d", (int)offset, (int)image_size);
             snprintf(read_error, sizeof(read_error), "Could not read the image file\npast %d of %d bytes.",
                      (int)offset, (int)image_size);
             error = read_error;
-            goto cleanup;
+            goto retry_or_fail;
         }
 
         crc = rg_crc32(crc, buffer, chunk);
@@ -251,21 +241,30 @@ static const char *verify_image_crc(FILE *fp, size_t image_size, uint32_t expect
         error = "The image failed its checksum.";
     }
 
-cleanup:
+retry_or_fail:
+    if (error && ++pass < 3)
+    {
+        RG_LOGW("Image verification failed; retrying from a fresh file handle (%d/3)", pass + 1);
+        if (*fp) fclose(*fp);
+        *fp = NULL;
+        rg_task_delay(50);
+        goto retry_verification;
+    }
+
     if (computed_out)
         *computed_out = crc;
     free(buffer);
     return error;
 }
 
-static int read_partition_table(FILE *fp, image_partition_t *partitions, int max_partitions)
+static int read_partition_table(FILE **fp, const char *path, image_partition_t *partitions, int max_partitions)
 {
     uint8_t *table = rg_alloc(PARTITION_TABLE_SIZE, MEM_FAST | MEM_NOPANIC);
     int count = 0;
 
     if (!table)
         return -1;
-    if (!read_exact(fp, PARTITION_TABLE_OFFSET, table, PARTITION_TABLE_SIZE))
+    if (!read_exact(fp, path, PARTITION_TABLE_OFFSET, table, PARTITION_TABLE_SIZE))
     {
         free(table);
         return -1;
@@ -304,12 +303,12 @@ static int read_partition_table(FILE *fp, image_partition_t *partitions, int max
 }
 
 #ifdef ESP_PLATFORM
-static bool flash_range_matches(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size)
+static int flash_range_matches(FILE **fp, const char *path, uint32_t file_offset, uint32_t flash_offset, uint32_t size)
 {
     uint8_t *file_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
     uint8_t *flash_buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
     uint32_t checked = 0;
-    bool matches = false;
+    int matches = -1;
 
     if (!file_buffer || !flash_buffer)
         goto cleanup;
@@ -317,17 +316,20 @@ static bool flash_range_matches(FILE *fp, uint32_t file_offset, uint32_t flash_o
     while (checked < size)
     {
         size_t chunk = RG_MIN(size - checked, FLASH_CHUNK_SIZE);
-        if (!read_exact(fp, file_offset + checked, file_buffer, chunk))
+        if (!read_exact(fp, path, file_offset + checked, file_buffer, chunk))
             goto cleanup;
         if (esp_flash_read(esp_flash_default_chip, flash_buffer, flash_offset + checked, chunk) != ESP_OK)
             goto cleanup;
         if (memcmp(file_buffer, flash_buffer, chunk) != 0)
+        {
+            matches = 0;
             goto cleanup;
+        }
         checked += chunk;
         rg_system_tick(0);
     }
 
-    matches = true;
+    matches = 1;
 
 cleanup:
     free(file_buffer);
@@ -342,7 +344,7 @@ cleanup:
  * `return false`: the install aborted, the caller had nothing to report, and the user was left
  * looking at a screen that said only that the update had failed.
  */
-static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t flash_offset, uint32_t size,
+static const char *write_flash_range(FILE **fp, const char *path, uint32_t file_offset, uint32_t flash_offset, uint32_t size,
                                      const char *label)
 {
     uint8_t *buffer = rg_alloc(FLASH_CHUNK_SIZE, MEM_FAST | MEM_NOPANIC);
@@ -358,7 +360,13 @@ static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t fl
         free(buffer);
         return "Image layout is not sector aligned.";
     }
-    if (flash_range_matches(fp, file_offset, flash_offset, size))
+    int comparison = flash_range_matches(fp, path, file_offset, flash_offset, size);
+    if (comparison < 0)
+    {
+        free(buffer);
+        return "Could not compare image and flash. Nothing was erased for this range.";
+    }
+    if (comparison == 1)
     {
         RG_LOGI("Skipping unchanged range '%s'", label);
         free(buffer);
@@ -392,7 +400,7 @@ static const char *write_flash_range(FILE *fp, uint32_t file_offset, uint32_t fl
     while (written < size)
     {
         size_t chunk = RG_MIN(size - written, FLASH_CHUNK_SIZE);
-        if (!read_exact(fp, file_offset + written, buffer, chunk))
+        if (!read_exact(fp, path, file_offset + written, buffer, chunk))
         {
             RG_LOGE("Short read from the image at offset %d", (int)(file_offset + written));
             free(buffer);
@@ -446,7 +454,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     if (!stat.is_file || !running)
         return false;
 
-    fp = fopen(path, "rb");
+    fp = rg_storage_open_file(path, "rb");
     if (!fp)
         return false;
 
@@ -455,7 +463,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     // with no way for the user to bring it back.
     rg_system_set_screen_timeout_inhibit(true);
 
-    if (!read_image_footer(fp, stat.size, &footer))
+    if (!read_image_footer(&fp, path, stat.size, &footer))
         goto cleanup;
     if (strcasecmp(footer.target, RG_TARGET_NAME) != 0)
         goto cleanup;
@@ -465,7 +473,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     {
         RG_LOGI("'%s' already passed verification, not re-reading it", path);
     }
-    else if ((error = verify_image_crc(fp, image_size, footer.crc, false, NULL)) != NULL)
+    else if ((error = verify_image_crc(&fp, path, image_size, footer.crc, false, NULL)) != NULL)
     {
         // Say why. This used to fail silently, so an image that was present but corrupt was
         // indistinguishable from no image at all ("No update available") to anyone looking at
@@ -483,7 +491,7 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
     if (!partitions)
         goto cleanup;
 
-    partition_count = read_partition_table(fp, partitions, MAX_IMAGE_PARTITIONS);
+    partition_count = read_partition_table(&fp, path, partitions, MAX_IMAGE_PARTITIONS);
     if (partition_count <= 0)
         goto cleanup;
 
@@ -517,27 +525,26 @@ bool rg_firmware_image_pending(const char *path, uint32_t flags)
             goto cleanup;
         if (part->offset + part->size > image_size)
             goto cleanup;
-        pending = !flash_range_matches(fp, part->offset, part->offset, part->size);
+        pending = 0 == flash_range_matches(&fp, path, part->offset, part->offset, part->size);
     }
 
     if (!pending && (flags & RG_FIRMWARE_UPDATE_PARTITION_TABLE))
     {
         if (PARTITION_TABLE_OFFSET + PARTITION_TABLE_SIZE > image_size)
             goto cleanup;
-        pending = !flash_range_matches(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE);
+        pending = 0 == flash_range_matches(&fp, path, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE);
     }
     if (!pending && (flags & RG_FIRMWARE_UPDATE_BOOTLOADER))
     {
         if (BOOTLOADER_OFFSET + BOOTLOADER_SIZE > image_size)
             goto cleanup;
-        pending = !flash_range_matches(fp, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE);
+        pending = 0 == flash_range_matches(&fp, path, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE);
     }
 
 cleanup:
     rg_system_set_screen_timeout_inhibit(false);
     free(partitions);
-    if (fp)
-        fclose(fp);
+    if (fp) fclose(fp);
     return pending;
 }
 #endif
@@ -559,11 +566,11 @@ bool rg_firmware_image_describe(const char *path, char *out, size_t out_len)
 
     out[0] = 0;
 
-    if (!stat.is_file || !(fp = fopen(path, "rb")))
+    if (!stat.is_file || !(fp = rg_storage_open_file(path, "rb")))
         return false;
 
-    bool success = read_image_footer(fp, stat.size, &footer);
-    fclose(fp);
+    bool success = read_image_footer(&fp, path, stat.size, &footer);
+    if (fp) fclose(fp);
 
     if (success)
         snprintf(out, out_len, "%s %s (%s)", footer.name, footer.version, footer.target);
@@ -575,14 +582,14 @@ bool rg_firmware_image_matches_version(const char *path, const char *version)
 {
     image_footer_t footer = {0};
     rg_stat_t stat = rg_storage_stat(path);
-    FILE *fp = stat.is_file ? fopen(path, "rb") : NULL;
+    FILE *fp = stat.is_file ? rg_storage_open_file(path, "rb") : NULL;
     if (!fp || !version)
     {
         if (fp) fclose(fp);
         return false;
     }
-    bool matches = read_image_footer(fp, stat.size, &footer) && strcmp(footer.version, version) == 0;
-    fclose(fp);
+    bool matches = read_image_footer(&fp, path, stat.size, &footer) && strcmp(footer.version, version) == 0;
+    if (fp) fclose(fp);
     return matches;
 }
 
@@ -609,7 +616,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
         return false;
     }
 
-    fp = fopen(path, "rb");
+    fp = rg_storage_open_file(path, "rb");
     if (!fp)
     {
         RG_LOGE("Failed to open '%s': errno=%d", path, errno);
@@ -623,7 +630,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     // device that has died.
     rg_system_set_screen_timeout_inhibit(true);
 
-    if (!read_image_footer(fp, stat.size, &footer))
+    if (!read_image_footer(&fp, path, stat.size, &footer))
     {
         rg_gui_alert("Update failed!", "Not a Retro-Go image.");
         goto cleanup;
@@ -646,7 +653,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
     else
     {
         uint32_t computed_crc = 0;
-        if ((error = verify_image_crc(fp, image_size, footer.crc, true, &computed_crc)))
+        if ((error = verify_image_crc(&fp, path, image_size, footer.crc, true, &computed_crc)))
         {
             // The numbers go on screen because they separate the two possible causes in one step: a
             // transfer that corrupted the file gives a different value on every attempt, while a file
@@ -668,7 +675,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
         goto cleanup;
     }
 
-    partition_count = read_partition_table(fp, partitions, MAX_IMAGE_PARTITIONS);
+    partition_count = read_partition_table(&fp, path, partitions, MAX_IMAGE_PARTITIONS);
     if (partition_count <= 0)
     {
         rg_gui_alert("Update failed!", "Invalid partition table.");
@@ -723,7 +730,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
             rg_gui_alert("Update failed!", "Image is truncated.");
             goto cleanup;
         }
-        if ((error = write_flash_range(fp, part->offset, part->offset, part->size, part->label)))
+        if ((error = write_flash_range(&fp, path, part->offset, part->offset, part->size, part->label)))
         {
             rg_gui_alert("Update failed!", error);
             goto cleanup;
@@ -732,7 +739,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 
     if (flags & RG_FIRMWARE_UPDATE_PARTITION_TABLE)
     {
-        if ((error = write_flash_range(fp, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE,
+        if ((error = write_flash_range(&fp, path, PARTITION_TABLE_OFFSET, PARTITION_TABLE_OFFSET, PARTITION_TABLE_SIZE,
                                        "partition table")))
         {
             rg_gui_alert("Update failed!", error);
@@ -742,7 +749,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 
     if (flags & RG_FIRMWARE_UPDATE_BOOTLOADER)
     {
-        if ((error = write_flash_range(fp, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE, "bootloader")))
+        if ((error = write_flash_range(&fp, path, BOOTLOADER_OFFSET, BOOTLOADER_OFFSET, BOOTLOADER_SIZE, "bootloader")))
         {
             rg_gui_alert("Update failed!", error);
             goto cleanup;
@@ -754,7 +761,7 @@ bool rg_firmware_install_image(const char *path, uint32_t flags)
 cleanup:
     rg_system_set_screen_timeout_inhibit(false);
     free(partitions);
-    fclose(fp);
+    if (fp) fclose(fp);
     return success;
 #endif
 }

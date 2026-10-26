@@ -7,6 +7,8 @@
 #include "rg_update.h"
 #include "updater.h"
 #include <limits.h>
+#include <media.h>
+#include "webui.h"
 
 #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
 #include "update_version.h"
@@ -478,12 +480,14 @@ void updater_show_dialog(void)
         rg_gui_alert(_("Download failed!"), _("Could not create firmware folder!"));
         return;
     }
+    // Keep background readers and HTTP uploads away from the update image.
+    webui_stop();
+    media_shutdown();
     purge_stale_images(dest_path);
     if (!download_file(release.asset.url, dest_path, release.asset.size)) return;
     if (!rg_firmware_image_matches_version(dest_path, release.version))
     {
-        rg_storage_delete(dest_path);
-        rg_gui_alert(_("Download failed!"), _("Image version does not match the release!"));
+        rg_gui_alert(_("Download failed!"), _("Could not verify the downloaded image version. The file was kept for retry."));
         return;
     }
     if (!rg_system_have_app(RG_UPDATER_APPLICATION))
@@ -495,10 +499,7 @@ void updater_show_dialog(void)
     if (!rg_gui_confirm(_("Download complete!"), _("Verify and reboot to install update?"), true)) return;
     // Verify target and image CRC before preparing the factory and handing off.
     if (!rg_firmware_install_image(dest_path, RG_FIRMWARE_STAGE_PREPARE_UPDATE))
-    {
-        rg_storage_delete(dest_path);
-        return;
-    }
+        return; // Keep the download so a transient SD read error does not require downloading it again.
     rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, dest_path, RG_BOOT_ONCE);
 #else
     rg_gui_alert(_("Update available"), release.version);

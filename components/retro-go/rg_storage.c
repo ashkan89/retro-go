@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 #if defined(RG_STORAGE_SDSPI_HOST)
 #include <driver/sdspi_host.h>
@@ -42,7 +43,7 @@
 #define SDMMC_CMD_WRITE_SINGLE_BLOCK    24
 #define SDMMC_CMD_WRITE_MULTIPLE_BLOCK  25
 
-#define SDCARD_MAX_RETRIES              3
+#define SDCARD_MAX_RETRIES              5
 #define SDCARD_RECOVERY_TIMEOUT_MS      1000
 
 /**
@@ -57,13 +58,22 @@
 #define FILE_IO_RETRIES                 3
 
 /* How many files may be open on the storage at once; see the note at the mount config. */
+#if CONFIG_IDF_TARGET_ESP32S3
+#define RG_STORAGE_MAX_OPEN_FILES       16
+#else
 #define RG_STORAGE_MAX_OPEN_FILES       8
+#endif
 #define RG_STORAGE_FORMAT_CLUSTER_SIZE  512
 
 static bool disk_mounted = false;
 static bool format_mount_requested = false;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static sdmmc_card_t *card_handle = NULL;
+#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+static bool sdcard_single_block_reads;
+static bool sdcard_ocr_valid;
+static uint32_t sdcard_ocr;
+#endif
 #endif
 #if defined(RG_STORAGE_FLASH_PARTITION)
 static wl_handle_t wl_handle = WL_INVALID_HANDLE;
@@ -101,8 +111,9 @@ static bool sdcard_is_transient_error(esp_err_t err)
 /**
  * Put the card back in a known state after a failed data transfer, so that retrying is worthwhile.
  *
- * CMD18/CMD25 are open ended: the card keeps streaming (or accepting) blocks until CMD12 tells it
- * to stop. Every error path inside the SPI host returns without sending that CMD12, so after a
+ * CMD18 reads are open ended: the card keeps streaming until CMD12 tells it
+ * to stop. SPI multi-block writes instead require a stop token, so S3 writes
+ * use independent single-sector commands in sdcard_do_transaction(). Every error path inside the SPI host returns without sending that CMD12, so after a
  * glitch the card is still in the middle of the old transfer. Re-issuing the failed command then
  * reads the tail of that stream instead of a command response, which is why a single recoverable
  * glitch used to poison every following read and surface as a file that "stops" at a random offset.
@@ -125,7 +136,7 @@ static void sdcard_recover(int slot, uint32_t timeout_ms, bool multi_block, bool
     // Only the SPI host needs this. The SDMMC host tags multi block transfers with an "auto stop"
     // flag, so its hardware issues CMD12 itself whether the transfer succeeded or not and the card
     // is never left mid-stream.
-    if (multi_block)
+    if (multi_block && !is_write)
     {
         sdmmc_command_t stop = {
             .opcode = SDMMC_CMD_STOP_TRANSMISSION,
@@ -152,7 +163,7 @@ static void sdcard_recover(int slot, uint32_t timeout_ms, bool multi_block, bool
             .opcode = SDMMC_CMD_SEND_STATUS,
             .arg = card_handle ? ((uint32_t)card_handle->rca << 16) : 0,
             .flags = SCF_CMD_AC | SCF_RSP_R1,
-            .timeout_ms = timeout_ms,
+            .timeout_ms = RG_MIN(timeout_ms, ready_budget_ms),
         };
         if (SDCARD_DO_TRANSACTION(slot, &status) == ESP_OK)
             return;
@@ -162,8 +173,11 @@ static void sdcard_recover(int slot, uint32_t timeout_ms, bool multi_block, bool
     RG_LOGW("SD Card did not report ready during recovery");
 }
 
-static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
+static esp_err_t sdcard_transfer(int slot, sdmmc_command_t *cmdinfo)
 {
+    sdmmc_command_t original = *cmdinfo;
+    original.error = ESP_OK;
+    cmdinfo->error = ESP_OK;
     rg_indicator_t indicator = RG_INDICATOR_ACTIVITY_DISK;
     if (cmdinfo->opcode == SDMMC_CMD_READ_SINGLE_BLOCK || cmdinfo->opcode == SDMMC_CMD_READ_MULTIPLE_BLOCK)
         indicator = RG_INDICATOR_ACTIVITY_DISK_READ;
@@ -173,6 +187,7 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
     rg_system_set_indicator(indicator, 1);
 
     esp_err_t ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
+    if (ret == ESP_OK) ret = cmdinfo->error;
 
     // The initial mount handshake already retries on these same transient errors
     // (see rg_storage_init below), but every transaction after that -- including the
@@ -181,7 +196,9 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
     // glitchy block read/write here used to surface as silent, undiagnosable truncation
     // or corruption further up the stack (e.g. a directory listing that stops early with
     // no error, or a short file read/write).
-    if (sdcard_is_transient_error(ret))
+    // Never replay ACMDs without their preceding CMD55. The mount/card
+    // initialization layer owns retries of those command sequences.
+    if (sdcard_is_transient_error(ret) && sdcard_is_data_cmd(cmdinfo->opcode))
     {
         const bool is_data = sdcard_is_data_cmd(cmdinfo->opcode);
         const bool is_multi = sdcard_is_multi_block_cmd(cmdinfo->opcode);
@@ -198,7 +215,21 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
                 sdcard_recover(slot, timeout_ms, is_multi, is_write);
             else
                 rg_task_delay(2);
+#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+            sdcard_single_block_reads = true;
+            if (card_handle && card_handle->host.max_freq_khz > 1000)
+            {
+                int slower = RG_MAX(1000, card_handle->host.max_freq_khz / 2);
+                if (card_handle->host.set_card_clk(slot, slower) == ESP_OK)
+                {
+                    card_handle->host.max_freq_khz = slower;
+                    RG_LOGW("SD clock reduced to %d kHz after a transfer error", slower);
+                }
+            }
+#endif
+            *cmdinfo = original;
             ret = SDCARD_DO_TRANSACTION(slot, cmdinfo);
+            if (ret == ESP_OK) ret = cmdinfo->error;
         }
         if (ret != ESP_OK)
             RG_LOGE("SD Card transaction failed after %d retries (op=%d, 0x%x)\n", SDCARD_MAX_RETRIES,
@@ -206,7 +237,7 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
         else if (is_data)
             RG_LOGI("SD Card recovered after a failed transfer (op=%d)\n", (int)cmdinfo->opcode);
     }
-    else if (ret != ESP_OK && sdcard_is_data_cmd(cmdinfo->opcode))
+    if (ret != ESP_OK && sdcard_is_data_cmd(cmdinfo->opcode))
     {
         // Not retriable, but the card can still be left mid-stream by an aborted multi block
         // transfer. Stop it anyway so the *next* unrelated read isn't collateral damage.
@@ -215,9 +246,49 @@ static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
                            sdcard_is_write_cmd(cmdinfo->opcode));
     }
 
+#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+    if (ret == ESP_OK && original.opcode == 58) // READ_OCR, before VFS publishes card_handle
+    {
+        sdcard_ocr = cmdinfo->response[0];
+        sdcard_ocr_valid = true;
+    }
+#endif
     rg_system_set_indicator(indicator, 0);
     return ret;
 }
+static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
+{
+#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+    // SPI multi-block writes need a raw stop token on error, which the public
+    // host API cannot send. Single-sector writes avoid leaving an open stream.
+    // After a noisy read, keep reads single-sector too until the next mount.
+    if ((card_handle || sdcard_ocr_valid) && sdcard_is_data_cmd(cmdinfo->opcode) && cmdinfo->blklen == 512 &&
+        cmdinfo->datalen > 512 && cmdinfo->datalen % 512 == 0 &&
+        (sdcard_is_write_cmd(cmdinfo->opcode) || sdcard_single_block_reads))
+    {
+        const sdmmc_command_t original = *cmdinfo;
+        for (size_t offset = 0; offset < original.datalen; offset += 512)
+        {
+            sdmmc_command_t block = original;
+            block.opcode = sdcard_is_write_cmd(original.opcode) ? SDMMC_CMD_WRITE_SINGLE_BLOCK : SDMMC_CMD_READ_SINGLE_BLOCK;
+            block.data = (uint8_t *)original.data + offset;
+            block.datalen = 512;
+#if ESP_IDF_VERSION_MAJOR >= 5
+            block.buflen = 512;
+#endif
+            uint32_t ocr = card_handle ? card_handle->ocr : sdcard_ocr;
+            block.arg = original.arg + ((ocr & SD_OCR_SDHC_CAP) ? offset / 512 : offset);
+            esp_err_t err = sdcard_transfer(slot, &block);
+            memcpy(cmdinfo->response, block.response, sizeof(cmdinfo->response));
+            cmdinfo->error = block.error;
+            if (err != ESP_OK) return err;
+        }
+        return ESP_OK;
+    }
+#endif
+    return sdcard_transfer(slot, cmdinfo);
+}
+
 #endif
 
 void rg_storage_init(void)
@@ -244,6 +315,12 @@ void rg_storage_init(void)
     sdmmc_host_t host_config = SDSPI_HOST_DEFAULT();
     host_config.slot = RG_STORAGE_SDSPI_HOST;
     host_config.max_freq_khz = RG_STORAGE_SDSPI_SPEED;
+#if CONFIG_IDF_TARGET_ESP32S3
+    // 10 MHz gives jumper-wired S3 boards more timing margin than the 20 MHz default.
+    host_config.max_freq_khz = RG_MIN(host_config.max_freq_khz, 10000);
+    sdcard_single_block_reads = false;
+    sdcard_ocr_valid = false;
+#endif
     host_config.do_transaction = &sdcard_do_transaction;
 
     sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
@@ -268,7 +345,7 @@ void rg_storage_init(void)
     };
 
     err = esp_vfs_fat_sdspi_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
-    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC)
+    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC || err == ESP_FAIL)
     {
         RG_LOGW("SD Card mounting failed (0x%x), retrying at probing speed...\n", err);
         host_config.max_freq_khz = SDMMC_FREQ_PROBING;
@@ -312,7 +389,7 @@ void rg_storage_init(void)
     };
 
     esp_err_t err = esp_vfs_fat_sdmmc_mount(RG_STORAGE_ROOT, &host_config, &slot_config, &mount_config, &card_handle);
-    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC)
+    if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_INVALID_RESPONSE || err == ESP_ERR_INVALID_CRC || err == ESP_FAIL)
     {
         RG_LOGW("SD Card mounting failed (0x%x), retrying at probing speed...\n", err);
         host_config.max_freq_khz = SDMMC_FREQ_PROBING;
@@ -481,12 +558,12 @@ bool rg_storage_mkdir(const char *dir)
     if (mkdir(dir, 0777) == 0)
         return true;
 
-    // FIXME: Might want to stat to see if it's a dir
     if (errno == EEXIST)
-        return true;
+        return rg_storage_stat(dir).is_dir;
 
     // Possibly missing some parents, try creating them
     char *temp = strdup(dir);
+    if (!temp) return false;
     for (char *p = temp + strlen(RG_STORAGE_ROOT) + 1; *p; p++)
     {
         if (*p == '/')
@@ -536,7 +613,15 @@ rg_stat_t rg_storage_stat(const char *path)
 {
     rg_stat_t ret = {0};
     struct stat statbuf;
-    if (path && stat(path, &statbuf) == 0)
+    int status = -1;
+    if (path)
+        for (int attempt = 0; attempt <= FILE_IO_RETRIES; ++attempt)
+        {
+            status = stat(path, &statbuf);
+            if (!status || errno != EIO) break;
+            rg_task_delay(20 * (attempt + 1));
+        }
+    if (status == 0)
     {
         ret.basename = rg_basename(path);
         ret.extension = rg_extension(path);
@@ -552,111 +637,102 @@ rg_stat_t rg_storage_stat(const char *path)
 bool rg_storage_exists(const char *path)
 {
     CHECK_PATH(path);
-    return access(path, F_OK) == 0;
+    return rg_storage_stat(path).exists;
 }
 
 bool rg_storage_scandir(const char *path, rg_scandir_cb_t *callback, void *arg, uint32_t flags)
 {
     CHECK_PATH(path);
+    if (!callback) return false;
     uint32_t types = flags & (RG_SCANDIR_FILES | RG_SCANDIR_DIRS);
     size_t path_len = strlen(path) + 1;
-    struct stat statbuf;
-    struct dirent *ent;
+    if (path_len > RG_PATH_MAX - 5) return false;
 
-    if (path_len > RG_PATH_MAX - 5)
+    DIR *dir = NULL;
+    for (int attempt = 0; attempt <= FILE_IO_RETRIES; ++attempt)
     {
-        RG_LOGE("Folder path too long '%s'", path);
-        return false;
+        dir = opendir(path);
+        if (dir || errno != EIO) break;
+        rg_task_delay(20 * (attempt + 1));
     }
-
-    DIR *dir = opendir(path);
-    if (!dir)
-    {
-        if (errno != ENOENT) // Only log unusual errors. Path not found isn't unusual.
-            RG_LOGE("Opendir failed (%d): '%s'", errno, path);
-        return false;
-    }
-
-    // We allocate on heap in case we go recursive through rg_storage_delete
-    rg_scandir_t *result = calloc(1, sizeof(rg_scandir_t));
-    if (!result)
-    {
-        RG_LOGE("Memory allocation failed: '%s'", path);
-        closedir(dir);
-        return false;
-    }
-
+    if (!dir) return false;
+    rg_scandir_t *result = calloc(1, sizeof(*result));
+    if (!result) { closedir(dir); return false; }
     strcat(strcpy(result->path, path), "/");
     result->basename = result->path + path_len;
     result->dirname = path;
+    bool success = true;
+    int retries = 0;
 
-    // readdir() returns NULL both at legitimate end-of-directory and on a real
-    // read error (e.g. a transient SD card glitch mid-listing) -- errno is the only
-    // way to tell those apart, and it must be cleared right before every call since
-    // a successful call isn't guaranteed to reset it.
     for (;;)
     {
+        // Resume at the last known directory position after reopening a failed
+        // FatFs directory. Replaying callbacks would duplicate entries/deletes.
+        long position = telldir(dir);
         errno = 0;
-        ent = readdir(dir);
+        struct dirent *ent = readdir(dir);
         if (!ent)
         {
-            if (errno != 0)
-                RG_LOGW("readdir() error (%d) while scanning '%s', listing may be incomplete\n", errno, path);
+            int error = errno;
+            if (!error) break;
+            RG_LOGW("Directory read failed (%d) in '%s'", error, path);
+            if (error == EIO && position >= 0 && retries++ < FILE_IO_RETRIES)
+            {
+                closedir(dir);
+                rg_task_delay(20 * retries);
+                dir = opendir(path);
+                if (dir)
+                {
+                    errno = 0;
+                    seekdir(dir, position);
+                    if (!errno) continue;
+                }
+            }
+            success = false;
             break;
         }
-
-        if (ent->d_name[0] == '.' && (!ent->d_name[1] || ent->d_name[1] == '.'))
-        {
-            // Skip self and parent
-            continue;
-        }
-
+        if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) continue;
         if (path_len + strlen(ent->d_name) >= RG_PATH_MAX)
         {
-            RG_LOGE("File path too long '%s/%s'", path, ent->d_name);
-            continue;
+            success = false;
+            break;
         }
-
         strcpy((char *)result->basename, ent->d_name);
-    #if defined(DT_REG) && defined(DT_DIR)
+        result->size = 0;
+        result->mtime = 0;
+#if defined(DT_REG) && defined(DT_DIR)
         result->is_file = ent->d_type == DT_REG;
         result->is_dir = ent->d_type == DT_DIR;
-    #else
-        result->is_file = 0;
-        result->is_dir = 0;
-        // We're forced to stat() if the OS doesn't provide type via dirent
-        flags |= RG_SCANDIR_STAT;
-    #endif
-
-        if ((flags & RG_SCANDIR_STAT) && stat(result->path, &statbuf) == 0)
+        bool need_stat = (flags & RG_SCANDIR_STAT) || (!result->is_file && !result->is_dir);
+#else
+        bool need_stat = true;
+#endif
+        if (need_stat)
         {
-            result->is_file = S_ISREG(statbuf.st_mode);
-            result->is_dir = S_ISDIR(statbuf.st_mode);
-            result->size = statbuf.st_size;
-            result->mtime = statbuf.st_mtime;
+            rg_stat_t st = rg_storage_stat(result->path);
+            if (!st.exists) { success = false; break; }
+            result->is_file = st.is_file;
+            result->is_dir = st.is_dir;
+            result->size = st.size;
+            result->mtime = st.mtime;
         }
-
         if ((result->is_dir && types != RG_SCANDIR_FILES) || (result->is_file && types != RG_SCANDIR_DIRS))
         {
-            int ret = (callback)(result, arg);
-
-            if (ret == RG_SCANDIR_STOP)
-                break;
-
-            if (ret == RG_SCANDIR_SKIP)
-                continue;
+            int ret = callback(result, arg);
+            if (ret == RG_SCANDIR_ERROR) { success = false; break; }
+            if (ret == RG_SCANDIR_STOP) break;
+            if (ret == RG_SCANDIR_SKIP) continue;
         }
-
-        if ((flags & RG_SCANDIR_RECURSIVE) && result->is_dir)
+        if ((flags & RG_SCANDIR_RECURSIVE) && result->is_dir &&
+            !rg_storage_scandir(result->path, callback, arg, flags))
         {
-            rg_storage_scandir(result->path, callback, arg, flags);
+            success = false;
+            break;
         }
     }
-
-    closedir(dir);
+    if (dir && closedir(dir) != 0) success = false;
     free(result);
-
-    return true;
+    return success;
 }
 
 int64_t rg_storage_get_free_space(const char *path)
@@ -684,37 +760,48 @@ int64_t rg_storage_get_free_space(const char *path)
  * claims, or a card that is really gone, fails every attempt and is reported with the offset it
  * stopped at -- which used to be the one piece of information a caller never got.
  */
-static bool file_read_at(FILE *fp, long offset, void *buffer, size_t length, const char *path)
+FILE *rg_storage_open_file(const char *path, const char *mode)
 {
-    uint8_t *dest = buffer;
-    size_t done = 0;
+    if (!path || !mode) return NULL;
+    for (int attempt = 0; attempt <= FILE_IO_RETRIES; ++attempt)
+    {
+        FILE *fp = fopen(path, mode);
+        if (fp) return fp;
+        if (errno != EIO && errno != EAGAIN && errno != EBUSY && errno != ETIMEDOUT)
+            break;
+        rg_task_delay(20 * (attempt + 1));
+    }
+    return NULL;
+}
 
-    while (done < length)
+bool rg_storage_read_at(FILE **stream, const char *path, size_t offset, void *buffer, size_t length)
+{
+    if (!stream || !path || (!buffer && length) || offset > LONG_MAX || length > LONG_MAX - offset)
+        return false;
+    uint8_t *dest = buffer;
+    for (size_t done = 0; done < length;)
     {
         size_t chunk = RG_MIN(length - done, (size_t)FILE_IO_CHUNK_SIZE);
         bool ok = false;
-
-        for (int attempt = 0; attempt <= FILE_IO_RETRIES && !ok; ++attempt)
+        for (int attempt = 0; attempt <= FILE_IO_RETRIES; ++attempt)
         {
-            if (attempt > 0)
+            if (!*stream) *stream = rg_storage_open_file(path, "rb");
+            if (*stream && fseek(*stream, offset + done, SEEK_SET) == 0 &&
+                fread(dest + done, 1, chunk, *stream) == chunk)
             {
-                RG_LOGW("Read at offset %d of '%s' failed, retry %d/%d", (int)(offset + done), path, attempt,
-                        FILE_IO_RETRIES);
-                clearerr(fp);
-                rg_task_delay(10);
+                ok = true;
+                break;
             }
-            ok = fseek(fp, offset + (long)done, SEEK_SET) == 0 && fread(dest + done, 1, chunk, fp) == chunk;
+            // FR_DISK_ERR is sticky in FatFs FIL.err. clearerr(FILE*) does
+            // not repair it; only a fresh open can retry the actual disk read.
+            if (*stream) fclose(*stream);
+            *stream = NULL;
+            RG_LOGW("Read retry %d at %u in '%s'", attempt + 1, (unsigned)(offset + done), path);
+            rg_task_delay(20 * (attempt + 1));
         }
-
-        if (!ok)
-        {
-            RG_LOGE("Read of '%s' stopped at %d of %d bytes (errno %d)", path, (int)(done), (int)length, errno);
-            return false;
-        }
-
+        if (!ok) return false;
         done += chunk;
     }
-
     return true;
 }
 
@@ -728,7 +815,7 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
     void *output_buffer;
     size_t file_size;
 
-    FILE *fp = fopen(path, "rb");
+    FILE *fp = rg_storage_open_file(path, "rb");
     if (!fp)
     {
         if (errno != ENOENT) // Only log unusual errors. Path not found isn't unusual.
@@ -736,14 +823,13 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
         return false;
     }
 
-    long probed_size = (fseek(fp, 0, SEEK_END) == 0) ? ftell(fp) : -1;
-    if (probed_size < 0)
+    rg_stat_t file_stat = rg_storage_stat(path);
+    if (!file_stat.is_file)
     {
-        RG_LOGE("Could not determine the size of '%s' (%d)", path, errno);
         fclose(fp);
         return false;
     }
-    file_size = (size_t)probed_size;
+    file_size = file_stat.size;
 
     if (flags & RG_FILE_USER_BUFFER)
     {
@@ -754,9 +840,10 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
     else
     {
         size_t blocksize = RG_MAX(0x400, (flags & 0xF) * 0x2000);
+        if (file_size > SIZE_MAX - (blocksize - 1)) { fclose(fp); return false; }
         output_buffer_alloc_size = (file_size + (blocksize - 1)) & ~(blocksize - 1);
         output_buffer_size = file_size;
-        output_buffer = malloc(output_buffer_alloc_size);
+        output_buffer = malloc(RG_MAX(output_buffer_alloc_size, 1));
     }
 
     if (!output_buffer)
@@ -766,9 +853,9 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
         return false;
     }
 
-    if (output_buffer_size && !file_read_at(fp, 0, output_buffer, output_buffer_size, path))
+    if (output_buffer_size && !rg_storage_read_at(&fp, path, 0, output_buffer, output_buffer_size))
     {
-        fclose(fp);
+        if (fp) fclose(fp);
         if (!(flags & RG_FILE_USER_BUFFER))
             free(output_buffer);
         return false;
@@ -802,7 +889,7 @@ bool rg_storage_write_file(const char *path, const void *data_ptr, size_t data_l
     bool atomic = (flags & RG_FILE_ATOMIC_WRITE) && (strlen(path) + 4 <= RG_PATH_MAX);
 
     if ((flags & RG_FILE_ATOMIC_WRITE) && !atomic)
-        RG_LOGW("Path too long to write atomically, writing in place: '%s'", path);
+        return false;
 
     if (atomic)
     {
@@ -810,44 +897,48 @@ bool rg_storage_write_file(const char *path, const void *data_ptr, size_t data_l
         target = temp_path;
     }
 
-    FILE *fp = fopen(target, "wb");
-    if (!fp)
+    bool success = false;
+    for (int attempt = 0; attempt <= FILE_IO_RETRIES && !success; ++attempt)
     {
-        RG_LOGE("Fopen failed (%d): '%s'", errno, target);
-        return false;
-    }
-
-    bool success = !data_len || fwrite(data_ptr, 1, data_len, fp) == data_len;
-
-    if (!success)
-        RG_LOGE("Fwrite failed (%d): '%s'", errno, target);
-    if (ferror(fp))
-        success = false;
-
-    // fclose is where buffered data finally reaches the card, so it is also where a full card or a
-    // dying one shows up. Not checking it reported a successful write for a file that never landed.
-    if (fclose(fp) != 0)
-    {
-        RG_LOGE("Fclose failed (%d): '%s'", errno, target);
-        success = false;
+        FILE *fp = rg_storage_open_file(target, "wb");
+        if (!fp) break;
+        success = !data_len || fwrite(data_ptr, 1, data_len, fp) == data_len;
+        if (ferror(fp)) success = false;
+        if (fclose(fp) != 0) success = false;
+        if (!success)
+        {
+            RG_LOGW("Write retry %d for '%s' (errno %d)", attempt + 1, target, errno);
+            rg_task_delay(20 * (attempt + 1));
+        }
     }
 
     if (atomic)
     {
-        // FatFs' rename refuses to overwrite an existing name, so the old file has to go first.
-        // Losing power in that window leaves the complete new data in the .tmp file, which is a
-        // recoverable state; what must never happen is the target being left half written.
+        // Keep the old destination as a backup until publication succeeds.
+        // In particular, a failed rename must not delete the last good cache.
         if (success)
         {
-            remove(path);
-            if (rename(temp_path, path) != 0)
+            char backup[RG_PATH_MAX + 1];
+            snprintf(backup, sizeof(backup), "%s.bak", path);
+            bool had_target = access(path, F_OK) == 0;
+            if (!had_target && errno != ENOENT)
+                success = false;
+            if (success && had_target)
             {
-                RG_LOGE("Rename failed (%d): '%s' -> '%s'", errno, temp_path, path);
+                if (remove(backup) != 0 && errno != ENOENT) success = false;
+                if (success && rename(path, backup) != 0) success = false;
+            }
+            if (success && rename(temp_path, path) != 0)
+            {
+                RG_LOGE("Publish failed for '%s'; restoring previous file", path);
+                if (had_target && rename(backup, path) != 0)
+                    RG_LOGE("Restore failed; previous file retained at '%s'", backup);
                 success = false;
             }
+            if (success && had_target) remove(backup);
         }
         if (!success)
-            remove(temp_path);
+            RG_LOGW("Atomic write failed; staged file (if complete) is at '%s'", temp_path);
     }
 
     return success;
@@ -958,7 +1049,7 @@ bool rg_storage_unzip_file(const char *zip_path, const char *filter, void **data
     {
         size_t input_size = RG_MIN(read_buffer_size, stream_remaining);
         size_t output_size = output_buffer_size - output_buffer_pos;
-        if (!file_read_at(fp, stream_offset, read_buffer, input_size, zip_path))
+        if (!rg_storage_read_at(&fp, zip_path, stream_offset, read_buffer, input_size))
             goto _fail;
         stream_offset += input_size;
         stream_remaining -= input_size;
@@ -988,7 +1079,7 @@ _fail:
         free(output_buffer);
     free(read_buffer);
     free(decomp);
-    fclose(fp);
+    if (fp) fclose(fp);
     return false;
 }
 #else

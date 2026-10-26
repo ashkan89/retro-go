@@ -108,8 +108,8 @@ void rg_settings_commit(void)
 
         char pathbuf[RG_PATH_MAX];
         snprintf(pathbuf, RG_PATH_MAX, "%s/%s.json", RG_BASE_PATH_CONFIG, name);
-        if (rg_storage_write_file(pathbuf, buffer, buffer_len, 0) ||
-            (rg_storage_mkdir(rg_dirname(pathbuf)) && rg_storage_write_file(pathbuf, buffer, buffer_len, 0)))
+        if (rg_storage_write_file(pathbuf, buffer, buffer_len, RG_FILE_ATOMIC_WRITE) ||
+            (rg_storage_mkdir(rg_dirname(pathbuf)) && rg_storage_write_file(pathbuf, buffer, buffer_len, RG_FILE_ATOMIC_WRITE)))
         {
             cJSON_SetNumberHelper(cJSON_GetObjectItem(branch, "changed"), 0);
         }

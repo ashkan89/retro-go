@@ -57,7 +57,7 @@ static int scan_folder_cb(const rg_scandir_t *entry, void *arg)
         if (!new_buf)
         {
             RG_LOGW("Ran out of memory, file scanning stopped at %d entries ...", app->files_count);
-            return RG_SCANDIR_STOP;
+            return RG_SCANDIR_ERROR;
         }
         app->files = new_buf;
         app->files_capacity = new_capacity;
@@ -67,7 +67,7 @@ static int scan_folder_cb(const rg_scandir_t *entry, void *arg)
     if (!name)
     {
         RG_LOGW("Ran out of memory for names, file scanning stopped at %d entries ...", app->files_count);
-        return RG_SCANDIR_STOP;
+        return RG_SCANDIR_ERROR;
     }
 
     app->files[app->files_count++] = (retro_file_t) {
@@ -120,7 +120,7 @@ static int scan_saves_cb(const rg_scandir_t *entry, void *arg)
  */
 
 #define ROM_CACHE_MAGIC   0x4C524752 // "RGRL"
-#define ROM_CACHE_VERSION 1
+#define ROM_CACHE_VERSION 2 // Discard caches created from unchecked/partial scans.
 
 typedef struct __attribute__((packed))
 {
@@ -230,6 +230,7 @@ static bool romcache_save(const retro_app_t *app)
     for (size_t i = 0; i < folders_count; i++)
     {
         rg_stat_t stat = rg_storage_stat(folders[i]);
+        if (!stat.exists || !stat.is_dir) { free(data); return false; }
         size_t path_len = strlen(folders[i]);
         romcache_folder_t entry = {.path_len = path_len, .mtime = (int64_t)stat.mtime};
         memcpy(ptr, &entry, sizeof(entry)), ptr += sizeof(entry);
@@ -444,22 +445,37 @@ static void romcache_forget(retro_app_t *app)
 }
 
 /* Walk the card and write the result to the cache. This is the slow path, in every sense. */
-static void application_scan(retro_app_t *app, bool interactive)
+static bool application_scan(retro_app_t *app, bool interactive)
 {
-    if (interactive)
-        rg_gui_draw_message(_("Scanning %s..."), app->short_name);
-
-    RG_LOGI("Scanning roms for '%s'", app->short_name);
-
+    if (interactive) rg_gui_draw_message(_("Scanning %s..."), app->short_name);
+    // Scan into a separate snapshot: an incomplete scan must never replace
+    // either the live list or the last complete cache on the SD card.
+    retro_app_t scanned = *app;
+    scanned.files_count = 0;
+    scanned.files_capacity = 100;
+    scanned.files = calloc(scanned.files_capacity, sizeof(retro_file_t));
+    scanned.filenames = rg_bucket_create(4096);
+    bool complete = scanned.files && scanned.filenames &&
+        rg_storage_scandir(app->paths.roms, scan_folder_cb, &scanned, RG_SCANDIR_RECURSIVE);
+    if (!complete)
+    {
+        free(scanned.files);
+        rg_bucket_free(scanned.filenames);
+        RG_LOGW("Incomplete ROM scan for '%s'; keeping previous list", app->short_name);
+        if (interactive) rg_gui_alert(_("SD card read failed"), _("Scan incomplete. Previous game list was kept. Try Scan Game List again."));
+        return false;
+    }
+    free(app->files);
     rg_bucket_free(app->filenames);
-    app->filenames = rg_bucket_create(4096);
-    app->files_count = 0;
-
-    rg_storage_scandir(app->paths.roms, scan_folder_cb, app, RG_SCANDIR_RECURSIVE);
+    app->files = scanned.files;
+    app->files_capacity = scanned.files_capacity;
+    app->files_count = scanned.files_count;
+    app->filenames = scanned.filenames;
+    for (size_t i = 0; i < app->files_count; ++i) app->files[i].app = app;
     romcache_save(app);
-
     app->cached = true;
     app->cached_count = app->files_count;
+    return true;
 }
 
 static void application_init(retro_app_t *app)
@@ -481,8 +497,8 @@ static void application_init(retro_app_t *app)
         bool stale = false;
         if (romcache_load(app, &stale))
             app->cached = true;
-        if (!app->cached || stale)
-            application_scan(app, true);
+        if ((!app->cached || stale) && !application_scan(app, true) && !app->cached)
+            return; // Leave initialization pending so re-entering can retry.
     }
 
     app->cached_count = app->files_count;
@@ -589,7 +605,7 @@ static void crc_cache_save(void)
 
     RG_LOGI("Saving CRC cache...");
     size_t data_len = RG_MIN(8 + (crc_cache->count * sizeof(crc_cache->entries[0])), sizeof(*crc_cache));
-    crc_cache_dirty = !rg_storage_write_file(RG_BASE_PATH_CACHE"/crc32.bin", crc_cache, data_len, 0);
+    crc_cache_dirty = !rg_storage_write_file(RG_BASE_PATH_CACHE"/crc32.bin", crc_cache, data_len, RG_FILE_ATOMIC_WRITE);
 }
 
 static uint32_t crc_cache_calc_key(retro_file_t *file)
@@ -818,6 +834,11 @@ static void event_handler(gui_event_t event, tab_t *tab)
     }
     else if (event == TAB_ENTER || event == TAB_LEAVE || event == TAB_SCROLL)
     {
+        if (event == TAB_ENTER && !app->initialized)
+        {
+            application_init(app);
+            tab_refresh(tab, NULL);
+        }
         gui_set_status(tab, NULL, "");
         gui_set_preview(tab, NULL);
     }
@@ -1151,8 +1172,11 @@ void applications_scan_all(void)
             break;
 
         rg_storage_mkdir(app->paths.roms);
-        romcache_forget(app);
-        application_scan(app, true);
+        if (!application_scan(app, true))
+        {
+            gui_set_status(gui_get_tab(i), _("SD read failed"), "");
+            continue;
+        }
         total += app->files_count;
 
         if (app->files_count > 0)

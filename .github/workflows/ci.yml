@@ -23,6 +23,7 @@ jobs:
       - run: python tools/test_nes_timing.py --cc cc
       - run: python tools/test_media_audio.py --cc cc
       - run: python tools/test_sdcard_manager.py --cc cc
+      - run: python tools/test_storage_recovery.py --cc cc
       - run: |
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
           /tmp/test-update-version

@@ -881,8 +881,9 @@ static int scan_entry_cb(const rg_scandir_t *file, void *arg)
 
     if (file->is_dir)
     {
-        if (ctx->depth + 1 < MEDIA_MAX_SCAN_DEPTH)
-            queue_push(&ctx->queue, file->path, (uint8_t)(ctx->depth + 1));
+        if (ctx->depth + 1 < MEDIA_MAX_SCAN_DEPTH &&
+            !queue_push(&ctx->queue, file->path, (uint8_t)(ctx->depth + 1)))
+            return RG_SCANDIR_ERROR;
         return RG_SCANDIR_CONTINUE;
     }
 
@@ -915,7 +916,7 @@ static int scan_entry_cb(const rg_scandir_t *file, void *arg)
             {
                 track->path_hash = path_hash;
                 if (!scan_write_track(ctx, track))
-                    return RG_SCANDIR_STOP;
+                    return RG_SCANDIR_ERROR;
                 lib.status.tracks_found = ctx->written;
                 return RG_SCANDIR_CONTINUE;
             }
@@ -942,7 +943,7 @@ static int scan_entry_cb(const rg_scandir_t *file, void *arg)
     }
 
     if (!scan_write_track(ctx, track))
-        return RG_SCANDIR_STOP;
+        return RG_SCANDIR_ERROR;
 
     lib.status.tracks_found = ctx->written;
 
@@ -1004,7 +1005,7 @@ static void scan_task(void *arg)
         goto finish;
     }
 
-    queue_push(&ctx->queue, lib.root, 0);
+    if (!queue_push(&ctx->queue, lib.root, 0)) goto finish;
 
     for (const char *dir; (dir = queue_pop(&ctx->queue, &ctx->depth)) != NULL;)
     {
@@ -1022,8 +1023,13 @@ static void scan_task(void *arg)
             relative = "/";
         media_utf8_copy(lib.status.current, sizeof(lib.status.current), relative);
 
-        rg_storage_scandir(dir, scan_entry_cb, ctx,
-                           RG_SCANDIR_FILES | RG_SCANDIR_DIRS | RG_SCANDIR_STAT | RG_SCANDIR_SORT);
+        if (!rg_storage_scandir(dir, scan_entry_cb, ctx,
+                                RG_SCANDIR_FILES | RG_SCANDIR_DIRS | RG_SCANDIR_STAT | RG_SCANDIR_SORT))
+        {
+            RG_LOGW("Media scan failed in '%s'; keeping previous index", dir);
+            lib.scan_stop = true;
+            break;
+        }
 
         scan_throttle();
     }
@@ -1035,7 +1041,7 @@ static void scan_task(void *arg)
                fwrite(&header, 1, sizeof(header), ctx->out) != sizeof(header)))
         ok = false;
 
-    fclose(ctx->out);
+    if (fclose(ctx->out) != 0) ok = false;
     ctx->out = NULL;
 
     if (ok)

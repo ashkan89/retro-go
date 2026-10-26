@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <time.h>
+#include <stdio.h>
 
 #define RG_BASE_PATH        RG_STORAGE_ROOT "/retro-go"
 #define RG_BASE_PATH_BIOS   RG_BASE_PATH "/bios"
@@ -40,6 +41,7 @@ enum
     RG_SCANDIR_CONTINUE = 1,
     RG_SCANDIR_SKIP = 2,
     RG_SCANDIR_STOP = 0,
+    RG_SCANDIR_ERROR = -1, // Abort an incomplete scan (allocation/I/O failure).
 };
 
 typedef struct
@@ -80,3 +82,7 @@ enum
 bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, uint32_t flags);
 bool rg_storage_write_file(const char *path, const void *data_ptr, size_t data_len, uint32_t flags);
 bool rg_storage_unzip_file(const char *zip_path, const char *filter, void **data_out, size_t *data_len, uint32_t flags);
+
+// Reopens a poisoned FatFs stream when retrying a read. On failure *stream may be NULL.
+FILE *rg_storage_open_file(const char *path, const char *mode);
+bool rg_storage_read_at(FILE **stream, const char *path, size_t offset, void *buffer, size_t length);

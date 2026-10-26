@@ -225,3 +225,28 @@ card. Extracted data is limited by available card space and FAT32's per-file
 limit, rather than a fixed 512 MiB bundle limit. Release lookup distinguishes a
 missing asset, a network/API failure, an unsupported firmware version, and a
 download above the supported size limit.
+
+### SD transfer recovery
+
+ESP32-S3 SPI cards start at up to 10 MHz. Transient block-transfer errors get up
+to five retries with progressively lower clocks (down to 1 MHz); reads switch to
+single-sector transfers after an error, and writes use single-sector commands to
+avoid leaving a failed multi-block write stream open. CRC checking remains enabled.
+The slower setting persists until storage is mounted again.
+
+Read retries reopen the file because FatFs retains disk errors inside a file
+handle even after C `clearerr()`. Firmware verification retries up to three full
+passes and always requires the expected image CRC. A failed image/flash comparison
+aborts before erasing that range, and a failed update keeps its downloaded image
+for another attempt. The launcher stops media and HTTP file activity during updates.
+Both launcher and factory apps must be rebuilt to use the new recovery code.
+
+Failed directory scans no longer overwrite complete ROM caches or media indexes.
+The launcher preserves its previous list and lets **Scan Game List** or re-entering
+a tab retry the scan. Older unchecked ROM caches are invalidated and rebuilt when
+their tabs are opened. Atomic memory-backed file writes retry from a fresh stream
+and keep a backup until the new file is published, restoring it if publication fails.
+
+Run `python tools/test_storage_recovery.py --cc cc` for fault-injection checks of
+poisoned streams, SPI retries and addressing, CRC verification, failed writes and
+renames, directory errors, and preservation of ROM list snapshots.
