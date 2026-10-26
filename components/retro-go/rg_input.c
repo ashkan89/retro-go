@@ -92,6 +92,9 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
         raw_value += esp_adc_cal_raw_to_voltage(value, &adc_chars);
     }
     raw_value /= 4;
+#ifdef RG_BATTERY_IS_PRESENT
+    present = RG_BATTERY_IS_PRESENT(raw_value);
+#endif
 #elif RG_BATTERY_DRIVER == 2 /* I2C */
     uint8_t data[5];
     if (!rg_i2c_read(0x20, -1, &data, 5))
@@ -107,6 +110,11 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
 
     (void)raw_value;
 
+    if (!present)
+    {
+        *out = (rg_battery_t){0};
+        return true;
+    }
     *out = (rg_battery_t){
         .level = RG_MAX(0.f, RG_MIN(100.f, RG_BATTERY_CALC_PERCENT(raw_value))),
         .volts = RG_BATTERY_CALC_VOLTAGE(raw_value),

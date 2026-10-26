@@ -83,8 +83,11 @@
 // Haptic feedback motor driver
 #define RG_GPIO_VIBRATOR            GPIO_NUM_38
 
-// No battery ADC was provided for this board.
-#define RG_BATTERY_DRIVER           0
+// Battery: GPIO1 / ADC1_CH0, 100k/100k divider (see BATTERY.md).
+// GPIO1 is reserved for voltage sensing; select headphones manually in Audio out.
+#define RG_BATTERY_ADC_GPIO         GPIO_NUM_1
+#define RG_BATTERY_ADC_CHANNEL      ADC_CHANNEL_0
+#include "../esp32-s3-battery.h"
 
 // SPI Display
 #define RG_GPIO_LCD_MISO            GPIO_NUM_NC
@@ -111,10 +114,8 @@
 // drives PCM5102A XSMT (or a headphone amp shutdown). Both are active high.
 #define RG_GPIO_SND_AMP_ENABLE      GPIO_NUM_9
 #define RG_GPIO_SND_HP_ENABLE       GPIO_NUM_46
-// Jack detect: the 4th (ring2) contact, shorted to the plug's sleeve when one is inserted.
-// Idle state is the internal pull-up, so a board without the mod correctly reports no headphones.
-#define RG_GPIO_SND_HP_DETECT       GPIO_NUM_1
-#define RG_GPIO_SND_HP_DETECT_LEVEL 0
+// No jack-detect GPIO: GPIO1 is the battery ADC. Headphones remain selectable
+// manually through Audio out; Auto uses the speaker.
 
 // Updater
 #define RG_UPDATER_ENABLE               1

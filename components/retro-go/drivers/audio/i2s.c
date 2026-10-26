@@ -17,8 +17,6 @@
 #error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_AUDIO_USE_EXT_DAC, the headphone DAC shares the I2S bus."
 #elif RG_AUDIO_USE_INT_DAC
 #error "RG_AUDIO_USE_HEADPHONE_JACK cannot be combined with RG_AUDIO_USE_INT_DAC (ambiguous sink names)."
-#elif !defined(RG_GPIO_SND_HP_DETECT)
-#error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_GPIO_SND_HP_DETECT to be defined in your target file."
 #elif !defined(RG_GPIO_SND_AMP_ENABLE)
 #error "RG_AUDIO_USE_HEADPHONE_JACK requires RG_GPIO_SND_AMP_ENABLE, the speaker amp must be shut down."
 #endif
@@ -152,7 +150,11 @@ static void resolve_route(void)
 #if RG_AUDIO_USE_HEADPHONE_JACK
 static bool read_jack(void)
 {
+#ifdef RG_GPIO_SND_HP_DETECT
     return gpio_get_level(RG_GPIO_SND_HP_DETECT) == RG_GPIO_SND_HP_DETECT_LEVEL;
+#else
+    return false; // Manual headphone selection; Auto stays on the speaker.
+#endif
 }
 
 // The detect line is a mechanical contact, it chatters for tens of milliseconds while a plug
@@ -342,10 +344,12 @@ static bool driver_init(int device, int sample_rate)
     #if RG_AUDIO_USE_HEADPHONE_JACK
     // Pulled up and active low, so an unmodified board (nothing wired to the detect pin) reads
     // "no headphones" and keeps using its speaker.
+    #ifdef RG_GPIO_SND_HP_DETECT
     gpio_reset_pin(RG_GPIO_SND_HP_DETECT);
     gpio_set_direction(RG_GPIO_SND_HP_DETECT, GPIO_MODE_INPUT);
     gpio_set_pull_mode(RG_GPIO_SND_HP_DETECT, GPIO_PULLUP_ONLY);
     rg_task_delay(20); // Let the pull-up charge the line (and any debounce capacitor) before sampling
+    #endif
     state.jack_present = state.jack_candidate = read_jack();
     state.jack_changed_at = rg_system_timer();
     #endif
@@ -445,7 +449,7 @@ static bool driver_deinit(void)
     #ifdef RG_GPIO_SND_HP_ENABLE
     gpio_reset_pin(RG_GPIO_SND_HP_ENABLE);
     #endif
-    #if RG_AUDIO_USE_HEADPHONE_JACK
+    #if RG_AUDIO_USE_HEADPHONE_JACK && defined(RG_GPIO_SND_HP_DETECT)
     gpio_reset_pin(RG_GPIO_SND_HP_DETECT);
     #endif
     state.route = RG_AUDIO_ROUTE_UNKNOWN;

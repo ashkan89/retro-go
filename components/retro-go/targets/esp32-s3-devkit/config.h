@@ -63,12 +63,10 @@
     {RG_KEY_B,      .num = GPIO_NUM_5,  .pullup = 1, .level = 0},\
 }
 
-// Battery
-#define RG_BATTERY_DRIVER           1
-#define RG_BATTERY_ADC_UNIT         ADC_UNIT_1
+// Battery: GPIO4 / ADC1_CH3, 100k/100k divider (see BATTERY.md).
+#define RG_BATTERY_ADC_GPIO         GPIO_NUM_4
 #define RG_BATTERY_ADC_CHANNEL      ADC_CHANNEL_3
-#define RG_BATTERY_CALC_PERCENT(raw) (((raw) * 2.f - 3500.f) / (4200.f - 3500.f) * 100.f)
-#define RG_BATTERY_CALC_VOLTAGE(raw) ((raw) * 2.f * 0.001f)
+#include "../esp32-s3-battery.h"
 
 
 // Status LED

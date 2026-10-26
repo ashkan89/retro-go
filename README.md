@@ -92,8 +92,9 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
 - 10-button digital gamepad matrix (D-Pad, A, B, Start, Select, Menu, Option) plus a virtual Menu shortcut (Start+Select) if a dedicated Menu button isn't wired.
 - WS2812 addressable RGB status LED.
 - Haptic feedback (vibration motor) driver output.
-- External I2S DAC audio output (e.g. MAX98357A class-D amplifier module) — no onboard battery-voltage ADC on this target, so battery percentage isn't available.
-- Optional 3.5mm headphone jack with automatic switching: a stereo PCM5102A DAC shares the I2S bus with the speaker amp, and a detect pin mutes whichever one isn't in use. Volume is remembered separately per output. See [Headphone jack](#headphone-jack-optional).
+- External I2S DAC audio output (e.g. MAX98357A class-D amplifier module).
+- Battery voltage and approximate percentage using a 100k/100k divider on GPIO1 (ADC1); see [Battery wiring](BATTERY.md).
+- Optional 3.5mm headphone jack: a stereo PCM5102A DAC shares the I2S bus with the speaker amp. Select Headphones manually under Options → Audio out; GPIO1 is reserved for battery sensing. Volume is remembered separately per output. See [Headphone jack](#headphone-jack-optional).
 - Firmware updater support (downloads and flashes new images from `/sd/retro-go/firmware` via the factory app).
 
 ### Wiring diagram
@@ -130,7 +131,7 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
                                                    │                ┌─────────────────────────────┐
                                                    │                │ GPIO5/4/6 ───── shared I2S  │
                                                    │                │ GPIO46 ───────── XSMT       │
-                                                   │                │ GPIO1  ───────── jack detect │
+                                                   │                │ jack detect: not connected  │
                                                    │                └─────────────────────────────┘
                                                    │                  PCM5102A + 3.5mm TRRS jack
                                                    │
@@ -163,7 +164,7 @@ Build/flash example: `python rg_tool.py --target esp32-s3-n16r8-ili9341 --port C
   | I2S audio (ext. DAC)   | DATA / DIN    | GPIO6        |
   | I2S audio (speaker)    | MAX98357A SD_MODE | GPIO9    |
   | I2S audio (headphones) | PCM5102A XSMT | GPIO46       |
-  | I2S audio (headphones) | Jack detect   | GPIO1        |
+  | Battery ADC           | Divider midpoint | GPIO1     |
   | Status LED             | WS2812 DIN    | GPIO48       |
   | Haptics                | Vibrator      | GPIO38       |
   | Gamepad                | UP            | GPIO17       |
@@ -231,26 +232,16 @@ PCM5102A and the jack. Wire its shutdown pin to GPIO46 instead of XSMT — the f
         └─────────────────┘           │  ROUT ─┼─ 220R ──┼──► RING1
                                       │  AGND ─┴─────────┼──► SLEEVE
                                       └──────────────────┘
-                                                              RING2 ──► GPIO1
+                                                              RING2: not connected (manual selection)
 ```
 
-**Jack detect (GPIO1).** A stereo plug's barrel is long enough to bridge both the sleeve and ring2 contacts of a
-4-pole jack. So ring2 is grounded whenever a plug is in, and floating otherwise. GPIO1 runs with its internal
-pull-up enabled, which gives:
-
-| State | GPIO1 | Result |
-|-------|-------|--------|
-| Nothing plugged in | HIGH (pull-up) | Speaker |
-| Plug inserted | LOW (bridged to sleeve) | Headphones |
-| Nothing wired to GPIO1 at all | HIGH (pull-up) | Speaker |
-
-That last row is the point of this arrangement: **a board built without the headphone mod behaves exactly as
-before**, so the feature is safe to leave enabled in the shared target configs. Add the 100 nF capacitor from GPIO1
-to GND to soak up contact chatter; the firmware also requires the line to hold its new state for 200 ms
-(`RG_AUDIO_HP_DEBOUNCE_MS`) before it acts.
-
-If you use a 3-pole jack with a normally-closed switch contact instead, the polarity inverts (closed to ground when
-*empty*). Wire the switch contact to GPIO1 and set `RG_GPIO_SND_HP_DETECT_LEVEL 1` in your target's `config.h`.
+**Manual headphone selection.** GPIO1 is now the battery ADC on all N16R8/N8R2
+variants. Leave the jack's detect contact disconnected and choose **Headphones**
+under **Options → Audio out** when using it; **Auto** selects the speaker without a
+detect pin. Do not attach the jack's switching contact to the battery divider.
+Automatic detection is still supported by the driver on targets that define a
+separate `RG_GPIO_SND_HP_DETECT` and `RG_GPIO_SND_HP_DETECT_LEVEL`; verify all pin
+conflicts before assigning an alternative pin. See [Battery wiring](BATTERY.md).
 
 **Speaker enable (GPIO9).** The MAX98357A's SD_MODE pin is not a plain enable — the *voltage* on it selects the
 channel: below 0.16 V shuts the amp down, 0.16–0.77 V selects the (L+R)/2 mono mix. The common breakouts already

@@ -35,6 +35,7 @@ jobs:
           python tools/test_media_audio.py --cc cc
           python tools/test_sdcard_manager.py --cc cc
           python tools/test_storage_recovery.py --cc cc
+          python tools/test_battery.py --cc cc
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
           /tmp/test-update-version
   build:
