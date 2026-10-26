@@ -6,8 +6,79 @@ import subprocess
 import tempfile
 import zipfile
 import release
+import json
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_release_lookup(cc, folder, source):
+    resolver = source[source.index("typedef enum {\n    ARCHIVE_FOUND"):source.index("static bool download_archive(")]
+    harness = folder / "release_lookup.c"
+    harness.write_text(r'''
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <limits.h>
+#include "cJSON.h"
+#include "update_version.h"
+#define RG_UPDATER_GITHUB_RELEASES "https://api.github.com/repos/ashkan89/retro-go/releases/latest"
+#define ARCHIVE_LIMIT INT_MAX
+#define RG_MIN(a,b) ((a)<(b)?(a):(b))
+typedef struct { const char *name, *value; } rg_http_header_t;
+typedef struct { bool verify_server; rg_http_header_t *headers; int timeout_ms; } rg_http_cfg_t;
+typedef struct { int status_code, content_length; } rg_http_req_t;
+typedef struct { const char *version; } rg_app_t;
+#define RG_HTTP_DEFAULT_CONFIG() ((rg_http_cfg_t){0})
+static char *body;
+static size_t position;
+static rg_app_t app;
+static rg_http_req_t request;
+static rg_app_t *rg_system_get_app(void) { return &app; }
+static void rg_system_tick(int n) { (void)n; }
+static rg_http_req_t *rg_network_http_open(const char *url, rg_http_cfg_t *cfg) {
+    if (!strstr(url, "/releases/tags/v5.0.1") || !cfg->verify_server) abort();
+    return &request;
+}
+static int rg_network_http_read(rg_http_req_t *req, void *out, size_t size) {
+    size_t count = RG_MIN(size, (size_t)req->content_length - position);
+    memcpy(out, body + position, count); position += count; return (int)count;
+}
+static void rg_network_http_close(rg_http_req_t *req) { (void)req; }
+''' + resolver + r'''
+int main(int argc, char **argv) {
+    if (argc != 4) return 2;
+    FILE *fp = fopen(argv[1], "rb"); if (!fp) return 3;
+    fseek(fp, 0, SEEK_END); long size = ftell(fp); rewind(fp);
+    body = calloc(1, (size_t)size + 1); if (!body) return 4;
+    if (fread(body, 1, size, fp) != (size_t)size) return 5;
+    fclose(fp); request.content_length = (int)size; request.status_code = atoi(argv[3]);
+    app.version = argv[2]; char url[512] = {0}; int bytes = 0;
+    int result = resolve_archive("sdcard_data.zip", url, sizeof(url), &bytes);
+    printf("%d %d", result, bytes); free(body); return 0;
+}
+''')
+    executable = folder / "release_lookup"
+    cjson = ROOT / "components/retro-go/libs/cJSON"
+    subprocess.run([cc, "-std=c99", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
+                    "-I", str(cjson), "-I", str(ROOT / "launcher/main"), str(harness),
+                    str(cjson / "cJSON.c"), "-lm", "-o", str(executable)], check=True)
+    fixture = folder / "release.json"
+    def check(size, expected, name="sdcard_data.zip", version="v5.0.1", status=200, tag="v5.0.1"):
+        fixture.write_text(json.dumps({"tag_name": tag, "draft": False, "assets": [
+            {"name": name, "size": size, "browser_download_url":
+             "https://github.com/ashkan89/retro-go/releases/download/v5.0.1/" + name}]}))
+        output = subprocess.check_output([str(executable), str(fixture), version, str(status)], text=True).split()
+        assert int(output[0]) == expected, output
+        if expected == 0: assert int(output[1]) == size
+    check(163528209, 0)  # Actual v5.0.1 data asset, larger than the old 64 MB limit.
+    check(2147483647, 0)
+    check(2147483648, 3)
+    check(80323, 2, name="sdcard_structure.zip")
+    check(163528209, 4, version="v5.0.1-dirty")
+    check(163528209, 1, status=404)
+    check(163528209, 1, tag="v5.0.0")
 
 
 def main():
@@ -22,6 +93,7 @@ def main():
         harness.write_text(r'''
 #include <stdbool.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -194,7 +266,8 @@ int main(void) {
 ''')
         subprocess.run([args.cc, "-std=c99", "-Wall", "-Wextra", "-Werror", str(harness), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
-    print("SD installer: streaming, directories, empty/stored/deflated files, unsafe paths, CRC and truncated ZIPs passed; SD format failure paths passed")
+        test_release_lookup(args.cc, folder, source)
+    print("SD installer: streaming, directories, empty/stored/deflated files, unsafe paths, CRC and truncated ZIPs passed; SD format failure paths and large release asset lookup passed")
 
 
 if __name__ == "__main__":

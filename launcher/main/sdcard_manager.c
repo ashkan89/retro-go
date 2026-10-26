@@ -6,6 +6,7 @@
 #include <string.h>
 #include <strings.h>
 #include <errno.h>
+#include <limits.h>
 #include "gui.h"
 #include "applications.h"
 #include "webui.h"
@@ -15,7 +16,7 @@
 
 #define ARCHIVE_PATH RG_STORAGE_ROOT "/.sdcard_structure.zip"
 #define INSTALL_TEMP_PATH RG_STORAGE_ROOT "/.sdcard_install.tmp"
-#define ARCHIVE_LIMIT (64 * 1024 * 1024)
+#define ARCHIVE_LIMIT INT_MAX // HTTP byte counts are signed 32-bit; ZIP contents stream to SD.
 
 // All rendering stays on the UI task. Formatting runs on the I/O task so the
 // modal keeps updating even while FatFs is blocked in f_mkfs.
@@ -61,17 +62,22 @@ static void format_task(void *arg)
 #ifdef RG_ENABLE_NETWORKING
 // Resolve the exact installed version; never fall back to the latest release.
 // Accept only stable firmware versions that can be represented by release tags.
-static bool resolve_archive(const char *asset_name, char *url, size_t url_size, int *size)
+typedef enum {
+    ARCHIVE_FOUND, ARCHIVE_LOOKUP_FAILED, ARCHIVE_NOT_FOUND,
+    ARCHIVE_TOO_LARGE, ARCHIVE_VERSION_UNSUPPORTED,
+} archive_result_t;
+
+static archive_result_t resolve_archive(const char *asset_name, char *url, size_t url_size, int *size)
 {
     const char *version = rg_system_get_app()->version;
     uint32_t numbers[3];
     const char *suffix;
-    if (!update_parse_version(version, numbers, &suffix) || *suffix) return false;
+    if (!update_parse_version(version, numbers, &suffix) || *suffix) return ARCHIVE_VERSION_UNSUPPORTED;
     if (*version == 'v' || *version == 'V') ++version;
     const char *base = RG_UPDATER_GITHUB_RELEASES;
     const char *end = strstr(base, "/releases/");
     char api[512];
-    if (!end || (size_t)snprintf(api, sizeof(api), "%.*s/releases/tags/v%s", (int)(end - base), base, version) >= sizeof(api)) return false;
+    if (!end || (size_t)snprintf(api, sizeof(api), "%.*s/releases/tags/v%s", (int)(end - base), base, version) >= sizeof(api)) return ARCHIVE_LOOKUP_FAILED;
     rg_http_header_t headers[] = {{"Accept", "application/vnd.github+json"}, {"User-Agent", "Retro-Go-SD-Manager"}, {NULL, NULL}};
     rg_http_cfg_t cfg = RG_HTTP_DEFAULT_CONFIG();
     cfg.verify_server = true;
@@ -81,7 +87,7 @@ static bool resolve_archive(const char *asset_name, char *url, size_t url_size, 
     const int limit = 128 * 1024;
     char *buffer = NULL;
     cJSON *json = NULL;
-    bool ok = false;
+    archive_result_t result = ARCHIVE_LOOKUP_FAILED;
     if (!req || req->status_code != 200 || req->content_length > limit) goto done;
     buffer = malloc(limit + 1);
     if (!buffer) goto done;
@@ -104,18 +110,23 @@ static bool resolve_archive(const char *asset_name, char *url, size_t url_size, 
         const char *link = cJSON_GetStringValue(cJSON_GetObjectItem(asset, "browser_download_url"));
         cJSON *bytes = cJSON_GetObjectItem(asset, "size");
         if (!name || strcmp(name, asset_name)) continue;
+        if (cJSON_IsNumber(bytes) && bytes->valuedouble > ARCHIVE_LIMIT)
+        {
+            result = ARCHIVE_TOO_LARGE;
+            goto done;
+        }
         if (!link || strncmp(link, "https://github.com/", 19) || strlen(link) >= url_size ||
             !cJSON_IsNumber(bytes) || bytes->valuedouble <= 0 || bytes->valuedouble > ARCHIVE_LIMIT) goto done;
         strcpy(url, link);
         *size = bytes->valueint;
         ++matches;
     }
-    ok = matches == 1;
+    result = matches == 1 ? ARCHIVE_FOUND : matches == 0 ? ARCHIVE_NOT_FOUND : ARCHIVE_LOOKUP_FAILED;
 done:
     cJSON_Delete(json);
     free(buffer);
     if (req) rg_network_http_close(req);
-    return ok;
+    return result;
 }
 
 static bool download_archive(const char *url, int expected)
@@ -217,7 +228,10 @@ static bool install_archive(void)
         mz_zip_archive_file_stat st;
         if (!archive_path(&zip, i, path, sizeof(path)) || !mz_zip_reader_file_stat(&zip, i, &st) ||
             !mz_zip_reader_is_file_supported(&zip, i) || mz_zip_reader_is_file_encrypted(&zip, i)) goto done;
-        if (st.m_uncomp_size > 512ULL * 1024 * 1024 - total_bytes) goto done;
+        // FAT32 limits each file to 4 GiB minus one byte. Bound the sum
+        // without imposing the old 512 MB limit on a whole data bundle.
+        if (st.m_uncomp_size > UINT32_MAX ||
+            st.m_uncomp_size > (uint64_t)INT64_MAX - (uint64_t)count * 32768 - total_bytes) goto done;
         total_bytes += st.m_uncomp_size;
     }
     if (rg_storage_get_free_space(RG_STORAGE_ROOT) < (int64_t)total_bytes + (int64_t)count * 32768) goto done;
@@ -292,11 +306,20 @@ static void sdcard_manager_run(void)
         }
         stage_started = rg_system_timer();
         progress(_("Finding matching release"), -1);
-        if (!resolve_archive(install_data ? "sdcard_data.zip" : "sdcard_structure.zip", url, sizeof(url), &archive_size))
+        const char *asset_name = install_data ? "sdcard_data.zip" : "sdcard_structure.zip";
+        archive_result_t result = resolve_archive(asset_name, url, sizeof(url), &archive_size);
+        if (result != ARCHIVE_FOUND)
         {
-            rg_gui_alert(title, install_data ?
-                         _("No sdcard_data.zip for this firmware release, or release lookup failed. Card was not changed.") :
-                         _("No sdcard_structure.zip for this firmware release, or release lookup failed. Card was not changed."));
+            char message[256];
+            if (result == ARCHIVE_TOO_LARGE)
+                snprintf(message, sizeof(message), _("%s exceeds the 2 GB download limit."), asset_name);
+            else if (result == ARCHIVE_VERSION_UNSUPPORTED)
+                snprintf(message, sizeof(message), _("Firmware version %s has no exact release tag. Use a release build."), rg_system_get_app()->version);
+            else if (result == ARCHIVE_NOT_FOUND)
+                snprintf(message, sizeof(message), _("%s is missing from firmware release %s. Card was not changed."), asset_name, rg_system_get_app()->version);
+            else
+                snprintf(message, sizeof(message), _("Could not read GitHub release %s. Check Internet access and try again. Card was not changed."), rg_system_get_app()->version);
+            rg_gui_alert(title, message);
             return;
         }
 #else

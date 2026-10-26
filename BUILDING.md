@@ -219,3 +219,9 @@ extracted and CRC-checked in a temporary file before replacing its destination.
 If installation fails midway, completed replacements remain; retry Install data.
 Publish the intended data as a release asset named exactly `sdcard_data.zip`;
 the firmware does not substitute the structure archive when this asset is missing.
+
+SD archive downloads support sizes up to 2 GiB minus one byte and stream to the
+card. Extracted data is limited by available card space and FAT32's per-file
+limit, rather than a fixed 512 MiB bundle limit. Release lookup distinguishes a
+missing asset, a network/API failure, an unsupported firmware version, and a
+download above the supported size limit.
