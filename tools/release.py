@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import struct
 import zlib
+import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
 APPS = ("factory", "launcher", "retro-core", "prboom-go", "gwenesis", "fmsx", "retro-legacy")
@@ -76,6 +77,28 @@ def validate_image(path, version, target):
             "sha256": hashlib.sha256(data).hexdigest(), "version": version, "timestamp": timestamp}
 
 
+def create_sdcard_structure(path, version):
+    """Root-relative archive consumed by the ESP32-S3 Prepare SD card menu."""
+    systems = ("nes", "snes", "gb", "gbc", "gba", "gw", "sms", "gg", "md",
+               "col", "pce", "lnx", "spectrum", "a26", "a78", "doom", "msx")
+    folders = {"roms", "romart", "music", "retro-go/firmware", "retro-go/bios/msx"}
+    folders.update("retro-go/" + name for name in
+                   ("cache", "config", "saves", "themes", "borders"))
+    for system in systems:
+        folders.update(f"{base}/{system}" for base in ("roms", "romart", "retro-go/saves"))
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for folder in sorted(folders):
+            archive.writestr(folder + "/", b"")
+        archive.writestr("SDCARD_README.txt",
+                         f"Retro-Go {version} SD card structure\n"
+                         "Copy your games into roms/<system> and BIOS files into retro-go/bios.\n"
+                         "No games or copyrighted BIOS files are included.\n")
+        theme = ROOT / "themes" / "default"
+        for asset in sorted(theme.iterdir()):
+            if asset.is_file() and asset.suffix in (".png", ".json"):
+                archive.write(asset, "retro-go/themes/default/" + asset.name)
+
+
 def package_release(directory, tag):
     version = release_version(tag)
     directory = Path(directory)
@@ -85,6 +108,10 @@ def package_release(directory, tag):
         raise ValueError(f"Release images differ: missing={expected - actual}, unexpected={actual - expected}")
     assets = [validate_image(directory / f"retro-go_{version}_{target}.img", version, target)
               for target in release_targets()]
+    structure = directory / "sdcard_structure.zip"
+    create_sdcard_structure(structure, version)
+    assets.append({"filename": structure.name, "size": structure.stat().st_size,
+                   "sha256": hashlib.sha256(structure.read_bytes()).hexdigest(), "version": version})
     (directory / "SHA256SUMS").write_text("".join(
         f"{asset['sha256']}  {asset['filename']}\n" for asset in assets), encoding="utf-8")
     (directory / "release-manifest.json").write_text(json.dumps({

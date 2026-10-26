@@ -33,6 +33,7 @@ jobs:
           python -m unittest discover -s tools/tests -v
           python tools/test_nes_timing.py --cc cc
           python tools/test_media_audio.py --cc cc
+          python tools/test_sdcard_manager.py --cc cc
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
           /tmp/test-update-version
   build:
@@ -78,5 +79,5 @@ jobs:
             python tools/release.py notes "$RELEASE_TAG" > /tmp/release-notes.md
             gh release create "$RELEASE_TAG" --verify-tag --draft --title "Retro-Go $RELEASE_TAG" --generate-notes --notes-file /tmp/release-notes.md
           fi
-          gh release upload "$RELEASE_TAG" release-assets/*.img release-assets/SHA256SUMS release-assets/release-manifest.json --clobber
+          gh release upload "$RELEASE_TAG" release-assets/*.img release-assets/sdcard_structure.zip release-assets/SHA256SUMS release-assets/release-manifest.json --clobber
           gh release edit "$RELEASE_TAG" --draft=false --latest --title "Retro-Go $RELEASE_TAG"

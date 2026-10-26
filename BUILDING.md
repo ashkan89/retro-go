@@ -68,7 +68,7 @@ ESP32-S3 configurations in `tools/release-targets.json` using ESP-IDF 5.5.5.
 All images contain the factory updater, launcher, and all emulator apps.
 The workflow checks targets, app versions, partition bounds, flash capacity, and image CRCs.
 Publication waits for every build to succeed. It creates a draft titled **Retro-Go v4.5**,
-uploads the `.img` assets, `SHA256SUMS`, and `release-manifest.json`, and publishes it as latest.
+uploads the `.img` assets, `sdcard_structure.zip`, `SHA256SUMS`, and `release-manifest.json`, and publishes it as latest.
 A failed upload leaves the draft unpublished; rerunning retries the upload. Already published
 releases are protected from replacement. Use a new tag for corrections.
 
@@ -188,3 +188,24 @@ To get intellisense working properly you have to define some paths in your *glob
 ````
 
 Clangd is not supported at this time because I have not found a way to make it work well in our multi-folder workspace.
+
+### ESP32-S3 SD card manager
+
+Open **Options → Launcher options → SdCard Manager**. **Format SD card** erases the
+card using the firmware's default FAT filesystem. **Prepare SD card** performs the
+same format, downloads `sdcard_structure.zip` from the `v<installed-version>` GitHub
+release, and installs its folders and default theme. Connect to Wi-Fi with Internet
+access before preparing. Development versions without a matching release cannot
+prepare a card; the release and asset are checked before erasing anything.
+
+Both actions ask for confirmation before deleting all card contents. The progress
+modal shows elapsed time during formatting and percentages during download and
+installation, then offers a reboot. Restart before using the new card. If download
+or installation fails after formatting, preparation is incomplete; retry Prepare
+SD card. Older published releases need a matching `sdcard_structure.zip` asset;
+new releases generate and publish it automatically, including its SHA-256 checksum.
+Games and copyrighted BIOS files are not included.
+
+The tested N8R2 launcher needs a `0x180000`-byte app slot; an existing `0x170000`
+slot is too small. Rebuild the full image so `rg_tool.py` regenerates the partition
+layout and checks the complete image against the board's flash capacity.

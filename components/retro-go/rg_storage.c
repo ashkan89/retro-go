@@ -17,6 +17,9 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_vfs_fat.h>
+#if CONFIG_IDF_TARGET_ESP32S3
+#include <diskio_sdmmc.h>
+#endif
 #endif
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -57,6 +60,7 @@
 #define RG_STORAGE_MAX_OPEN_FILES       8
 
 static bool disk_mounted = false;
+static bool format_mount_requested = false;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static sdmmc_card_t *card_handle = NULL;
 #endif
@@ -254,7 +258,7 @@ void rg_storage_init(void)
     #endif
 
     esp_vfs_fat_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = format_mount_requested,
         // The launcher alone can have several of these open at once (the media library scanner,
         // the artwork worker, the audio reader and whatever the UI is doing), and running out
         // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
@@ -298,7 +302,7 @@ void rg_storage_init(void)
 #endif
 
     esp_vfs_fat_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = format_mount_requested,
         // The launcher alone can have several of these open at once (the media library scanner,
         // the artwork worker, the audio reader and whatever the UI is doing), and running out
         // surfaces to the caller as a plain "could not open". Each slot costs about half a KB.
@@ -337,7 +341,7 @@ void rg_storage_init(void)
 
 #if defined(RG_STORAGE_FLASH_PARTITION)
 
-    if (error_code) // only if no previous storage was successfully mounted already
+    if (error_code && !format_mount_requested) // Never format a flash fallback from the SD manager
     {
         RG_LOGI("Looking for an internal flash partition labelled '%s' to mount for storage...", RG_STORAGE_FLASH_PARTITION);
 
@@ -393,6 +397,42 @@ void rg_storage_deinit(void)
         RG_LOGI("Storage unmounted.");
 
     disk_mounted = false;
+}
+
+bool rg_storage_format(void)
+{
+#if CONFIG_IDF_TARGET_ESP32S3 && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
+    // Never allow the SD manager to format a flash-backed fallback volume.
+    if (disk_mounted && !card_handle)
+        return false;
+    if (!disk_mounted)
+    {
+        // Explicit destructive action only: normal boot never auto-formats.
+        format_mount_requested = true;
+        rg_storage_init();
+        format_mount_requested = false;
+        if (!disk_mounted || !card_handle) return false;
+    }
+    esp_err_t err = esp_vfs_fat_sdcard_format(RG_STORAGE_ROOT, card_handle);
+    // IDF can free the card when the post-format remount fails, even if
+    // f_mkfs succeeded. Query the registry by pointer value before reusing it.
+    if (ff_diskio_get_pdrv_card(card_handle) == 0xff)
+    {
+        card_handle = NULL;
+        disk_mounted = false;
+        return false;
+    }
+    if (err != ESP_OK)
+    {
+        RG_LOGE("SD format failed: %s", esp_err_to_name(err));
+        // Some IDF failure paths leave the driver registered but FAT unmounted.
+        rg_storage_deinit();
+        return false;
+    }
+    return true;
+#else
+    return false;
+#endif
 }
 
 bool rg_storage_ready(void)

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zlib
+import zipfile
+import hashlib
 
 spec = importlib.util.spec_from_file_location("release", Path(__file__).parents[1] / "release.py")
 release = importlib.util.module_from_spec(spec)
@@ -74,8 +76,21 @@ class ReleaseTests(unittest.TestCase):
                 (Path(folder) / f"retro-go_4.5_{target}.img").write_bytes(image_bytes("4.5", target))
             release.package_release(folder, "v4.5")
             manifest = json.loads((Path(folder) / "release-manifest.json").read_text())
-            self.assertEqual(len(manifest["assets"]), 8)
-            self.assertEqual(len((Path(folder) / "SHA256SUMS").read_text().splitlines()), 8)
+            self.assertEqual(len(manifest["assets"]), 9)
+            self.assertEqual(len((Path(folder) / "SHA256SUMS").read_text().splitlines()), 9)
+            structure = Path(folder) / "sdcard_structure.zip"
+            with zipfile.ZipFile(structure) as archive:
+                self.assertIsNone(archive.testzip())
+                self.assertIn("roms/nes/", archive.namelist())
+                self.assertIn("retro-go/bios/msx/", archive.namelist())
+                self.assertIn("retro-go/firmware/", archive.namelist())
+                self.assertIn("retro-go/themes/default/theme.json", archive.namelist())
+                self.assertIn("4.5", archive.read("SDCARD_README.txt").decode())
+                for name in archive.namelist():
+                    self.assertFalse(name.startswith("/"))
+                    self.assertNotIn("..", Path(name).parts)
+            asset = manifest["assets"][-1]
+            self.assertEqual(asset["sha256"], hashlib.sha256(structure.read_bytes()).hexdigest())
             next(Path(folder).glob("*.img")).unlink()
             with self.assertRaises(ValueError): release.package_release(folder, "v4.5")
 

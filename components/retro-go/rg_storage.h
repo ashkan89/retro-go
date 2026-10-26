@@ -56,6 +56,8 @@ typedef struct
 
 void rg_storage_init(void);
 void rg_storage_deinit(void);
+// Destructive SD-only format on ESP32-S3. Stop all storage users first.
+// Normal mounting never formats automatically; false on failure/unsupported media.
 bool rg_storage_format(void);
 bool rg_storage_ready(void);
 void rg_storage_commit(void);
