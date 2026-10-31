@@ -7,6 +7,9 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_heap_caps.h>
+#include <esp_task.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #endif
 
 #include <media.h>
@@ -579,7 +582,7 @@ static void about_handler(rg_gui_option_t *dest)
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
-void app_main(void)
+static void launcher_main(void)
 {
     const rg_handlers_t handlers = {
         .event = &event_handler,
@@ -619,4 +622,27 @@ void app_main(void)
 #endif
 
     retro_loop();
+}
+
+#if defined(ESP_PLATFORM) && RG_MEDIA_DUAL_CORE && !CONFIG_FREERTOS_UNICORE
+static void launcher_task(void *arg)
+{
+    (void)arg;
+    launcher_main();
+    vTaskDelete(NULL);
+}
+#endif
+
+void app_main(void)
+{
+#if defined(ESP_PLATFORM) && RG_MEDIA_DUAL_CORE && !CONFIG_FREERTOS_UNICORE
+    // IDF's app_main is pinned by sdkconfig, independently of our task affinities.
+    // Run initialization here too: peripheral interrupts inherit the installing core.
+    BaseType_t result = xTaskCreatePinnedToCore(launcher_task, "launcher",
+        CONFIG_ESP_MAIN_TASK_STACK_SIZE, NULL, ESP_TASK_MAIN_PRIO, NULL,
+        RG_TASK_AFFINITY_MAIN);
+    RG_ASSERT(result == pdPASS, "Unable to create launcher task");
+#else
+    launcher_main();
+#endif
 }

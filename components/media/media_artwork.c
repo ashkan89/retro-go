@@ -352,7 +352,7 @@ void media_artwork_init(void)
     // media_metadata_find_artwork() overflowed it. The large parser buffers now live on the
     // heap, and this has headroom for the JPEG decoder on top.
     art.task = rg_task_create("media_art", &worker_task, NULL, 8 * 1024, RG_TASK_PRIORITY_1,
-                              RG_TASK_AFFINITY_MAIN);
+                              MEDIA_DECODE_TASK_AFFINITY);
     if (!art.task)
         RG_LOGE("Failed to start the artwork worker");
 }

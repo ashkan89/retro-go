@@ -102,18 +102,23 @@ def main():
         # Exercise actual target headers, including the non-launcher display default.
         config_test = work / "affinity.c"
         config_test.write_text('''#include "config.h"
-_Static_assert(RG_TASK_AFFINITY_MAIN == 0, "UI core");
+#include "media_config.h"
+_Static_assert(RG_TASK_AFFINITY_MAIN == EXPECT_MAIN, "UI core");
+_Static_assert(RG_TASK_AFFINITY_IO == EXPECT_IO, "IO core");
 _Static_assert(RG_TASK_AFFINITY_AUDIO == 1, "audio core");
 _Static_assert(RG_TASK_AFFINITY_DISPLAY == EXPECT_DISPLAY, "display core");
+_Static_assert(MEDIA_DECODE_TASK_AFFINITY != RG_TASK_AFFINITY_AUDIO, "codec isolation");
 ''', encoding="utf-8")
         compiler = command[:2] if Path(args.cc).stem.lower() == "zig" else command[:1]
         targets = json.loads((root / "tools/release-targets.json").read_text(encoding="utf-8"))
         for target in targets:
             macro = "RG_TARGET_" + re.sub(r"[^A-Z0-9]", "_", target.upper())
-            for separated in (0, 1):
+            for separated, media_layout in ((0, 0), (1, 0), (0, 1)):
                 subprocess.run(compiler + ["-std=c11", "-c", "-o", str(work / "affinity.o"), "-I",
-                    str(root / "components/retro-go"), f"-D{macro}=1",
+                    str(root / "components/retro-go"), "-I", str(root / "components/media"), f"-D{macro}=1",
                     f"-DRG_SEPARATE_DISPLAY_AUDIO={separated}",
+                    f"-DRG_MEDIA_DUAL_CORE={media_layout}",
+                    f"-DEXPECT_MAIN={media_layout}", f"-DEXPECT_IO={1 - media_layout}",
                     f"-DEXPECT_DISPLAY={1 - separated}", str(config_test)], check=True)
         print(f"Display/audio affinity checks passed for {len(targets)} targets, launcher and emulator defaults.")
 

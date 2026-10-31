@@ -822,7 +822,7 @@ static void prepare_next(void)
     player.prepared = job;
     player.prepare_attempted = true;
     if (!rg_task_create("media_next", prepare_task, job, 22 * 1024, RG_TASK_PRIORITY_3,
-                        RG_TASK_AFFINITY_MAIN))
+                        MEDIA_DECODE_TASK_AFFINITY))
     {
         player.prepared = NULL;
         free(job);
@@ -1245,7 +1245,7 @@ bool media_player_init(void)
     // sized around that one frame plus room for logging.
     player.running = true; // Includes the interval before the new task enters decode_task().
     player.task = rg_task_create("media_dec", &decode_task, NULL, 22 * 1024, MEDIA_DECODE_TASK_PRIORITY,
-                                 RG_TASK_AFFINITY_AUDIO);
+                                 MEDIA_DECODE_TASK_AFFINITY);
     if (!player.task)
     {
         player.running = false;

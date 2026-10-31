@@ -9,6 +9,10 @@ macro(rg_setup_compile_options)
         ${ARGV}
     )
 
+    if(RG_MEDIA_DUAL_CORE)
+        component_compile_options(-DRG_MEDIA_DUAL_CORE=1)
+    endif()
+
     if(RG_SEPARATE_DISPLAY_AUDIO)
         component_compile_options(-DRG_SEPARATE_DISPLAY_AUDIO=1)
     endif()

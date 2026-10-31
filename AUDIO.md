@@ -115,3 +115,47 @@ supports producer starvation; noise remaining with the MAX98357A shut down
 suggests a hardware source. Check speaker and headphone routes separately.
 Only device testing can establish whether the reported repeated thumps and
 rendering-related jitter are eliminated.
+
+## Media player scheduling (ESP32-S3 launcher)
+
+The launcher enables `RG_MEDIA_DUAL_CORE`. Core 1 runs launcher UI/input,
+`rg_display` (priority 6), `rg_spi` (7), `media_audio` (8), and the I2S writer
+`rg_audio` (9). Core 0 runs compressed source prefetch (4), audio decoding (7),
+next-track preparation (3), and artwork decoding (1). The PCM ring separates
+codec timing from playback; binary FreeRTOS semaphores wake ring producers and
+consumers, and the I2S software queue provides DMA back-pressure. There is no
+media audio encoder task: WAV, MP3 and FLAC are playback decoders.
+
+The launcher entry task is explicitly created on core 1 before system/peripheral
+initialization. Changing the application affinity macros alone does not move
+ESP-IDF's `app_main`, whose affinity comes from sdkconfig. This also places
+interrupt allocation during launcher initialization on the output/UI core.
+Emulator applications retain their existing target affinities.
+
+Audio position is published as an atomic 32-bit snapshot after each submitted
+chunk and on flush. Position and buffering status reads do not acquire the audio
+mutex, so UI polling cannot wait behind a blocking I2S submission. Flush and
+sample-rate changes still serialize with chunk processing. Positive sleeps
+shorter than a scheduler tick now block for at least one tick: at the configured
+100 Hz tick rate, the previous 4/5 ms sleeps became zero-tick yields and could
+starve lower-priority work on the same core.
+
+This layout uses ESP-IDF 5.5.5's documented
+[FreeRTOS core affinity and priority scheduling](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-reference/system/freertos_idf.html)
+and [interrupt allocation rules](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-reference/system/intr_alloc.html).
+Espressif specifies that external interrupts are allocated on the installing
+core; it does not prescribe this particular application task layout.
+
+Validation: `python tools/test_media_audio.py --cc gcc` exercises PCM ordering,
+concurrent rings, transitions, buffering, UI status reads during locked audio
+submission, and affinities for all eight release targets with both emulator
+layouts and the launcher layout. `python tools/test_audio_dma.py --cc gcc`
+checks 150 DMA batching/FIFO/wrap scenarios. These host checks cannot establish
+physical playback deadlines. On hardware, compare the underrun overlay during
+44.1/48 kHz MP3/FLAC playback while scrolling, seeking, changing artwork, and
+streaming; also check pause/resume, short files and speaker/headphone switching.
+
+Firmware validation: the `esp32-s3-n16r8-ili9341` launcher builds successfully
+with ESP-IDF 5.5.5 (`python rg_tool.py --target esp32-s3-n16r8-ili9341 build launcher`).
+The generated app is `launcher/build/launcher.bin`; it has not been flashed or
+measured on a physical board.

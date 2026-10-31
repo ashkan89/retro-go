@@ -1172,7 +1172,8 @@ size_t rg_task_messages_waiting(rg_task_t *task)
 void rg_task_delay(uint32_t ms)
 {
 #if defined(ESP_PLATFORM)
-    vTaskDelay(pdMS_TO_TICKS(ms));
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    vTaskDelay(ms && !ticks ? 1 : ticks);
 #elif defined(RG_TARGET_SDL2)
     SDL_PumpEvents();
     SDL_Delay(ms);

@@ -109,6 +109,15 @@
 #define MEDIA_DECODE_TASK_PRIORITY RG_TASK_PRIORITY_7
 #endif
 
+/* Source/codec work must not share the real-time output core. */
+#ifndef MEDIA_DECODE_TASK_AFFINITY
+#if RG_MEDIA_DUAL_CORE
+#define MEDIA_DECODE_TASK_AFFINITY RG_TASK_AFFINITY_IO
+#else
+#define MEDIA_DECODE_TASK_AFFINITY (1 - RG_TASK_AFFINITY_AUDIO)
+#endif
+#endif
+
 /* Fade ramp applied on start/stop/seek/pause to avoid clicks (milliseconds). */
 #define MEDIA_FADE_MS               12
 

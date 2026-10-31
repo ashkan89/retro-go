@@ -202,6 +202,14 @@
 #define RG_MAX_FPS 60
 #endif
 
+// Launcher topology overrides target emulator defaults after target inclusion.
+#if RG_MEDIA_DUAL_CORE
+#undef RG_TASK_AFFINITY_MAIN
+#undef RG_TASK_AFFINITY_IO
+#define RG_TASK_AFFINITY_MAIN 1
+#define RG_TASK_AFFINITY_IO 0
+#endif
+
 #ifndef RG_TASK_AFFINITY_MAIN
 #define RG_TASK_AFFINITY_MAIN 0
 #endif
@@ -215,12 +223,18 @@
 #endif
 
 #ifndef RG_TASK_AFFINITY_AUDIO
+#if RG_MEDIA_DUAL_CORE
+#define RG_TASK_AFFINITY_AUDIO 1
+#else
 #define RG_TASK_AFFINITY_AUDIO RG_TASK_AFFINITY_IO
+#endif
 #endif
 
 // Applications with background music can isolate rendering without changing emulator ports.
 #ifndef RG_TASK_AFFINITY_DISPLAY
-#if RG_SEPARATE_DISPLAY_AUDIO
+#if RG_MEDIA_DUAL_CORE
+#define RG_TASK_AFFINITY_DISPLAY RG_TASK_AFFINITY_AUDIO
+#elif RG_SEPARATE_DISPLAY_AUDIO
 #define RG_TASK_AFFINITY_DISPLAY RG_TASK_AFFINITY_MAIN
 #else
 #define RG_TASK_AFFINITY_DISPLAY RG_TASK_AFFINITY_IO

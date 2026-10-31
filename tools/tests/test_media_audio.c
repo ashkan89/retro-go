@@ -57,6 +57,9 @@ static bool check_silence;
 static void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
 {
     assert(audio.lock->held); // Flush/rate commands cannot race an in-flight chunk.
+    // UI status must remain readable while a submission holds the output lock.
+    (void)media_audio_position_ms();
+    (void)media_audio_get_buffering();
     if (check_silence)
         for (size_t i = 0; i < count; ++i)
             assert(frames[i].left == 0 && frames[i].right == 0);

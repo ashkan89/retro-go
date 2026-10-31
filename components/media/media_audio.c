@@ -58,6 +58,7 @@ static struct
     float fade_target;
 
     uint64_t frames_played;
+    uint32_t published_position_ms; // Atomic UI snapshot; never waits for DMA back-pressure.
     uint32_t base_ms;           // Position corresponding to frames_played == 0
     uint64_t frames_at_base;
     uint64_t track_boundary;
@@ -130,6 +131,15 @@ static void apply_fade(int16_t *pcm, size_t frames)
     }
 }
 
+// Caller holds audio.lock. Publish a native-width value for UI readers.
+static void publish_position(void)
+{
+    uint64_t frames = audio.frames_played - audio.frames_at_base;
+    uint32_t position = audio.base_ms + (audio.sample_rate ?
+        (uint32_t)((frames * 1000ULL) / audio.sample_rate) : 0);
+    __atomic_store_n(&audio.published_position_ms, position, __ATOMIC_RELEASE);
+}
+
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -141,7 +151,7 @@ static void audio_task(void *arg)
     while (!audio.stop)
     {
         rg_mutex_take(audio.lock, -1);
-        if (audio.buffering || (audio.paused && audio.fade <= 0.0f))
+        if (__atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE) || (audio.paused && audio.fade <= 0.0f))
         {
             // Fully faded out: stop consuming so the buffer is intact when we resume.
             rg_mutex_give(audio.lock);
@@ -189,7 +199,7 @@ static void audio_task(void *arg)
                 // is recoverable; we just note it and let the controller rebuffer.
                 // Count an episode, not every empty poll, and bank PCM before resuming.
                 audio.underruns++;
-                audio.buffering = true;
+                __atomic_store_n(&audio.buffering, true, __ATOMIC_RELEASE);
                 audio.fade = 0.0f;
             }
             else
@@ -224,6 +234,7 @@ static void audio_task(void *arg)
             audio.base_ms = audio.track_position_ms;
             audio.track_marked = false;
         }
+        publish_position();
         rg_mutex_give(audio.lock);
     }
 
@@ -273,7 +284,7 @@ bool media_audio_start(void)
     audio.previous_system_rate = rg_audio_get_sample_rate();
     audio.stop = false;
     audio.paused = false;
-    audio.buffering = true;
+    __atomic_store_n(&audio.buffering, true, __ATOMIC_RELEASE);
     audio.draining = false;
     audio.drained = false;
     audio.drain_padded = false;
@@ -283,6 +294,7 @@ bool media_audio_start(void)
     audio.frames_at_base = 0;
     audio.track_marked = false;
     audio.base_ms = 0;
+    publish_position();
     audio.underruns = 0;
     audio.running = true;
 
@@ -426,6 +438,7 @@ void media_audio_flush(uint32_t position_ms)
     audio.drain_padded = false;
     audio.fade_target = audio.paused ? 0.0f : 1.0f;
 
+    publish_position();
     media_eq_flush();
     media_fft_reset();
     rg_mutex_give(audio.lock);
@@ -436,7 +449,7 @@ void media_audio_set_buffering(bool buffering)
     if (!audio.lock)
         return;
     rg_mutex_take(audio.lock, -1);
-    audio.buffering = buffering;
+    __atomic_store_n(&audio.buffering, buffering, __ATOMIC_RELEASE);
     if (buffering)
         audio.fade = 0.0f;
     rg_mutex_give(audio.lock);
@@ -444,12 +457,7 @@ void media_audio_set_buffering(bool buffering)
 
 bool media_audio_get_buffering(void)
 {
-    if (!audio.lock)
-        return true;
-    rg_mutex_take(audio.lock, -1);
-    bool buffering = audio.buffering;
-    rg_mutex_give(audio.lock);
-    return buffering;
+    return !audio.lock || __atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE);
 }
 
 size_t media_audio_capacity_frames(void)
@@ -501,7 +509,7 @@ void media_audio_set_draining(bool draining)
     audio.draining = draining;
     // Short files and the final partial chunk must play even below the prebuffer target.
     if (draining)
-        audio.buffering = false;
+        __atomic_store_n(&audio.buffering, false, __ATOMIC_RELEASE);
     if (!draining)
     {
         audio.drained = false;
@@ -517,14 +525,7 @@ bool media_audio_drained(void)
 
 uint32_t media_audio_position_ms(void)
 {
-    if (!audio.lock)
-        return 0;
-    rg_mutex_take(audio.lock, -1);
-    uint64_t frames = audio.frames_played - audio.frames_at_base;
-    uint32_t position = audio.base_ms + (audio.sample_rate ?
-        (uint32_t)((frames * 1000ULL) / audio.sample_rate) : 0);
-    rg_mutex_give(audio.lock);
-    return position;
+    return __atomic_load_n(&audio.published_position_ms, __ATOMIC_ACQUIRE);
 }
 
 void media_audio_mark_track(uint64_t frame, uint32_t position_ms)
