@@ -251,11 +251,28 @@ size_t media_ring_read(media_ring_t *ring, void *data, size_t len, int timeout_m
 
 bool media_ring_wait_readable(media_ring_t *ring, int timeout_ms)
 {
-    if (!ring || media_ring_aborted(ring))
+    if (!ring)
         return false;
-    if (media_ring_used(ring))
-        return true;
-    wait_sem(ring->data_ready, timeout_ms);
+    int64_t deadline = timeout_ms > 0 ? rg_system_timer() + (int64_t)timeout_ms * 1000 : 0;
+    while (!media_ring_aborted(ring))
+    {
+        if (media_ring_used(ring))
+            return true;
+        if (timeout_ms == 0)
+            break;
+        int remaining = -1;
+        if (timeout_ms > 0)
+        {
+            int64_t left = deadline - rg_system_timer();
+            if (left <= 0)
+                break;
+            remaining = (int)((left + 999) / 1000);
+        }
+        // A binary semaphore may still contain a notification for PCM already
+        // consumed. Recheck the predicate and deadline after every wake-up.
+        if (!wait_sem(ring->data_ready, remaining))
+            break;
+    }
     return !media_ring_aborted(ring) && media_ring_used(ring) != 0;
 }
 

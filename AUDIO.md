@@ -159,3 +159,40 @@ Firmware validation: the `esp32-s3-n16r8-ili9341` launcher builds successfully
 with ESP-IDF 5.5.5 (`python rg_tool.py --target esp32-s3-n16r8-ili9341 build launcher`).
 The generated app is `launcher/build/launcher.bin`; it has not been flashed or
 measured on a physical board.
+
+### Follow-up: display freezing while audio continues
+
+The core split alone did not cover UI/display ownership. The media UI reused a
+single PSRAM framebuffer immediately after submitting it, although `rg_display`
+keeps that pointer queued until it finishes scaling/copying. Frames now render
+only when `rg_display_sync(false)` says the surface is retired. Busy display or
+artwork resources skip a frame while input/player servicing continues. The last
+queued frame is retired before the UI frees its surface. The equalizer screen
+uses the same ownership rule.
+
+`media_artwork_lock()` now returns a nonblocking acquisition result, and both UI
+callers check it. Previously its timed acquisition result was ignored, allowing
+unprotected access to surfaces the worker could evict/free, followed by an
+invalid mutex release. Rendering releases the artwork mutex before submitting
+to the display. Background generation snapshots only a 24-pixel-wide source
+under the cache lock and performs the full-screen work after unlocking.
+
+Display synchronization now sleeps rather than spins. The media UI also blocks
+for at least one tick after a render attempt, including when a slow render has
+already missed the next frame deadline. This prevents continuous rendering from
+keeping lower-priority/idle tasks permanently off the CPU. Launcher task slots
+remain at 20 with `RG_MEDIA_DUAL_CORE`, matching the previous launcher capacity.
+A queued frame pending for more than one second emits a rate-limited display
+warning while the UI keeps retrying without blocking.
+
+An empty PCM poll now waits up to 10 ms outside the audio control lock before
+requesting full prebuffering. This lets the existing software/DMA reserve cover
+a short decoder scheduling delay. Readable-ring waits recheck both predicate
+and deadline after semaphore wakes, including stale binary notifications.
+Sustained starvation still enters buffering, and stop/pause/flush remain
+serialized through the existing control path.
+
+Host regressions exercise 10,000 delayed-display/contended-artwork cycles using
+the production rendering/locking functions, plus transient and sustained audio
+starvation. Hardware playback and the original freeze still require validation
+on the affected board; these tests do not simulate the SPI/I2S peripherals.

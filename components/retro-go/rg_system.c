@@ -113,7 +113,7 @@ static rg_stats_t statistics;
 static rg_app_t app;
 // Slot 0 is reserved, so this is one more than the number of concurrent rg_task_create()
 // tasks. Continuous playback adds a next-track worker/source and reactive lighting.
-#if defined(RG_SEPARATE_DISPLAY_AUDIO) && RG_SEPARATE_DISPLAY_AUDIO
+#if RG_MEDIA_DUAL_CORE || (defined(RG_SEPARATE_DISPLAY_AUDIO) && RG_SEPARATE_DISPLAY_AUDIO)
 static rg_task_t tasks[20];
 #else
 static rg_task_t tasks[16];

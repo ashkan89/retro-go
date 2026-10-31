@@ -99,6 +99,20 @@ def main():
         feature_command += ["-Wno-unused-function"]
         subprocess.run(feature_command, check=True)
         subprocess.run([str(executable)], check=True, timeout=60, cwd=root)
+        artwork = (root / "components/media/media_artwork.c").read_text(encoding="utf-8")
+        display = (root / "components/retro-go/rg_display.c").read_text(encoding="utf-8")
+        ui = (root / "components/media/media_ui.c").read_text(encoding="utf-8")
+        (work / "media_render_locks_under_test.h").write_text(
+            function(artwork, "bool media_artwork_lock(") +
+            function(artwork, "void media_artwork_unlock(") +
+            function(display, "bool rg_display_sync("), encoding="utf-8")
+        (work / "media_render_frame_under_test.h").write_text(
+            function(ui, "static bool draw_frame("), encoding="utf-8")
+        render_command = command.copy()
+        render_command[render_command.index(str(root / "tools/tests/test_media_audio.c"))] = str(
+            root / "tools/tests/test_media_render.c")
+        subprocess.run(render_command, check=True)
+        subprocess.run([str(executable)], check=True, timeout=60, cwd=root)
         # Exercise actual target headers, including the non-launcher display default.
         config_test = work / "affinity.c"
         config_test.write_text('''#include "config.h"

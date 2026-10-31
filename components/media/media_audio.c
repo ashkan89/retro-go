@@ -147,12 +147,14 @@ static void audio_task(void *arg)
     const size_t chunk_bytes = chunk_frames * MEDIA_PCM_CHANNELS * sizeof(int16_t);
 
     audio.alive = true;
+    bool starvation_waited = false;
 
     while (!audio.stop)
     {
         rg_mutex_take(audio.lock, -1);
         if (__atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE) || (audio.paused && audio.fade <= 0.0f))
         {
+            starvation_waited = false;
             // Fully faded out: stop consuming so the buffer is intact when we resume.
             rg_mutex_give(audio.lock);
             rg_task_delay(10);
@@ -173,6 +175,16 @@ static void audio_task(void *arg)
 
         if (frames == 0)
         {
+            if (!audio.draining && !audio.paused && !starvation_waited)
+            {
+                // DMA/software output still has a reserve. Give the producer a
+                // bounded chance to refill before turning a brief dip into a
+                // much longer prebuffer cycle. Do not hold the control mutex.
+                rg_mutex_give(audio.lock);
+                media_ring_wait_readable(audio.pcm, 10);
+                starvation_waited = true;
+                continue;
+            }
             if (audio.draining)
             {
                 if (!audio.drain_padded)
@@ -215,6 +227,7 @@ static void audio_task(void *arg)
             continue;
         }
 
+        starvation_waited = false;
         audio.drained = false;
 
         // EQ, ReplayGain and the limiter all run here, on the way out, so the same block is

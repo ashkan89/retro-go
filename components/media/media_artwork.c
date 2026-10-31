@@ -268,30 +268,41 @@ static void worker_task(void *arg)
 
         if (request.background)
         {
-            const rg_image_t *source = NULL;
             uint32_t key = make_key(request.path, media_profile()->artwork_max_dim);
-
+            rg_image_t *small = NULL;
             if (rg_mutex_take(art.lock, 2000))
             {
                 cache_entry_t *entry = cache_find(key);
-                source = entry ? entry->image : NULL;
-                rg_image_t *background =
-                    source ? media_image_make_background(source, request.width, request.height, 110)
-                           : NULL;
+                // Snapshot only the tiny image needed by the blur. Full-screen
+                // scaling/darkening must not hold a mutex needed by the UI.
+                int small_h = media_clampi(24 * request.height / RG_MAX(request.width, 1), 8, 32);
+                if (entry && entry->image)
+                    small = rg_surface_resize(entry->image, 24, small_h);
+                rg_mutex_give(art.lock);
+            }
+            rg_image_t *background = small ?
+                media_image_make_background(small, request.width, request.height, 110) : NULL;
+            rg_surface_free(small);
 
-                if (background)
+            bool published = false;
+            if (background && rg_mutex_take(art.lock, 2000))
+            {
+                // A flush/eviction may have happened while generating the image.
+                if (!art.stop && cache_find(key))
                 {
                     rg_surface_free(art.background);
                     art.background = background;
                     art.background_key = key;
                     art.background_w = request.width;
                     art.background_h = request.height;
+                    published = true;
                 }
                 rg_mutex_give(art.lock);
-
-                if (background && art.ready_cb)
-                    art.ready_cb();
             }
+            if (!published)
+                rg_surface_free(background);
+            else if (art.ready_cb)
+                art.ready_cb();
             art.busy = false;
             continue;
         }
@@ -378,10 +389,9 @@ void media_artwork_deinit(void)
     art.task = NULL;
 }
 
-void media_artwork_lock(void)
+bool media_artwork_lock(void)
 {
-    if (art.lock)
-        rg_mutex_take(art.lock, 1000);
+    return !art.lock || rg_mutex_take(art.lock, 0);
 }
 
 void media_artwork_unlock(void)

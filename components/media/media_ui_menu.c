@@ -376,7 +376,12 @@ void media_ui_equalizer_screen(void)
             running = false;
 
         /* --- Render ------------------------------------------------------------------ */
-        media_artwork_lock();
+        if (!rg_display_sync(false) || !media_artwork_lock())
+        {
+            rg_task_delay(10);
+            media_player_tick();
+            continue;
+        }
         rg_gui_set_surface(mui.surface);
         media_ui_clear();
 
@@ -441,8 +446,8 @@ void media_ui_equalizer_screen(void)
                              "SELECT: Reset");
 
         rg_gui_set_surface(NULL);
-        rg_display_submit(mui.surface, 0);
         media_artwork_unlock();
+        rg_display_submit(mui.surface, 0);
 
         rg_task_delay(20);
         media_player_tick();

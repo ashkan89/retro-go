@@ -865,9 +865,26 @@ static bool handle_input(uint32_t key, int repeats)
 /* Frame                                                                                    */
 /* -------------------------------------------------------------------------------------- */
 
-static void draw_frame(void)
+static bool draw_frame(void)
 {
-    media_artwork_lock();
+    // The display queue retains this surface until scaling/copying finishes.
+    // Never repaint it in flight, and never wait for display while pinning art.
+    static int64_t display_busy_since;
+    if (!rg_display_sync(false))
+    {
+        int64_t now = rg_system_timer();
+        if (!display_busy_since)
+            display_busy_since = now;
+        if (now - display_busy_since >= 1000000)
+        {
+            RG_LOGW("Display frame pending for over 1 s; UI is skipping redraws");
+            display_busy_since = now;
+        }
+        return false;
+    }
+    display_busy_since = 0;
+    if (!media_artwork_lock())
+        return false;
 
     rg_gui_set_surface(mui.surface);
     mui.layout.mini_h = 0;
@@ -906,9 +923,9 @@ static void draw_frame(void)
 #endif
 
     rg_gui_set_surface(NULL);
-    rg_display_submit(mui.surface, 0);
-
     media_artwork_unlock();
+    rg_display_submit(mui.surface, 0);
+    return true;
 }
 
 static void on_player_event(media_event_t event, intptr_t arg, void *user)
@@ -1079,10 +1096,16 @@ void media_ui_run(void)
         if ((mui.needs_redraw || animating) && mui.frame_us >= next_frame)
         {
             next_frame = mui.frame_us + frame_interval;
-            mui.needs_redraw = false;
-            draw_frame();
-            mui.frames++;
-            fps_frames++;
+            bool rendered = draw_frame();
+            mui.needs_redraw = !rendered;
+            if (rendered)
+            {
+                mui.frames++;
+                fps_frames++;
+            }
+            // An expensive frame may already have missed next_frame. Without a
+            // blocking sleep the priority-1 UI can starve IDLE1 indefinitely.
+            rg_task_delay(1);
 
             if (mui.frame_us - fps_window >= 1000000)
             {
@@ -1105,6 +1128,7 @@ void media_ui_run(void)
     media_player_set_event_callback(NULL, NULL);
     media_ui_library_release();
     media_list_free(&mui.list);
+    rg_display_sync(true); // Retire the last queued reference before freeing it.
     rg_surface_free(mui.surface);
     mui.surface = NULL;
     mui.running = false;

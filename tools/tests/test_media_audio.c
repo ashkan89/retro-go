@@ -245,6 +245,29 @@ static void test_controller_buffering(void)
     media_audio_deinit();
 }
 
+static void stop_after_underrun(void)
+{
+    if (media_audio_underruns()) audio.stop = true;
+}
+
+static void refill_during_wait(void)
+{
+    assert(!audio.lock->held);
+    int16_t pcm[256 * 2] = {0};
+    delay_hook = NULL;
+    assert(media_audio_write(pcm, 256, 0) == 256);
+}
+
+static void test_transient_starvation(void)
+{
+    start_output();
+    media_audio_set_buffering(false);
+    delay_hook = refill_during_wait;
+    audio_task(NULL);
+    assert(submitted == 256);
+    assert(media_audio_underruns() == 0 && !media_audio_get_buffering());
+}
+
 static void test_buffering_pause(void)
 {
     int16_t pcm[512] = {0};
@@ -266,7 +289,7 @@ static void test_buffering_pause(void)
 
     start_output();
     media_audio_set_buffering(false);
-    delay_hook = stop_on_delay;
+    delay_hook = stop_after_underrun;
     audio_task(NULL);
     assert(media_audio_underruns() == 1 && media_audio_get_buffering());
 }
@@ -420,6 +443,7 @@ int main(void)
     media_audio_release(MEDIA_AUDIO_OWNER_EMULATOR);
     assert(media_audio_get_owner() == MEDIA_AUDIO_OWNER_PLAYER);
     test_buffering_pause();
+    test_transient_starvation();
     test_fifo_and_position();
     test_dma_tail();
     test_start_stop();

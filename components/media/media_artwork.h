@@ -5,8 +5,8 @@
  * cache is bounded by both entry count and total bytes and evicts least-recently-used, so
  * browsing a large library cannot consume all of PSRAM.
  *
- * The UI must wrap a frame in media_artwork_lock()/media_artwork_unlock(): that is what
- * makes it safe to hold a returned pointer for the duration of the render.
+ * The UI must successfully acquire media_artwork_lock() before using cached pointers,
+ * and call media_artwork_unlock() after rendering. A failed try-lock skips the frame.
  */
 #pragma once
 
@@ -23,7 +23,8 @@
 void media_artwork_init(void);
 void media_artwork_deinit(void);
 
-void media_artwork_lock(void);
+/** Try to pin cached surfaces for a frame. Skip drawing when the worker owns them. */
+bool media_artwork_lock(void);
 void media_artwork_unlock(void);
 
 /**
