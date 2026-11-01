@@ -96,7 +96,9 @@ static void spi_init(void)
 
     while (uxQueueSpacesAvailable(spi_transactions))
     {
-        void *trans = malloc(sizeof(spi_transaction_t));
+        // Descriptors are touched by the SPI ISR; keep them out of PSRAM.
+        void *trans = heap_caps_calloc(1, sizeof(spi_transaction_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        RG_ASSERT(trans, "Unable to allocate SPI transaction");
         xQueueSend(spi_transactions, &trans, portMAX_DELAY);
     }
 
@@ -112,6 +114,16 @@ static void spi_init(void)
         .sclk_io_num = RG_GPIO_LCD_CLK,
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
+        .max_transfer_sz = SPI_BUFFER_LENGTH,
+#if CONFIG_IDF_TARGET_ESP32S3 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+        // Install the DMA completion ISR on the display core, rather than the
+        // initializing emulator core. Keep older IDF ports on their default.
+#if RG_TASK_AFFINITY_DISPLAY == 1
+        .isr_cpu_id = ESP_INTR_CPU_AFFINITY_1,
+#elif RG_TASK_AFFINITY_DISPLAY == 0
+        .isr_cpu_id = ESP_INTR_CPU_AFFINITY_0,
+#endif
+#endif
     };
 
     const spi_device_interface_config_t devcfg = {

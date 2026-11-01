@@ -476,9 +476,29 @@ static rg_audio_route_t driver_get_route(void)
     return state.route;
 }
 
+static bool write_dma(const rg_audio_frame_t *frames, size_t count)
+{
+    const size_t requested = count * sizeof(*frames);
+    size_t written = 0;
+    esp_err_t result = i2s_write(I2S_NUM_0, frames, requested, &written,
+                                pdMS_TO_TICKS(RG_AUDIO_I2S_WRITE_TIMEOUT_MS));
+    if (result != ESP_OK || written != requested)
+    {
+        RG_LOGW("I2S submission error: %s, written=%d/%d\n",
+                esp_err_to_name(result), (int)written, (int)requested);
+        return false;
+    }
+    return true;
+}
+
 static bool write_frames(const rg_audio_frame_t *frames, size_t count)
 {
     int volume = state.muted ? 0 : state.volume;
+    // External DAC samples need no conversion at unity gain. The consumer owns
+    // this buffer until the blocking write copies it into the DMA ring.
+    if (volume == 100 && DEVICE_IS_EXTERNAL(state.device))
+        return write_dma(frames, count);
+
     rg_audio_frame_t buffer[DMA_BUFFER_LEN];
     size_t pos = 0;
 
@@ -534,16 +554,8 @@ static bool write_frames(const rg_audio_frame_t *frames, size_t count)
 
         if (pos == RG_COUNT(buffer) || i == count - 1)
         {
-            const size_t requested = pos * sizeof(*buffer);
-            size_t written = 0;
-            esp_err_t result = i2s_write(I2S_NUM_0, buffer, requested, &written,
-                                         pdMS_TO_TICKS(RG_AUDIO_I2S_WRITE_TIMEOUT_MS));
-            if (result != ESP_OK || written != requested)
-            {
-                RG_LOGW("I2S submission error: %s, written=%d/%d\n",
-                        esp_err_to_name(result), (int)written, (int)requested);
+            if (!write_dma(buffer, pos))
                 return false;
-            }
             pos = 0;
         }
     }

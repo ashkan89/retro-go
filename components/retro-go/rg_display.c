@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+static EventGroupHandle_t display_events;
+#define DISPLAY_FRAME_RELEASED BIT0
+#endif
+
 #define LCD_BUFFER_LENGTH (RG_SCREEN_WIDTH * 4) // In pixels
 
 // static rg_display_driver_t driver;
@@ -104,6 +111,7 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
     int draw_top = display.viewport.top;
     int draw_width = display.viewport.width;
     int draw_height = display.viewport.height;
+    const bool unscaled_x = display.viewport.step_x == 1.0f;
 
     int crop_left = 0;
     int crop_top = 0;
@@ -167,12 +175,24 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
             {
                 #define RENDER_LINE(PTR_TYPE, PIXEL) { \
                     PTR_TYPE *buffer = (PTR_TYPE *)(data + map_viewport_to_source_y[y] * stride);\
-                    for (int xx = 0; xx < draw_width; ++xx) { \
-                        int x = map_viewport_to_source_x[xx]; \
-                        *line_buffer_ptr++ = (PIXEL); \
+                    if (unscaled_x) { \
+                        for (int x = 0; x < draw_width; ++x) \
+                            *line_buffer_ptr++ = (PIXEL); \
+                    } else { \
+                        for (int xx = 0; xx < draw_width; ++xx) { \
+                            int x = map_viewport_to_source_x[xx]; \
+                            *line_buffer_ptr++ = (PIXEL); \
+                        } \
                     } \
                 }
-                if (format & RG_PIXEL_PALETTE)
+                // Native-width RGB565 BE surfaces already match the SPI wire format.
+                // Copy a row directly instead of loading the x map for every pixel.
+                if (format == RG_PIXEL_565_BE && unscaled_x)
+                {
+                    memcpy(line_buffer_ptr, data + map_viewport_to_source_y[y] * stride, draw_width * 2);
+                    line_buffer_ptr += draw_width;
+                }
+                else if (format & RG_PIXEL_PALETTE)
                     RENDER_LINE(uint8_t, palette[buffer[x]])
                 else if (format == RG_PIXEL_565_LE)
                     RENDER_LINE(uint16_t, (buffer[x] << 8) | (buffer[x] >> 8))
@@ -369,6 +389,10 @@ static void display_task(void *arg)
         write_update(msg.dataPtr);
         // draw_on_screen_display(0, display.screen.height);
         rg_task_receive(&msg);
+#ifdef ESP_PLATFORM
+        // The source surface is now free; wake every waiter without a tick delay.
+        xEventGroupSetBits(display_events, DISPLAY_FRAME_RELEASED);
+#endif
 
         lcd_sync();
     }
@@ -517,7 +541,14 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
 bool rg_display_sync(bool block)
 {
     while (block && rg_task_messages_waiting(display_task_queue))
-        rg_task_delay(1); // Block so lower-priority work and idle can run too.
+    {
+#ifdef ESP_PLATFORM
+        // Recheck the queue after waking: a producer may have queued another frame.
+        xEventGroupWaitBits(display_events, DISPLAY_FRAME_RELEASED, pdTRUE, pdFALSE, portMAX_DELAY);
+#else
+        rg_task_delay(1);
+#endif
+    }
     return !rg_task_messages_waiting(display_task_queue);
 }
 
@@ -653,6 +684,12 @@ void rg_display_init(void)
     };
     display.screen.width -= display.screen.margins.left + display.screen.margins.right;
     display.screen.height -= display.screen.margins.top + display.screen.margins.bottom;
+#ifdef ESP_PLATFORM
+    if (!display_events)
+        display_events = xEventGroupCreate();
+    RG_ASSERT(display_events, "Unable to allocate display completion event");
+    xEventGroupClearBits(display_events, DISPLAY_FRAME_RELEASED);
+#endif
     lcd_init();
     rg_display_clear(C_BLACK);
     rg_task_delay(80); // Wait for the screen be cleared before turning on the backlight (40ms doesn't seem to be enough...)
