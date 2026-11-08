@@ -115,7 +115,7 @@ static void spi_init(void)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         .max_transfer_sz = SPI_BUFFER_LENGTH,
-#if CONFIG_IDF_TARGET_ESP32S3 && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
         // Install the DMA completion ISR on the display core, rather than the
         // initializing emulator core. Keep older IDF ports on their default.
 #if RG_TASK_AFFINITY_DISPLAY == 1

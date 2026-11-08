@@ -11,13 +11,18 @@ static EventGroupHandle_t display_events;
 #define DISPLAY_FRAME_RELEASED BIT0
 #endif
 
-#define LCD_BUFFER_LENGTH (RG_SCREEN_WIDTH * 4) // In pixels
+#ifndef RG_SCREEN_BUFFER_LINES
+#define RG_SCREEN_BUFFER_LINES 4
+#endif
+#define LCD_BUFFER_LENGTH (RG_SCREEN_WIDTH * RG_SCREEN_BUFFER_LINES) // In pixels
 
 // static rg_display_driver_t driver;
 static rg_task_t *display_task_queue;
 static rg_display_counters_t counters;
 static rg_display_config_t config;
 static rg_surface_t *border;
+static rg_surface_t *frame_copy;
+static rg_mutex_t *frame_copy_lock;
 static rg_display_t display;
 static int16_t map_viewport_to_source_x[RG_SCREEN_WIDTH + 1];
 static int16_t map_viewport_to_source_y[RG_SCREEN_HEIGHT + 1];
@@ -49,6 +54,10 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length);
 #include "drivers/display/sdl2.h"
 #else
 #include "drivers/display/dummy.h"
+#endif
+
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "drivers/display/p4_ppa.h"
 #endif
 
 static int draw_on_screen_display(int region_start, int region_end)
@@ -111,7 +120,8 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
     int draw_top = display.viewport.top;
     int draw_width = display.viewport.width;
     int draw_height = display.viewport.height;
-    const bool unscaled_x = display.viewport.step_x == 1.0f;
+    bool unscaled_x = display.viewport.step_x == 1.0f;
+    bool hardware_scaled = false;
 
     int crop_left = 0;
     int crop_top = 0;
@@ -130,6 +140,18 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
         draw_top = 0;
     }
 
+#if CONFIG_IDF_TARGET_ESP32P4
+    if (!crop_left && !crop_top && config.filter == RG_DISPLAY_FILTER_BOTH)
+    {
+        const rg_surface_t *scaled = p4_scale_frame(update, draw_width, draw_height);
+        if (scaled)
+        {
+            update = scaled;
+            hardware_scaled = unscaled_x = true;
+            filter_x = filter_y = false;
+        }
+    }
+#endif
     const int format = update->format;
     const int stride = update->stride;
     const void *data = update->data + update->offset + (crop_top * stride) + (crop_left * RG_PIXEL_GET_SIZE(format));
@@ -166,7 +188,7 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
 
         for (int i = 0; i < lines_to_copy; ++i)
         {
-            if (i > 0 && LINE_IS_REPEATED(y))
+            if (!hardware_scaled && i > 0 && LINE_IS_REPEATED(y))
             {
                 memcpy(line_buffer_ptr, line_buffer_ptr - draw_width, draw_width * 2);
                 line_buffer_ptr += draw_width;
@@ -174,7 +196,7 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
             else
             {
                 #define RENDER_LINE(PTR_TYPE, PIXEL) { \
-                    PTR_TYPE *buffer = (PTR_TYPE *)(data + map_viewport_to_source_y[y] * stride);\
+                    PTR_TYPE *buffer = (PTR_TYPE *)(data + (hardware_scaled ? y : map_viewport_to_source_y[y]) * stride);\
                     if (unscaled_x) { \
                         for (int x = 0; x < draw_width; ++x) \
                             *line_buffer_ptr++ = (PIXEL); \
@@ -189,7 +211,7 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
                 // Copy a row directly instead of loading the x map for every pixel.
                 if (format == RG_PIXEL_565_BE && unscaled_x)
                 {
-                    memcpy(line_buffer_ptr, data + map_viewport_to_source_y[y] * stride, draw_width * 2);
+                    memcpy(line_buffer_ptr, data + (hardware_scaled ? y : map_viewport_to_source_y[y]) * stride, draw_width * 2);
                     line_buffer_ptr += draw_width;
                 }
                 else if (format & RG_PIXEL_PALETTE)
@@ -516,6 +538,15 @@ char *rg_display_get_border(void)
     return rg_settings_get_string(NS_APP, SETTING_BORDER, NULL);
 }
 
+bool rg_display_uses_frame_copy(void)
+{
+#if RG_DISPLAY_ASYNC_FRAMES
+    return !rg_system_get_app()->isLauncher;
+#else
+    return false;
+#endif
+}
+
 void rg_display_submit(const rg_surface_t *update, uint32_t flags)
 {
     const int64_t time_start = rg_system_timer();
@@ -523,6 +554,38 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
     // Those things should probably be asserted, but this is a new system let's be forgiving...
     if (!update || !update->data)
         return;
+
+    const bool copy_frame = rg_display_uses_frame_copy();
+    // The queue retains its entry until write_update has consumed the source.
+    // Serialize producers without waiting, then reuse the owned snapshot only
+    // when the queue is empty. Slow SPI drops presentations, not game time.
+    if (copy_frame)
+    {
+        if (!rg_mutex_take(frame_copy_lock, 0))
+            return;
+        if (!rg_display_sync(false))
+        {
+            rg_mutex_give(frame_copy_lock);
+            return;
+        }
+        if (!frame_copy || frame_copy->width != update->width ||
+            frame_copy->height != update->height || frame_copy->format != update->format)
+        {
+            rg_surface_free(frame_copy);
+            frame_copy = rg_surface_create(update->width, update->height, update->format, MEM_SLOW | MEM_NOPANIC);
+            if (!frame_copy)
+            {
+                rg_mutex_give(frame_copy_lock);
+                return;
+            }
+        }
+        for (int y = 0; y < update->height; ++y)
+            memcpy((uint8_t *)frame_copy->data + y * frame_copy->stride,
+                   (const uint8_t *)update->data + update->offset + y * update->stride, frame_copy->stride);
+        if ((update->format & RG_PIXEL_PALETTE) && update->palette)
+            memcpy(frame_copy->palette, update->palette, update->format == RG_PIXEL_PAL888 ? 768 : 512);
+        update = frame_copy;
+    }
 
     if (display.source.width != update->width || display.source.height != update->height)
     {
@@ -533,6 +596,8 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
     }
 
     rg_task_send(display_task_queue, &(rg_task_msg_t){.dataPtr = update});
+    if (copy_frame)
+        rg_mutex_give(frame_copy_lock);
 
     counters.blockTime += rg_system_timer() - time_start;
     counters.totalFrames++;
@@ -656,6 +721,14 @@ void rg_display_clear(uint16_t color_le)
 
 void rg_display_deinit(void)
 {
+    rg_display_sync(true);
+    rg_surface_free(frame_copy);
+    frame_copy = NULL;
+    rg_mutex_free(frame_copy_lock);
+    frame_copy_lock = NULL;
+#if CONFIG_IDF_TARGET_ESP32P4
+    p4_scaler_deinit();
+#endif
     rg_task_send(display_task_queue, &(rg_task_msg_t){.type = RG_TASK_MSG_STOP});
     // lcd_set_backlight(0);
     lcd_deinit();
@@ -695,6 +768,11 @@ void rg_display_init(void)
     rg_task_delay(80); // Wait for the screen be cleared before turning on the backlight (40ms doesn't seem to be enough...)
     lcd_set_backlight(config.backlight);
     display_task_queue = rg_task_create("rg_display", &display_task, NULL, 4 * 1024, RG_TASK_PRIORITY_6, RG_TASK_AFFINITY_DISPLAY);
+    if (rg_display_uses_frame_copy())
+    {
+        frame_copy_lock = rg_mutex_create();
+        RG_ASSERT(frame_copy_lock, "Unable to allocate frame ownership lock");
+    }
     if (config.border_file)
         load_border_file(config.border_file);
     RG_LOGI("Display ready.\n");

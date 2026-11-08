@@ -1,6 +1,6 @@
 """Exercise the actual I2S consumer loop with a mocked producer and DMA sink.
 
-Run with --cc /path/to/clang. No ESP-IDF hardware or native C runtime is needed.
+Run with --cc /path/to/clang (or Zig). No ESP-IDF hardware or native C runtime is needed.
 This checks batching and FIFO ordering, not physical DMA timing.
 """
 import argparse
@@ -190,11 +190,15 @@ int audio_dma_selftest(void) {
 with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
     temp = Path(directory)
     c_file = temp / "audio_test.c"
-    c_file.write_text(stub + consumer + entry)
+    c_file.write_text(stub + consumer + entry + "\nint test_entry(void) { return 1; }\n")
     for block, capacity in [(8, 19), (192, 1536)]:
         library = temp / (f"audio_{block}.dll" if os.name == "nt" else f"audio_{block}.so")
-        command = [args.cc, "-shared", "-ffreestanding", "-fno-builtin", "-nostdlib"]
-        if os.name == "nt":
+        zig = Path(args.cc).stem == "zig"
+        command = [args.cc] + (["cc"] if zig else [])
+        command += ["-O2", "-shared", "-ffreestanding", "-fno-builtin", "-nostdlib"]
+        if os.name == "nt" and zig:
+            command += ["-target", "x86_64-windows-gnu", "-mno-stack-arg-probe", "-Wl,--entry,test_entry"]
+        elif os.name == "nt":
             command += ["--target=x86_64-pc-windows-msvc", "-fuse-ld=lld", "-Wl,/noentry", "-Wl,/nodefaultlib"]
         else:
             command += ["-fPIC"]

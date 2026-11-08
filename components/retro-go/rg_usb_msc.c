@@ -77,6 +77,11 @@ void rg_usb_msc_request(void)
 
 static esp_err_t usb_sdcard_transaction(int slot, sdmmc_command_t *cmd)
 {
+#if RG_STORAGE_SD_MEMORY_ONLY
+    // Match the filesystem mount's memory-card-only SPI initialization.
+    if (cmd->opcode == 52 || cmd->opcode == 5)
+        return ESP_ERR_NOT_SUPPORTED;
+#endif
     if (cmd->opcode == SDMMC_CMD_READ_SINGLE || cmd->opcode == SDMMC_CMD_READ_MULTIPLE)
     {
         usb_activity_color = C_GREEN;
@@ -92,6 +97,8 @@ static esp_err_t usb_sdcard_transaction(int slot, sdmmc_command_t *cmd)
 
 static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
 {
+    if (!rg_storage_init_sdcard_power())
+        return ESP_FAIL;
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = RG_GPIO_SDSPI_MOSI,
         .miso_io_num = RG_GPIO_SDSPI_MISO,

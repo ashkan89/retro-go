@@ -217,11 +217,13 @@ def test_spi(cc, folder):
 #define CONFIG_IDF_TARGET_ESP32S3 1
 #define ESP_IDF_VERSION_MAJOR 5
 #define RG_STORAGE_SDSPI_HOST 1
+#define RG_STORAGE_SD_MEMORY_ONLY 1
 #define ESP_OK 0
 #define ESP_ERR_TIMEOUT 1
 #define ESP_ERR_INVALID_RESPONSE 2
 #define ESP_ERR_INVALID_CRC 3
 #define ESP_ERR_NOT_FOUND 4
+#define ESP_ERR_NOT_SUPPORTED 5
 #define SCF_CMD_AC 0
 #define SCF_RSP_R1B 0
 #define SCF_RSP_R1 0
@@ -278,6 +280,10 @@ int main(void) {
     assert(data[0]==200 && data[512]==201 && data[1024]==202);
     reset(); card.ocr=0; cmd.opcode=25; cmd.arg=51200;
     assert(sdcard_do_transaction(1,&cmd)==ESP_OK); assert(args[0]==51200 && args[1]==51712 && args[2]==52224);
+    reset(); cmd.opcode=52;
+    assert(sdcard_do_transaction(1,&cmd)==ESP_ERR_NOT_SUPPORTED && !other_calls);
+    cmd.opcode=5;
+    assert(sdcard_do_transaction(1,&cmd)==ESP_ERR_NOT_SUPPORTED && !other_calls);
     reset(); cmd.opcode=41; assert(sdcard_do_transaction(1,&cmd)==ESP_ERR_INVALID_CRC); assert(other_calls==1 && !clocks);
     reset(); cmd.opcode=18; failures=-1;
     assert(sdcard_do_transaction(1,&cmd)==ESP_ERR_INVALID_CRC);

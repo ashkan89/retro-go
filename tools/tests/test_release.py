@@ -17,7 +17,9 @@ mkfw = importlib.util.module_from_spec(image_spec)
 image_spec.loader.exec_module(mkfw)
 
 
-def image_bytes(version, target, apps=release.APPS, chip_type="esp32s3", partition_size=0x10000):
+def image_bytes(version, target, apps=None, chip_type="esp32s3", partition_size=0x10000):
+    if apps is None:
+        apps = release.APPS + (("gbsp",) if target == "esp32-p4-n16r32-st7796" else ())
     payload = bytearray(256)
     payload[0] = 0xE9
     struct.pack_into("<I", payload, 32, 0xABCD5432)

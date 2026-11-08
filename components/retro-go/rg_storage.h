@@ -57,6 +57,8 @@ typedef struct
 } rg_stat_t;
 
 void rg_storage_init(void);
+// Keep a configured SD I/O supply active for both filesystem and USB MSC access.
+bool rg_storage_init_sdcard_power(void);
 void rg_storage_deinit(void);
 // Destructive SD-only format on ESP32-S3. Stop all storage users first.
 // Normal mounting never formats automatically; false on failure/unsupported media.

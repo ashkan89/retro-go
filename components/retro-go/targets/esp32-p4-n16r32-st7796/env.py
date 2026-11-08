@@ -6,7 +6,7 @@ IDF_TARGET = "esp32p4"
 FW_FORMAT = "none"
 
 # Include a factory flasher partition so the launcher can install downloaded .img updates.
-DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx retro-legacy"
+DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx retro-legacy gbsp"
 
 # This target has 16 MB flash, so keep enough app-partition headroom for OTA images.
 # The launcher now also carries the media player (decoders, DSP and UI).
@@ -16,6 +16,7 @@ PROJECT_APPS["prboom-go"][2] = 0x180000
 PROJECT_APPS["gwenesis"][2] = 0x180000
 PROJECT_APPS["fmsx"][2] = 0x180000
 PROJECT_APPS["retro-legacy"][2] = 0x280000
+PROJECT_APPS["gbsp"][2] = 0x200000
 
 # No native or external radio is present on this target.
 NETWORKING_SUPPORTED = False

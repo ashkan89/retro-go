@@ -99,8 +99,8 @@
 static struct {
     const char *last_error;
     int device;
-    int volume;
-    bool muted;
+    volatile int volume;
+    volatile bool muted;
     volatile rg_audio_route_t route;
     bool jack_present;
     bool jack_candidate;
@@ -114,6 +114,15 @@ static struct {
     SemaphoreHandle_t task_stopped;
     volatile bool running;
     uint32_t write_errors;
+    int sample_rate;
+#if RG_AUDIO_VOLUME_RAMP_MS
+    int ramp_gain, ramp_target, ramp_step, ramp_remaining;
+    volatile bool output_enabled;
+#endif
+#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+    int64_t dma_deadline, diagnostic_time, maximum_gap;
+    uint32_t late_writes;
+#endif
 } state;
 static portMUX_TYPE queue_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -127,6 +136,11 @@ static void apply_route(void)
     // A board with no enable pins at all (amplifier hardwired on) has nothing to do here
     bool headphones = state.route == RG_AUDIO_ROUTE_HEADPHONES;
     bool audible = !state.muted;
+#if RG_AUDIO_VOLUME_RAMP_MS
+    // Software mute keeps the selected amplifier powered. Repeated SD_MODE /
+    // XSMT transitions at menu entry/exit produce clicks on external DACs.
+    audible = state.output_enabled;
+#endif
     (void)headphones, (void)audible;
 
     #ifdef RG_GPIO_SND_AMP_ENABLE
@@ -327,6 +341,15 @@ static bool driver_init(int device, int sample_rate)
 {
     state.last_error = NULL;
     state.device = device;
+    state.sample_rate = sample_rate;
+#if RG_AUDIO_VOLUME_RAMP_MS
+    state.ramp_gain = state.ramp_target = state.ramp_step = state.ramp_remaining = 0;
+    state.output_enabled = true;
+#endif
+#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+    state.dma_deadline = state.diagnostic_time = state.maximum_gap = 0;
+    state.late_writes = 0;
+#endif
 
     // Bring the outputs up shut down: the I2S bus is silent until the writer task runs, and an
     // enabled amplifier would turn that undefined state into a pop.
@@ -422,11 +445,18 @@ static bool driver_init(int device, int sample_rate)
 
 static bool driver_set_sample_rates(int sampleRate)
 {
-    return i2s_set_sample_rates(I2S_NUM_0, sampleRate) == ESP_OK;
+    if (i2s_set_sample_rates(I2S_NUM_0, sampleRate) != ESP_OK)
+        return false;
+    state.sample_rate = sampleRate;
+    return true;
 }
 
 static bool driver_deinit(void)
 {
+#if RG_AUDIO_VOLUME_RAMP_MS
+    state.output_enabled = false;
+    apply_route();
+#endif
     stop_audio_task();
     i2s_driver_uninstall(I2S_NUM_0);
     if (state.device == DEVICE_INT_DAC)
@@ -478,6 +508,24 @@ static rg_audio_route_t driver_get_route(void)
 
 static bool write_dma(const rg_audio_frame_t *frames, size_t count)
 {
+#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+    int64_t now = rg_system_timer();
+    if (state.dma_deadline && now > state.dma_deadline + 1000)
+    {
+        state.late_writes++;
+        state.maximum_gap = RG_MAX(state.maximum_gap, now - state.dma_deadline);
+    }
+    state.dma_deadline = RG_MAX(now, state.dma_deadline) + count * 1000000LL / state.sample_rate;
+    if (now - state.diagnostic_time >= 5000000)
+    {
+        RG_LOGI("I2S timing: late=%lu max_gap=%lld us queue=%u errors=%lu\n",
+                (unsigned long)state.late_writes, (long long)state.maximum_gap,
+                (unsigned)state.queue_count, (unsigned long)state.write_errors);
+        state.diagnostic_time = now;
+        state.late_writes = 0;
+        state.maximum_gap = 0;
+    }
+#endif
     const size_t requested = count * sizeof(*frames);
     size_t written = 0;
     esp_err_t result = i2s_write(I2S_NUM_0, frames, requested, &written,
@@ -494,9 +542,22 @@ static bool write_dma(const rg_audio_frame_t *frames, size_t count)
 static bool write_frames(const rg_audio_frame_t *frames, size_t count)
 {
     int volume = state.muted ? 0 : state.volume;
+#if RG_AUDIO_VOLUME_RAMP_MS
+    int target = volume * 256;
+    if (target != state.ramp_target)
+    {
+        state.ramp_target = target;
+        state.ramp_remaining = RG_MAX(1, state.sample_rate * RG_AUDIO_VOLUME_RAMP_MS / 1000);
+        state.ramp_step = (target - state.ramp_gain) / state.ramp_remaining;
+    }
+#endif
     // External DAC samples need no conversion at unity gain. The consumer owns
     // this buffer until the blocking write copies it into the DMA ring.
-    if (volume == 100 && DEVICE_IS_EXTERNAL(state.device))
+    if (volume == 100 && DEVICE_IS_EXTERNAL(state.device)
+#if RG_AUDIO_VOLUME_RAMP_MS
+        && !state.ramp_remaining && state.ramp_gain == target
+#endif
+    )
         return write_dma(frames, count);
 
     rg_audio_frame_t buffer[DMA_BUFFER_LEN];
@@ -510,6 +571,14 @@ static bool write_frames(const rg_audio_frame_t *frames, size_t count)
     {
         int left = ((int32_t)frames[i].left * volume) / 100;
         int right = ((int32_t)frames[i].right * volume) / 100;
+#if RG_AUDIO_VOLUME_RAMP_MS
+        if (state.ramp_remaining && !--state.ramp_remaining)
+            state.ramp_gain = state.ramp_target;
+        else if (state.ramp_remaining)
+            state.ramp_gain += state.ramp_step;
+        left = (int32_t)frames[i].left * state.ramp_gain / 25600;
+        right = (int32_t)frames[i].right * state.ramp_gain / 25600;
+#endif
 
     #if RG_AUDIO_USE_INT_DAC
         if (use_internal_dac)
@@ -605,7 +674,9 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
 
 static bool driver_set_mute(bool mute)
 {
+#if !RG_AUDIO_VOLUME_RAMP_MS
     i2s_zero_dma_buffer(I2S_NUM_0);
+#endif
     state.muted = mute;
     apply_route();
     return true;

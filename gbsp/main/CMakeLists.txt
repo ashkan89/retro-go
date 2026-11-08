@@ -1,0 +1,6 @@
+idf_component_register(SRCS "main.c" "platform.c" INCLUDE_DIRS "." REQUIRES retro-go gpsp esp_mm esp_psram)
+rg_setup_compile_options(-O2)
+option(RG_GBA_SELFTEST "Run the copyright-free GBA/PPA hardware smoke test" OFF)
+if(RG_GBA_SELFTEST)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE RG_GBA_SELFTEST=1)
+endif()

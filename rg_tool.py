@@ -26,6 +26,7 @@ PROJECT_APPS = {
   'gwenesis':     [0, 16, 1048576],
   'fmsx':         [0, 16, 589824],
   'retro-legacy': [0, 16, 2097152],
+  'gbsp':         [0, 16, 2097152],
 }
 # PROJECT_APPS = {}
 # for t in glob.glob("*/CMakeLists.txt"):

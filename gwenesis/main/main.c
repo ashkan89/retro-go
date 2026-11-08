@@ -258,7 +258,7 @@ void app_main(void)
 
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(60);
-    app->frameskip = 3;
+    app->frameskip = rg_display_uses_frame_copy() ? 0 : 3;
 
     extern unsigned char gwenesis_vdp_regs[0x20];
     extern unsigned int gwenesis_vdp_status;

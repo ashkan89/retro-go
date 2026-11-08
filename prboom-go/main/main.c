@@ -140,7 +140,8 @@ void I_UpdateNoBlit(void)
 void I_FinishUpdate(void)
 {
     rg_display_submit(update, 0);
-    rg_display_sync(true); // Wait for update->buffer to be released
+    if (!rg_display_uses_frame_copy())
+        rg_display_sync(true); // Wait for update->buffer to be released
 }
 
 bool I_StartDisplay(void)

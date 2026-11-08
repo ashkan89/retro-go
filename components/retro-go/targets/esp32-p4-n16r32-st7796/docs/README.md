@@ -40,8 +40,8 @@ driver circuits; do not connect a speaker, motor, or raw LCD backlight to a GPIO
 | ST7796 DC | 11 | 31 | 27 |
 | ST7796 RESET | 12 | 32 | 28 |
 | LCD backlight driver | 21 | 33 | 29 |
-| SD CS | 42 | 7 | 60 |
-| SD MOSI / CMD | 41 | 8 | 61 |
+| SD CS | 42 | 45 | 44 |
+| SD MOSI / CMD | 41 | 46 | 45 |
 | SD SCK | 40 | 9 | 62 |
 | SD MISO / DAT0 | 39 | 10 | 63 |
 | I2S BCLK | 5 | 20 | 78 |
@@ -63,6 +63,14 @@ driver circuits; do not connect a speaker, motor, or raw LCD backlight to a GPIO
 | WS2812 data | 48 | 23 | 81 |
 | Vibration transistor input | 38 | 18 | 76 |
 
+GPIO0/1/7/8 are not exposed on this board's headers. SD CS and MOSI use the
+confirmed exposed GPIO45/46 instead; SD clock and MISO stay on GPIO9/10.
+GPIO45/46 use the P4's VDD_IO_5 power bank. On this module it is supplied by
+LDO4, which the firmware must enable at 3.3 V **before** initializing SPI.
+This applies even though the SD card itself already has external power.
+Filesystem and USB MSC startup share the same I/O-bank initialization.
+This supersedes the earlier GPIO7/8 wiring assignment and firmware image.
+
 LCD MISO stays disconnected. Buttons switch to ground with internal pull-ups.
 Start + Select also opens Menu. No headphone-detect GPIO is assigned; use the
 Audio out setting, as on the S3 build. See the root AUDIO.md and BATTERY.md for
@@ -83,12 +91,14 @@ transfer independently. The init driver now waits 120 ms after reset/sleep-out.
 ## Reserved pins and future wireless targets
 
 GPIO34-38 (straps, with GPIO37/38 also used for the UART0 console), GPIO24-27
-(USB full-speed functions), and GPIO39-48 are left unused by this peripheral map. GPIO2-5 use
+(USB full-speed functions), and GPIO39-44 plus GPIO47/48 are left unused by this peripheral map. GPIO2-5 use
 the GPIO function rather than external pad JTAG; use USB Serial/JTAG or UART
 for debugging instead. Flash and PSRAM connections are internal to the module.
 
 For a future SDIO radio, GPIO39-44 can supply SDMMC slot 1's D0/D1/D2/D3/CLK/CMD;
-the SD card remains on SPI3. Reserving these pins does not implement a radio.
+the SD card remains on SPI3. GPIO45/46 are SD-card signals and must not be
+assigned to the radio; the future SDIO connection is 4-bit, with D4-D7 unused.
+Reserving these pins does not implement a radio.
 An ESP32-WROOM-32D will need matching ESP-Hosted slave firmware, host transport,
 reset/boot wiring, power, and a separately verified Bluetooth transport/profile
 stack. Add a new target rather than enabling the current native Wi-Fi code on P4.
@@ -118,17 +128,47 @@ Do not flash an S3 image on P4.
 
 ## Local build verification
 
-Verified with ESP-IDF 5.5.5: all seven default applications build, and the full
+Verified with ESP-IDF 5.5.5: all eight default applications build, and the full
 image fits in 16 MB with the configured partition headroom. The packed image
 passed footer/CRC, partition, chip-ID, v1.0-v1.99 revision-range, and exact
 application-byte checks. All five release unit tests passed. The 28 wiring
 assignments and module pad numbers were checked against both target configs
 and the manufacturer pin table.
 
-The native NES timing harness could not run with the installed Espressif Clang,
-which lacks an x86 host backend. The CI workflow includes that native check.
+Native checks now pass with Zig as the host compiler: NES timing and sprite
+patterns, display rendering, frame ownership/drop behavior, DMA FIFO ordering,
+and both immediate and ramped audio gain paths. The CI workflow runs these too.
+
+## Emulation performance and GBA
+
+The display runs at 80 MHz SPI, as requested for the connected hardware, with
+16-row DMA buffers. P4 emulator apps use owned frame snapshots and drop busy
+presentations instead of waiting for LCD transfers. Contra scrolling now
+sustains 60 emulated FPS in the measured runs. The 480x320 SPI link still limits
+full-screen presentation to at most 32.6 FPS before overhead.
+
+The target now includes an eighth app, `gbsp`, for Game Boy Advance, and uses
+the P4 PPA for compatible RGB565 scaling. The hardware test verified native
+RV32 JIT execution, PPA output pixels and save-state restoration. See
+[performance measurements and audio findings](PERFORMANCE.md) and
+[GBA setup and limitations](../../../../../gbsp/README.md).
 
 ## Hardware validation still required
+
+On the connected COM3 board, revision v1.3 and 32 MB PSRAM were confirmed.
+Enabling LDO4 resolved the SD initialization CRC error (0x109); the launcher
+mounted `/sd` and read its settings and a 1,650-entry CRC cache from the card.
+Mounting succeeded across three reset tests. All eight applications were then
+updated on COM3 and flash hashes verified; the final launcher boot mounted the
+card successfully too. The card was not formatted.
+
+A later warm restart exposed a second initialization issue: IDF's SDIO CMD52
+probe could return a function-number error (0x102) before CMD0 reset. This
+memory-card-only SPI socket now reports SDIO CMD52/CMD5 probes as unsupported
+in both filesystem and USB MSC initialization, so the normal SD memory-card
+handshake proceeds. Three consecutive reset tests passed with this fix. Normal
+SD data errors still use the existing recovery/retry checks. This does not
+change a future radio's separate SDIO transport.
 
 Compilation cannot verify wiring or a particular display module. Before calling
 the port hardware-verified, check the boot log for v1.x, 16 MB flash and 32 MB
@@ -142,6 +182,7 @@ against a meter, LED/motor, USB HID/MSC, and a complete SD-image update/reboot.
 - [Wireless-Tag N16R32X / v3.2 listing](https://shop.wireless-tag.com/products/new-p4-v3-2-version-esp32-p4-som-board-wt0132p4-a1-som-module-with-esp32-p4-chip-multi-interface-for-esp32-p4-ev-board-with-lcd-display)
 - [Espressif P4 revision compatibility](https://docs.espressif.com/projects/esp-idf/en/release-v5.5/esp32p4/api-reference/system/chip_revision.html)
 - [Espressif P4 GPIO functions and boot straps](https://documentation.espressif.com/esp32-p4_datasheet_en.html)
+- [Espressif GPIO power-bank and SD I/O supply requirements](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32p4/schematic-checklist-esp32p4.html)
 - ESP-IDF 5.5.5 local Kconfig.hw_support, Kconfig.cpu and esp32p4/Kconfig.spiram
   confirm pre-v3 revision selection, qualified-only 400 MHz, and HEX PSRAM mode.
 - [Espressif ST7796 reference driver](https://github.com/espressif/esp-bsp/blob/master/components/lcd/esp_lcd_st7796/esp_lcd_st7796_general.c)

@@ -1,0 +1,9 @@
+[scheme:gpsp_external_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:gpsp_external_bss]
+archive: libgpsp.a
+entries:
+    * (gpsp_external_bss)

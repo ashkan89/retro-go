@@ -1,0 +1,89 @@
+# P4 performance and GBA validation
+
+Measured on COM3, WT0132P4-A1 N16R32, P4 v1.3, IDF 5.5.5,
+360 MHz CPU, 32 MiB HEX PSRAM at 200 MHz, ST7796 SPI display.
+
+## Contra / NES
+
+The original 40 MHz build reached 60 emulated FPS on static scenes but fell
+to about 24 FPS during scrolling. Display submission blocked the emulator
+while the SPI renderer consumed the source frame.
+
+The new P4 path copies accepted frames into a PSRAM snapshot owned by the
+display task. If the display still owns its previous snapshot, submission drops
+that presentation immediately. CPU emulation and audio continue. Source offset,
+row padding, palette ownership and resizing are covered by the native submission
+test. Doom's explicit source-release wait also uses this ownership distinction.
+
+LCD SPI runs at **80 MHz at the user's request**. DMA buffers contain 16 rows
+instead of four, and the SPI completion interrupt runs on the display core.
+The latest Contra captures sustain **60 emulated FPS and about 30 presented
+FPS** during scrolling. Static or small partial changes can present more often.
+P4 auto mode starts without forced initial frame skipping; manual frame-skip
+settings remain effective, and CPU overload can still trigger adaptive skipping.
+
+These are measurements for Contra, not a full compatibility/performance claim
+for every game or emulator. The shared submission improvement applies to all
+emulator apps. Existing engines remain in place; replacing the CPU engine cannot
+remove the display's physical bandwidth limit.
+
+At 480x320 RGB565, one full frame carries 2,457,600 bits. Ideal full-screen
+limits are 16.3 FPS at 40 MHz and 32.6 FPS at 80 MHz, before commands and other
+overhead. Fit scaling, unchanged regions and native-size modes change the number
+of pixels sent. Sixty full-screen frames per second need a faster display link.
+
+## Audio
+
+A 30-second Contra capture at 80 MHz recorded no late I2S writes, no submission
+errors, and an occupied software queue throughout. `BUSY:100%` includes waiting
+for audio pacing; it is not a measurement of CPU arithmetic occupancy.
+The user reported light buzzing/distortion that increases with screen activity,
+improves at 30% speaker volume, and is quiet in the paused menu. This remains
+an audible hardware validation item; a full queue alone cannot diagnose the
+analog signal or prove clean audio.
+The user also confirmed that rendering-related buzz remains with digital volume
+at zero. This strongly suggests coupling into the analog output or its supply /
+ground return; it is not evidence of a PCM queue underrun. For MAX98357A, the
+[manufacturer datasheet](https://www.analog.com/media/en/technical-documentation/data-sheets/MAX98357A-MAX98357B.pdf)
+specifies local 0.1 uF and 10 uF supply bypass capacitors and careful grounding.
+Check these at the amplifier, and avoid sharing its supply return with the
+display/backlight current path. SPI remains at 80 MHz as requested.
+
+The P4 target now uses a 5 ms digital gain ramp for volume/mute/resume. Menu mute
+keeps only the selected analog output powered and fades its PCM to zero rather
+than abruptly clearing DMA and toggling amplifier shutdown. Other targets keep
+their existing mute behavior. The native gain test checks both paths, including
+cross-buffer fade continuity. Optional `RG_AUDIO_TIMING_DIAGNOSTICS=1` restores
+the five-second diagnostic log; release/default builds disable it.
+The user confirmed that menu/volume clicks were reduced or gone after flashing
+this change. The zero-volume rendering buzz remains a separate hardware issue.
+
+## PPA and GBA
+
+The new `gbsp` app uses Midworld's gpSP ARM-to-RV32 JIT, with 8 MiB ROM caching,
+PSRAM code caches and explicit instruction-cache publication for IDF 5.5.
+The launcher GBA entry now points to a real application included in this target.
+See [the GBA integration notes](../../../../../gbsp/README.md) for ROM, BIOS,
+save and shoulder-button details.
+
+PPA SRM provides hardware bilinear scaling for compatible RGB565 surfaces.
+It requires exact scale factors in sixteenth steps; unsupported dimensions,
+indexed surfaces and nearest-neighbour filtering use the software renderer.
+GBA's 240x160 to 480x320 scale is exact. This hardware accelerates image
+operations, not console CPU execution, and there is no AI model in the renderer.
+
+The copyright-free hardware smoke test on this board passed **121 native RV32
+blocks**, ARM7 framebuffer execution, the display-task PPA path, every output
+pixel of the 2x PPA scale, live frame-skip changes, and a serialized-state
+round trip restoring GBA RAM. It writes temporary cache files, cleans them up,
+and returns to Contra when available. This does not establish commercial-game
+compatibility or GBA gameplay FPS. Diagnostic builds must be explicitly enabled
+with `-DRG_GBA_SELFTEST=ON`; final builds use `OFF`.
+
+The user then launched a real GBA game with the production app. The subsequent
+30-second log recorded about **59-60 emulated FPS** during gameplay, with
+roughly 15-30 presentations per second as frame-skip and scaling settings were
+changed. Menu intervals are excluded from that observation. The title was not
+reported, so this is one observed run, not a per-title compatibility benchmark.
+
+Reference sources and pinned revisions are recorded in `gbsp/README.md`.

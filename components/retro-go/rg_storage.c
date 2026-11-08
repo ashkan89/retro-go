@@ -18,6 +18,9 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_vfs_fat.h>
+#ifdef RG_STORAGE_SD_IO_LDO_CHANNEL
+#include <esp_ldo_regulator.h>
+#endif
 #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include <diskio_sdmmc.h>
 #endif
@@ -85,6 +88,30 @@ static wl_handle_t wl_handle = WL_INVALID_HANDLE;
         RG_LOGE("No path given"); \
         return false;             \
     }
+
+bool rg_storage_init_sdcard_power(void)
+{
+#ifdef RG_STORAGE_SD_IO_LDO_CHANNEL
+    // The I/O bank also serves other GPIOs. Keep it powered across unmounts,
+    // and acquire it only once when formatting/remounting in the same app.
+    static esp_ldo_channel_handle_t io_supply;
+    if (!io_supply)
+    {
+        const esp_ldo_channel_config_t config = {
+            .chan_id = RG_STORAGE_SD_IO_LDO_CHANNEL,
+            .voltage_mv = RG_STORAGE_SD_IO_VOLTAGE_MV,
+        };
+        esp_err_t err = esp_ldo_acquire_channel(&config, &io_supply);
+        if (err != ESP_OK)
+        {
+            RG_LOGE("SD I/O supply initialization failed: %s", esp_err_to_name(err));
+            return false;
+        }
+        RG_LOGI("SD I/O LDO%d enabled at %d mV", config.chan_id, config.voltage_mv);
+    }
+#endif
+    return true;
+}
 
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static bool sdcard_is_data_cmd(uint32_t opcode)
@@ -258,6 +285,14 @@ static esp_err_t sdcard_transfer(int slot, sdmmc_command_t *cmdinfo)
 }
 static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
 {
+#if RG_STORAGE_SD_MEMORY_ONLY && defined(RG_STORAGE_SDSPI_HOST)
+    // This socket contains a memory card, not an SDIO device. IDF 5.5 sends
+    // CMD52 before CMD0; a warm memory card can reject it with a function-number
+    // error (0x102), aborting initialization before it reaches the actual reset.
+    // Report unsupported for SDIO-only probes, allowing the normal SD handshake.
+    if (cmdinfo->opcode == 52 || cmdinfo->opcode == 5)
+        return ESP_ERR_NOT_SUPPORTED;
+#endif
 #if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && defined(RG_STORAGE_SDSPI_HOST)
     // SPI multi-block writes need a raw stop token on error, which the public
     // host API cannot send. Single-sector writes avoid leaving an open stream.
@@ -299,6 +334,10 @@ void rg_storage_init(void)
 #if defined(RG_STORAGE_SDSPI_HOST)
 
     RG_LOGI("Looking for SD Card using SDSPI...");
+    RG_LOGI("SD SPI%d pins: CS=%d MOSI=%d CLK=%d MISO=%d", RG_STORAGE_SDSPI_HOST + 1,
+            RG_GPIO_SDSPI_CS, RG_GPIO_SDSPI_MOSI, RG_GPIO_SDSPI_CLK, RG_GPIO_SDSPI_MISO);
+    if (!rg_storage_init_sdcard_power())
+        return;
 
     spi_bus_config_t bus_cfg = {
         .mosi_io_num = RG_GPIO_SDSPI_MOSI,
@@ -362,6 +401,8 @@ void rg_storage_init(void)
 #elif defined(RG_STORAGE_SDMMC_HOST)
 
     RG_LOGI("Looking for SD Card using SDMMC...");
+    if (!rg_storage_init_sdcard_power())
+        return;
 
     sdmmc_host_t host_config = SDMMC_HOST_DEFAULT();
     host_config.flags = SDMMC_HOST_FLAG_1BIT;

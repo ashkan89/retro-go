@@ -264,7 +264,7 @@ void nes_main(void)
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(nes->refresh_rate);
     // Seed Auto mode; saved manual values are selected by the shared policy.
-    app->frameskip = 1;
+    app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
 
     int skipFrames = 0;
 

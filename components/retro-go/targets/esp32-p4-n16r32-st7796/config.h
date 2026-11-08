@@ -17,6 +17,10 @@
 #define RG_STORAGE_ROOT             "/sd"
 #define RG_STORAGE_SDSPI_HOST       SPI3_HOST
 #define RG_STORAGE_SDSPI_SPEED      SDMMC_FREQ_DEFAULT
+#define RG_STORAGE_SD_MEMORY_ONLY  1
+// GPIO45/46 belong to VDD_IO_5, supplied by the module's LDO4 output.
+#define RG_STORAGE_SD_IO_LDO_CHANNEL 4
+#define RG_STORAGE_SD_IO_VOLTAGE_MV 3300
 
 // Audio
 #define RG_AUDIO_USE_INT_DAC        0
@@ -25,11 +29,15 @@
 #define RG_AUDIO_DMA_BUFFER_COUNT   8   // 48 ms reserve at 32 kHz absorbs heavy render spikes
 #define RG_AUDIO_DMA_BUFFER_LENGTH  192
 #define RG_AUDIO_I2S_INTR_FLAGS     ESP_INTR_FLAG_LEVEL2
+#define RG_AUDIO_VOLUME_RAMP_MS    5
+#define RG_AUDIO_TIMING_DIAGNOSTICS 0
 
 // Video
 #define RG_SCREEN_DRIVER            0   // 0 = ILI9341/ST7789 compatible SPI command driver
 #define RG_SCREEN_HOST              SPI2_HOST
-#define RG_SCREEN_SPEED             SPI_MASTER_FREQ_40M
+#define RG_SCREEN_SPEED             SPI_MASTER_FREQ_80M
+#define RG_SCREEN_BUFFER_LINES      16
+#define RG_DISPLAY_ASYNC_FRAMES      1
 #define RG_SCREEN_BACKLIGHT         1
 #define RG_SCREEN_WIDTH             480
 #define RG_SCREEN_HEIGHT            320
@@ -102,11 +110,11 @@
 #define RG_GPIO_LCD_BCKL            GPIO_NUM_33
 #define RG_GPIO_LCD_RST             GPIO_NUM_32
 
-// SPI SD Card
+// SPI SD Card. GPIO0/1/7/8 are not exposed on this board's headers.
 #define RG_GPIO_SDSPI_MISO          GPIO_NUM_10
-#define RG_GPIO_SDSPI_MOSI          GPIO_NUM_8
+#define RG_GPIO_SDSPI_MOSI          GPIO_NUM_46
 #define RG_GPIO_SDSPI_CLK           GPIO_NUM_9
-#define RG_GPIO_SDSPI_CS            GPIO_NUM_7
+#define RG_GPIO_SDSPI_CS            GPIO_NUM_45
 
 // Shared I2S bus for the MAX98357A speaker amp and PCM5102A headphone DAC.
 #define RG_GPIO_SND_I2S_BCK         GPIO_NUM_20

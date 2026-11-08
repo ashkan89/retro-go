@@ -52,7 +52,7 @@ void app_main(void)
     if (app->bootFlags & RG_BOOT_RESUME) rg_emu_load_state(app->saveSlot);
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(core->refresh_rate);
-    app->frameskip = 1;
+    app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
     unsigned frame = 0;
     while (true) {
         uint32_t keys = rg_input_read_gamepad();

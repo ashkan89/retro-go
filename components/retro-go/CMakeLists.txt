@@ -13,6 +13,9 @@ if(IDF_TARGET STREQUAL "esp32s3" OR IDF_TARGET STREQUAL "esp32p4")
 endif()
 
 list(APPEND COMPONENT_REQUIRES mbedtls)
+if(IDF_TARGET STREQUAL "esp32p4")
+    list(APPEND COMPONENT_REQUIRES esp_driver_ppa)
+endif()
 register_component()
 
 if(RG_SEPARATE_DISPLAY_AUDIO)
