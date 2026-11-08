@@ -86,7 +86,7 @@
 #define RG_RECOVERY_BTN             RG_KEY_MENU
 
 // Optional external accessories carried over from the S3 build.
-#define RG_GPIO_LED                 GPIO_NUM_23
+#define RG_GPIO_LED                 GPIO_NUM_51
 #define RG_GPIO_LED_WS2812          1
 #define RG_GPIO_LED_WS2812_RGB      1
 #define RG_GPIO_VIBRATOR            GPIO_NUM_18
