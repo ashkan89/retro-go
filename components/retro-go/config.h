@@ -18,6 +18,8 @@
 #include "targets/esp32-s3-devkit/config.h"
 #elif defined(RG_TARGET_ESP32_P4_N16R32_ST7796)
 #include "targets/esp32-p4-n16r32-st7796/config.h"
+#elif defined(RG_TARGET_ESP32_P4_N16R32_ILI9341)
+#include "targets/esp32-p4-n16r32-ili9341/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N8R2_ST7796)
 #include "targets/esp32-s3-n8r2-st7796/config.h"
 #elif defined(RG_TARGET_ESP32_S3_N16R8_ST7796)

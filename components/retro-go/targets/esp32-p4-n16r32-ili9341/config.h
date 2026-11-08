@@ -1,0 +1,131 @@
+// Target definition
+#define RG_TARGET_NAME             "ESP32-P4-N16R32-ILI9341"
+#define RG_ENABLE_USB_HID_HOST     1
+#define RG_ENABLE_USB_XINPUT       1
+#define RG_ENABLE_USB_MSC          1
+
+// DIY wiring, not an integrated LCD carrier: see docs/README.md.
+// This module has no radio; the build disables networking for this target.
+
+// Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.
+#define RG_TASK_AFFINITY_MAIN      0
+#define RG_TASK_AFFINITY_IO        1
+#define RG_TASK_AFFINITY_AUDIO     1
+#define RG_TASK_AFFINITY_SYSTEM    -1
+
+// Storage
+#define RG_STORAGE_ROOT             "/sd"
+#define RG_STORAGE_SDSPI_HOST       SPI3_HOST
+#define RG_STORAGE_SDSPI_SPEED      SDMMC_FREQ_DEFAULT
+#define RG_STORAGE_SD_MEMORY_ONLY  1
+// GPIO45/46 belong to VDD_IO_5, supplied by the module's LDO4 output.
+#define RG_STORAGE_SD_IO_LDO_CHANNEL 4
+#define RG_STORAGE_SD_IO_VOLTAGE_MV 3300
+
+// Audio
+#define RG_AUDIO_USE_INT_DAC        0
+#define RG_AUDIO_USE_EXT_DAC        1
+#define RG_AUDIO_USE_HEADPHONE_JACK 1
+#define RG_AUDIO_DMA_BUFFER_COUNT   8   // 48 ms reserve at 32 kHz absorbs heavy render spikes
+#define RG_AUDIO_DMA_BUFFER_LENGTH  192
+#define RG_AUDIO_I2S_INTR_FLAGS     ESP_INTR_FLAG_LEVEL2
+#define RG_AUDIO_VOLUME_RAMP_MS    5
+#define RG_AUDIO_TIMING_DIAGNOSTICS 0
+
+// Video
+#define RG_SCREEN_DRIVER            0   // 0 = ILI9341/ST7789 compatible SPI command driver
+#define RG_SCREEN_HOST              SPI2_HOST
+#define RG_SCREEN_SPEED             SPI_MASTER_FREQ_40M
+#define RG_SCREEN_BUFFER_LINES      16
+#define RG_DISPLAY_ASYNC_FRAMES      1
+#define RG_SCREEN_BACKLIGHT         1
+#define RG_SCREEN_WIDTH             320
+#define RG_SCREEN_HEIGHT            280
+#define RG_SCREEN_ROTATE            0
+#define RG_SCREEN_VISIBLE_AREA      {0, 0, 0, 0}
+#define RG_SCREEN_SAFE_AREA         {0, 0, 0, 0}
+
+#define RG_SCREEN_INIT()                                                                                         \
+    ILI9341_CMD(0xCF, 0x00, 0xc3, 0x30);                                                                         \
+    ILI9341_CMD(0xED, 0x64, 0x03, 0x12, 0x81);                                                                   \
+    ILI9341_CMD(0xE8, 0x85, 0x00, 0x78);                                                                         \
+    ILI9341_CMD(0xCB, 0x39, 0x2c, 0x00, 0x34, 0x02);                                                             \
+    ILI9341_CMD(0xF7, 0x20);                                                                                     \
+    ILI9341_CMD(0xEA, 0x00, 0x00);                                                                               \
+    ILI9341_CMD(0xC0, 0x1B);                 /* Power control   //VRH[5:0] */                                    \
+    ILI9341_CMD(0xC1, 0x12);                 /* Power control   //SAP[2:0];BT[3:0] */                            \
+    ILI9341_CMD(0xC5, 0x32, 0x3C);           /* VCM control */                                                   \
+    ILI9341_CMD(0xC7, 0x91);                 /* VCM control2 */                                                  \
+    ILI9341_CMD(0x36, 0xA8);                 /* Memory Access Control (MY|MV|BGR) */                             \
+    ILI9341_CMD(0xB1, 0x00, 0x10);           /* Frame Rate Control (1B=70, 1F=61, 10=119) */                     \
+    ILI9341_CMD(0xB6, 0x0A, 0xA2);           /* Display Function Control */                                      \
+    ILI9341_CMD(0xF6, 0x01, 0x30);                                                                               \
+    ILI9341_CMD(0xF2, 0x00);                 /* 3Gamma Function Disable */                                       \
+    ILI9341_CMD(0x26, 0x01);                 /* Gamma curve selected */                                          \
+    ILI9341_CMD(0xE0, 0x0F, 0x31, 0x2B, 0x0C, 0x0E, 0x08, 0x4E, 0xF1, 0x37, 0x07, 0x10, 0x03, 0x0E, 0x09, 0x00); \
+    ILI9341_CMD(0xE1, 0x00, 0x0E, 0x14, 0x03, 0x11, 0x07, 0x31, 0xC1, 0x48, 0x08, 0x0F, 0x0C, 0x31, 0x36, 0x0F);
+
+// Input
+#define RG_GAMEPAD_GPIO_MAP {\
+    {RG_KEY_A,      .num = GPIO_NUM_2, .pullup = 1, .level = 0},\
+    {RG_KEY_B,      .num = GPIO_NUM_3, .pullup = 1, .level = 0},\
+    {RG_KEY_SELECT, .num = GPIO_NUM_4, .pullup = 1, .level = 0},\
+    {RG_KEY_START,  .num = GPIO_NUM_5, .pullup = 1, .level = 0},\
+    {RG_KEY_MENU,   .num = GPIO_NUM_6,  .pullup = 1, .level = 0},\
+    {RG_KEY_OPTION, .num = GPIO_NUM_11,  .pullup = 1, .level = 0},\
+    {RG_KEY_UP,     .num = GPIO_NUM_12, .pullup = 1, .level = 0},\
+    {RG_KEY_DOWN,   .num = GPIO_NUM_13,  .pullup = 1, .level = 0},\
+    {RG_KEY_LEFT,   .num = GPIO_NUM_14,  .pullup = 1, .level = 0},\
+    {RG_KEY_RIGHT,  .num = GPIO_NUM_15, .pullup = 1, .level = 0},\
+}
+
+#define RG_GAMEPAD_VIRT_MAP {\
+    {RG_KEY_MENU, .src = RG_KEY_START | RG_KEY_SELECT},\
+}
+
+#define RG_RECOVERY_BTN             RG_KEY_MENU
+
+// Optional external accessories carried over from the S3 build.
+#define RG_GPIO_LED                 GPIO_NUM_23
+#define RG_GPIO_LED_WS2812          1
+#define RG_GPIO_LED_WS2812_RGB      1
+#define RG_GPIO_VIBRATOR            GPIO_NUM_18
+
+// Same 100k/100k 1S battery divider; P4 ADC1 channel 0 is GPIO16.
+#define RG_BATTERY_DRIVER          1
+#define RG_BATTERY_ADC_GPIO        GPIO_NUM_16
+#define RG_BATTERY_ADC_UNIT        ADC_UNIT_1
+#define RG_BATTERY_ADC_CHANNEL     ADC_CHANNEL_0
+#define RG_BATTERY_DIVIDER_RATIO   2.f
+#define RG_BATTERY_CALC_VOLTAGE(mv) ((mv) * RG_BATTERY_DIVIDER_RATIO * 0.001f)
+#define RG_BATTERY_CALC_PERCENT(mv) (((mv) * RG_BATTERY_DIVIDER_RATIO - 3300.f) * (100.f / 900.f))
+#define RG_BATTERY_IS_PRESENT(mv)   ((mv) >= 1000)
+
+// SPI Display
+#define RG_GPIO_LCD_MISO            GPIO_NUM_NC
+#define RG_GPIO_LCD_MOSI            GPIO_NUM_29
+#define RG_GPIO_LCD_CLK             GPIO_NUM_30
+#define RG_GPIO_LCD_CS              GPIO_NUM_28
+#define RG_GPIO_LCD_DC              GPIO_NUM_31
+#define RG_GPIO_LCD_BCKL            GPIO_NUM_33
+#define RG_GPIO_LCD_RST             GPIO_NUM_32
+
+// SPI SD Card. GPIO0/1/7/8 are not exposed on this board's headers.
+#define RG_GPIO_SDSPI_MISO          GPIO_NUM_10
+#define RG_GPIO_SDSPI_MOSI          GPIO_NUM_46
+#define RG_GPIO_SDSPI_CLK           GPIO_NUM_9
+#define RG_GPIO_SDSPI_CS            GPIO_NUM_45
+
+// Shared I2S bus for the MAX98357A speaker amp and PCM5102A headphone DAC.
+#define RG_GPIO_SND_I2S_BCK         GPIO_NUM_20
+#define RG_GPIO_SND_I2S_WS          GPIO_NUM_21
+#define RG_GPIO_SND_I2S_DATA        GPIO_NUM_22
+
+// MAX98357A SD_MODE and PCM5102A XSMT; same routing circuit as S3.
+#define RG_GPIO_SND_AMP_ENABLE      GPIO_NUM_17
+#define RG_GPIO_SND_HP_ENABLE       GPIO_NUM_19
+
+// Updater
+#define RG_UPDATER_ENABLE               1
+#define RG_UPDATER_APPLICATION          RG_APP_FACTORY
+#define RG_UPDATER_DOWNLOAD_LOCATION    RG_STORAGE_ROOT "/retro-go/firmware"
