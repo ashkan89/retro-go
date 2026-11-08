@@ -263,6 +263,7 @@ PPU_STUB = r'''
 #define OPT(n) ppu.options[n]
 #define INLINE static inline __attribute__((__always_inline__))
 #define IRAM_ATTR
+#define RG_EMULATOR_IRAM_ATTR
 #define BG_TRANS 0x80
 #define SP_PIXEL 0x40
 #define BG_CLEAR(v) ((v) & BG_TRANS)

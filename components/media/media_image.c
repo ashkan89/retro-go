@@ -6,6 +6,10 @@
 #include "media_image.h"
 #include "media_util.h"
 
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32P4)
+#include <jpeg_decoder.h>
+#endif
+
 #undef RG_LOG_TAG
 #define RG_LOG_TAG "MEDIA_ART"
 
@@ -215,6 +219,73 @@ static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
         }
     }
 
+    return img;
+}
+
+#elif defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32P4)
+
+// P4 has no ROM TJpgDec. Use Espressif's software decoder so the existing
+// baseline JPEG artwork and scaling path remain available on this target.
+static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
+{
+    if (len > UINT32_MAX)
+        return NULL;
+    // Validate marker bounds before the component's fast header parser reads
+    // them. The decoder supports baseline SOF0, like the S3 ROM decoder.
+    size_t pos = 2;
+    bool baseline = false;
+    while (pos + 4 <= len && data[pos] == 0xFF)
+    {
+        unsigned marker = data[pos + 1];
+        size_t size = ((size_t)data[pos + 2] << 8) | data[pos + 3];
+        if (size <= 2 || size > len - pos - 2)
+            return NULL;
+        if (marker == 0xC0)
+        {
+            if (size < 8) return NULL;
+            baseline = true;
+            break;
+        }
+        if (marker == 0xDA || marker == 0xD9) return NULL;
+        pos += size + 2;
+    }
+    if (!baseline) return NULL;
+
+    esp_jpeg_image_cfg_t cfg = {
+        .indata = (uint8_t *)data, .indata_size = len,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+    };
+    esp_jpeg_image_output_t info;
+    if (esp_jpeg_get_image_info(&cfg, &info) != ESP_OK || !info.width || !info.height ||
+        (uint64_t)info.width * info.height > MEDIA_MAX_ARTWORK_PIXELS)
+        return NULL;
+
+    int shift = 0;
+    while (max_dim > 0 && shift < 3 &&
+           (info.width >> (shift + 1)) >= max_dim && (info.height >> (shift + 1)) >= max_dim)
+        ++shift;
+    int width = info.width >> shift, height = info.height >> shift;
+    rg_image_t *img = rg_surface_create(width, height, RG_PIXEL_565_LE, MEM_SLOW);
+    if (!img) return NULL;
+    cfg.out_scale = (esp_jpeg_image_scale_t)shift;
+    cfg.outbuf = img->data;
+    cfg.outbuf_size = (size_t)width * height * 2;
+    if (esp_jpeg_decode(&cfg, &info) != ESP_OK)
+    {
+        rg_surface_free(img);
+        return NULL;
+    }
+    if (max_dim > 0 && (width > max_dim || height > max_dim))
+    {
+        int new_w = width >= height ? max_dim : media_clampi(width * max_dim / height, 1, max_dim);
+        int new_h = height >= width ? max_dim : media_clampi(height * max_dim / width, 1, max_dim);
+        rg_image_t *scaled = rg_surface_resize(img, new_w, new_h);
+        if (scaled)
+        {
+            rg_surface_free(img);
+            img = scaled;
+        }
+    }
     return img;
 }
 

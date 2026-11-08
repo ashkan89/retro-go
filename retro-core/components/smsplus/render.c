@@ -371,7 +371,7 @@ void render_mode(int skip)
 }
 
 /* Draw a line of the display */
-IRAM_ATTR void render_line(int line)
+RG_EMULATOR_IRAM_ATTR void render_line(int line)
 {
   int view = 1;
   int overscan = option.overscan;
@@ -493,7 +493,7 @@ IRAM_ATTR void render_line(int line)
 
 static uint8 data[8];
 
-IRAM_ATTR
+RG_EMULATOR_IRAM_ATTR
 __attribute__((optimize("unroll-loops")))
 static inline void* tile_get(int attr, int line)
 {
@@ -510,7 +510,7 @@ static inline void* tile_get(int attr, int line)
 }
 
 /* Draw the Master System background */
-IRAM_ATTR void render_bg_sms(int line)
+RG_EMULATOR_IRAM_ATTR void render_bg_sms(int line)
 {
   int locked = 0;
   int yscroll_mask = (vdp.extended) ? 256 : 224;
@@ -594,7 +594,7 @@ IRAM_ATTR void render_bg_sms(int line)
 
 
 /* Draw sprites */
-IRAM_ATTR void render_obj_sms(int line)
+RG_EMULATOR_IRAM_ATTR void render_obj_sms(int line)
 {
   int i,x,start,end,xp,yp,n;
   uint8 sp,bg;

@@ -11,6 +11,7 @@ Retro-Go's shared library (or framework) provides an easy way to port emulators 
 | [esp32-s3-devkit](targets/esp32-s3-devkit/docs/README.md)     |   |
 | [esp32-s3-n16r8-ili9341](targets/esp32-s3-n16r8-ili9341/docs/README.md)   | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
 | [esp32-s3-n16r8-st7789v2](targets/esp32-s3-n16r8-st7789v2/docs/README.md) | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
+| [esp32-p4-n16r32-st7796](targets/esp32-p4-n16r32-st7796/docs/README.md) | DIY Wireless-Tag WT0132P4-A1, P4 v1.x, no wireless |
 | [esp32-s3-n16r8-st7796](targets/esp32-s3-n16r8-st7796/docs/README.md)     | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
 | [esp32-s3-n8r2-ili9341](targets/esp32-s3-n8r2-ili9341/docs/README.md)     | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |
 | [esp32-s3-n8r2-st7789v2](targets/esp32-s3-n8r2-st7789v2/docs/README.md)   | DIY, see [root README](../../README.md#esp32-s3-n16r8--n8r2-diy-builds) |

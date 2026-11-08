@@ -888,6 +888,9 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     int savedOverclock = (int)rg_settings_get_number(NS_GLOBAL, SETTING_OVERCLOCK, 0);
 #if CONFIG_IDF_TARGET_ESP32S3
     requestedOverclockLevel = RG_MIN(6, RG_MAX(0, savedOverclock));
+#elif CONFIG_IDF_TARGET_ESP32P4
+    // An SD card can carry an S3 overclock preference into this target.
+    requestedOverclockLevel = 0;
 #else
     requestedOverclockLevel = savedOverclock;
 #endif

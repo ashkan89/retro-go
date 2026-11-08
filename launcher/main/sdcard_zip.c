@@ -1,6 +1,6 @@
 #ifdef ESP_PLATFORM
 #include <sdkconfig.h>
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 // Reader only: bounded streaming extraction, including CRC verification.
 // The bundled tinfl state layout differs from ESP32-S3 ROM miniz. Give the
 // decompressor a private symbol so the linker cannot silently bind it to ROM.

@@ -1,5 +1,5 @@
 #include <rg_system.h>
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include <cJSON.h>
 #include <media.h>
 #include <stdlib.h>

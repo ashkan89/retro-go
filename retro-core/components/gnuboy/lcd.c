@@ -57,7 +57,7 @@ static inline byte *get_patpix(int tile, int x)
 	return pix;
 }
 
-IRAM_ATTR static inline void tilebuf(int S, int T, int WT, int *WND, int *BG)
+RG_EMULATOR_IRAM_ATTR static inline void tilebuf(int S, int T, int WT, int *WND, int *BG)
 {
 	int cnt, base;
 	byte *tilemap, *attrmap;
@@ -156,7 +156,7 @@ IRAM_ATTR static inline void tilebuf(int S, int T, int WT, int *WND, int *BG)
 	}
 }
 
-IRAM_ATTR static inline void bg_scan(int U, int V, int *BG)
+RG_EMULATOR_IRAM_ATTR static inline void bg_scan(int U, int V, int *BG)
 {
 	int cnt;
 	byte *src, *dest;
@@ -182,7 +182,7 @@ IRAM_ATTR static inline void bg_scan(int U, int V, int *BG)
 	}
 }
 
-IRAM_ATTR static inline void wnd_scan(int WV, int *WND)
+RG_EMULATOR_IRAM_ATTR static inline void wnd_scan(int WV, int *WND)
 {
 	int cnt;
 	byte *src, *dest;
@@ -201,7 +201,7 @@ IRAM_ATTR static inline void wnd_scan(int WV, int *WND)
 	}
 }
 
-IRAM_ATTR static inline void bg_scan_pri(int S, int T, int U, byte *PRI)
+RG_EMULATOR_IRAM_ATTR static inline void bg_scan_pri(int S, int T, int U, byte *PRI)
 {
 	int cnt, i;
 	byte *src, *dest;
@@ -234,7 +234,7 @@ IRAM_ATTR static inline void bg_scan_pri(int S, int T, int U, byte *PRI)
 	memset(dest, src[i&31]&128, cnt);
 }
 
-IRAM_ATTR static inline void wnd_scan_pri(int WT, byte *PRI)
+RG_EMULATOR_IRAM_ATTR static inline void wnd_scan_pri(int WT, byte *PRI)
 {
 	int cnt, i;
 	byte *src, *dest;
@@ -262,7 +262,7 @@ IRAM_ATTR static inline void wnd_scan_pri(int WT, byte *PRI)
 	memset(dest, src[i]&128, cnt);
 }
 
-IRAM_ATTR static inline void bg_scan_color(int U, int V, int *BG)
+RG_EMULATOR_IRAM_ATTR static inline void bg_scan_color(int U, int V, int *BG)
 {
 	int cnt;
 	byte *src, *dest;
@@ -288,7 +288,7 @@ IRAM_ATTR static inline void bg_scan_color(int U, int V, int *BG)
 	}
 }
 
-IRAM_ATTR static inline void wnd_scan_color(int WV, int *WND)
+RG_EMULATOR_IRAM_ATTR static inline void wnd_scan_color(int WV, int *WND)
 {
 	int cnt;
 	byte *src, *dest;
@@ -309,7 +309,7 @@ IRAM_ATTR static inline void wnd_scan_color(int WV, int *WND)
 	}
 }
 
-IRAM_ATTR static inline int spr_enum(gb_vs_t *VS)
+RG_EMULATOR_IRAM_ATTR static inline int spr_enum(gb_vs_t *VS)
 {
 	if (!(R_LCDC & 0x02))
 		return 0;
@@ -388,7 +388,7 @@ IRAM_ATTR static inline int spr_enum(gb_vs_t *VS)
 	return NS;
 }
 
-IRAM_ATTR static inline void spr_scan(gb_vs_t *VS, int ns, byte *PRI)
+RG_EMULATOR_IRAM_ATTR static inline void spr_scan(gb_vs_t *VS, int ns, byte *PRI)
 {
 	byte *src, *dest, *bg, *pri;
 	int i, b, x, pal;
@@ -630,7 +630,7 @@ static inline void sync_palette(void)
 	sprites on the line and probably other factors. States 1, 2 and 3
 	do not require precise sub-line CPU-LCDC sync, but state 0 might do.
 */
-IRAM_ATTR static inline void lcd_renderline()
+RG_EMULATOR_IRAM_ATTR static inline void lcd_renderline()
 {
 	if (!host.video.enabled || !host.video.buffer)
 		return;

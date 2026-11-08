@@ -13,6 +13,10 @@
 #include <rg_system.h>
 #endif
 
+#ifndef RG_EMULATOR_IRAM_ATTR
+#define RG_EMULATOR_IRAM_ATTR IRAM_ATTR
+#endif
+
 #ifndef INLINE
 #define INLINE inline
 #endif

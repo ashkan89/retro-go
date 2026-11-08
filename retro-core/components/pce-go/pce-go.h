@@ -17,6 +17,10 @@
 #define crc32_le(a, b, c) (0)
 #endif
 
+#ifndef RG_EMULATOR_IRAM_ATTR
+#define RG_EMULATOR_IRAM_ATTR IRAM_ATTR
+#endif
+
 #define MESSAGE_ERROR(x...) LOG_PRINTF(1, "!! " x)
 #define MESSAGE_WARN(x...)  LOG_PRINTF(2, " ! " x)
 #define MESSAGE_INFO(x...)  LOG_PRINTF(3, " * " x)

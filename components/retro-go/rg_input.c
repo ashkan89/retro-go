@@ -19,8 +19,16 @@
 #endif
 
 #if RG_BATTERY_DRIVER == 1
+#if CONFIG_IDF_TARGET_ESP32P4
+#include <esp_adc/adc_oneshot.h>
+#include <esp_adc/adc_cali.h>
+#include <esp_adc/adc_cali_scheme.h>
+static adc_oneshot_unit_handle_t battery_adc;
+static adc_cali_handle_t battery_calibration;
+#else
 #include <esp_adc_cal.h>
 static esp_adc_cal_characteristics_t adc_chars;
+#endif
 #endif
 
 #ifdef RG_GAMEPAD_ADC_MAP
@@ -79,6 +87,10 @@ static inline int adc_get_raw(adc_unit_t unit, adc_channel_t channel)
 
 bool rg_input_read_battery_raw(rg_battery_t *out)
 {
+#if RG_BATTERY_DRIVER == 1 && CONFIG_IDF_TARGET_ESP32P4
+    if (!battery_calibration)
+        return false;
+#endif
     uint32_t raw_value = 0;
     bool present = true;
     bool charging = false;
@@ -86,10 +98,18 @@ bool rg_input_read_battery_raw(rg_battery_t *out)
 #if RG_BATTERY_DRIVER == 1 /* ADC */
     for (int i = 0; i < 4; ++i)
     {
+#if CONFIG_IDF_TARGET_ESP32P4
+        int value, millivolts;
+        if (adc_oneshot_read(battery_adc, RG_BATTERY_ADC_CHANNEL, &value) != ESP_OK ||
+            adc_cali_raw_to_voltage(battery_calibration, value, &millivolts) != ESP_OK)
+            return false;
+        raw_value += millivolts;
+#else
         int value = adc_get_raw(RG_BATTERY_ADC_UNIT, RG_BATTERY_ADC_CHANNEL);
         if (value < 0)
             return false;
         raw_value += esp_adc_cal_raw_to_voltage(value, &adc_chars);
+#endif
     }
     raw_value /= 4;
 #ifdef RG_BATTERY_IS_PRESENT
@@ -524,6 +544,26 @@ void rg_input_init(void)
 
 #if RG_BATTERY_DRIVER == 1 /* ADC */
     RG_LOGI("Initializing ADC battery driver...");
+#if CONFIG_IDF_TARGET_ESP32P4
+    adc_oneshot_unit_init_cfg_t unit_cfg = {.unit_id = RG_BATTERY_ADC_UNIT};
+    adc_oneshot_chan_cfg_t channel_cfg = {.atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT};
+    adc_cali_curve_fitting_config_t calibration_cfg = {
+        .unit_id = RG_BATTERY_ADC_UNIT, .chan = RG_BATTERY_ADC_CHANNEL,
+        .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+    esp_err_t adc_error = adc_oneshot_new_unit(&unit_cfg, &battery_adc);
+    if (adc_error == ESP_OK)
+        adc_error = adc_oneshot_config_channel(battery_adc, RG_BATTERY_ADC_CHANNEL, &channel_cfg);
+    if (adc_error == ESP_OK)
+        adc_error = adc_cali_create_scheme_curve_fitting(&calibration_cfg, &battery_calibration);
+    if (adc_error != ESP_OK)
+    {
+        RG_LOGW("Battery monitoring unavailable: %s", esp_err_to_name(adc_error));
+        if (battery_adc) adc_oneshot_del_unit(battery_adc);
+        battery_adc = NULL;
+        battery_calibration = NULL;
+    }
+#else
     if (RG_BATTERY_ADC_UNIT == ADC_UNIT_1)
     {
         adc1_config_width(ADC_WIDTH_MAX - 1); // there is no adc2_config_width
@@ -539,6 +579,7 @@ void rg_input_init(void)
     {
         RG_LOGE("Only ADC1 and ADC2 are supported for ADC battery driver!");
     }
+#endif
 #endif
 
     set_default_player_assignments();

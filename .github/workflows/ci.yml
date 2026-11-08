@@ -35,4 +35,4 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     with:
       version: '0.0.0'
-      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796"]'
+      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796", "esp32-p4-n16r32-st7796"]'

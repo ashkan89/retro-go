@@ -46,7 +46,8 @@ def validate_image(path, version, target):
     image = data[:-256]
     if zlib.crc32(image) != crc:
         raise ValueError(f"{path}: CRC mismatch")
-    capacity = 16 * 1024 * 1024 if "-n16r8-" in target else 8 * 1024 * 1024
+    memory = re.search(r"-n(\d+)r\d+-", target)
+    capacity = (int(memory[1]) if memory else 8) * 1024 * 1024
     if len(data) > capacity:
         raise ValueError(f"{path}: image exceeds flash capacity")
     apps = []
@@ -78,7 +79,7 @@ def validate_image(path, version, target):
 
 
 def create_sdcard_structure(path, version):
-    """Root-relative archive consumed by the ESP32-S3 Prepare SD card menu."""
+    """Root-relative archive consumed by the Prepare SD card menu."""
     systems = ("nes", "snes", "gb", "gbc", "gba", "gw", "sms", "gg", "md",
                "col", "pce", "lnx", "spectrum", "a26", "a78", "doom", "msx")
     folders = {"roms", "romart", "music", "retro-go/firmware", "retro-go/bios/msx"}
@@ -129,7 +130,8 @@ def release_notes(tag):
         "Images include the factory updater and all emulator apps. Devices automatically select "
         "the image for their exact hardware target from the latest stable release.\n\n"
         "For a first installation, choose the image matching your board and flash it over USB. "
-        "For later updates, connect Wi-Fi and use **Check for updates** in the launcher. "
+        "For later updates, use **Check for updates** on wireless targets, or copy the "
+        "matching image to retro-go/firmware on the SD card and install it locally. "
         "Keep the device powered during installation.\n\n"
         "`SHA256SUMS` and `release-manifest.json` contain checksums and image metadata.\n\n"
     )

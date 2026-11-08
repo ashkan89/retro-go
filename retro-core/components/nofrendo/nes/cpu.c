@@ -1123,7 +1123,7 @@ uint32 nes6502_getcycles()
 ** Returns the number of cycles *actually* executed, which will be
 ** anywhere from zero to cycles + 6
 */
-IRAM_ATTR int nes6502_execute(int cycles)
+RG_EMULATOR_IRAM_ATTR int nes6502_execute(int cycles)
 {
    uint32 temp, addr; /* for macros */
    uint8 btemp, baddr; /* for macros */

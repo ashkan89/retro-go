@@ -8,7 +8,7 @@ else() # esp-idf 4.1 - 4.4
     set(COMPONENT_REQUIRES "spi_flash fatfs app_update esp_adc_cal json nvs_flash esp_wifi esp_http_client")
 endif()
 
-if(IDF_TARGET STREQUAL "esp32s3")
+if(IDF_TARGET STREQUAL "esp32s3" OR IDF_TARGET STREQUAL "esp32p4")
     list(APPEND COMPONENT_REQUIRES usb usb_host_hid esp_tinyusb)
 endif()
 

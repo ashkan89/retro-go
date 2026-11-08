@@ -18,7 +18,7 @@
 
 #ifdef ESP_PLATFORM
 #include <esp_vfs_fat.h>
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #include <diskio_sdmmc.h>
 #endif
 #endif
@@ -58,7 +58,7 @@
 #define FILE_IO_RETRIES                 3
 
 /* How many files may be open on the storage at once; see the note at the mount config. */
-#if CONFIG_IDF_TARGET_ESP32S3
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
 #define RG_STORAGE_MAX_OPEN_FILES       16
 #else
 #define RG_STORAGE_MAX_OPEN_FILES       8
@@ -69,7 +69,7 @@ static bool disk_mounted = false;
 static bool format_mount_requested = false;
 #if defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST)
 static sdmmc_card_t *card_handle = NULL;
-#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && defined(RG_STORAGE_SDSPI_HOST)
 static bool sdcard_single_block_reads;
 static bool sdcard_ocr_valid;
 static uint32_t sdcard_ocr;
@@ -215,7 +215,7 @@ static esp_err_t sdcard_transfer(int slot, sdmmc_command_t *cmdinfo)
                 sdcard_recover(slot, timeout_ms, is_multi, is_write);
             else
                 rg_task_delay(2);
-#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && defined(RG_STORAGE_SDSPI_HOST)
             sdcard_single_block_reads = true;
             if (card_handle && card_handle->host.max_freq_khz > 1000)
             {
@@ -246,7 +246,7 @@ static esp_err_t sdcard_transfer(int slot, sdmmc_command_t *cmdinfo)
                            sdcard_is_write_cmd(cmdinfo->opcode));
     }
 
-#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && defined(RG_STORAGE_SDSPI_HOST)
     if (ret == ESP_OK && original.opcode == 58) // READ_OCR, before VFS publishes card_handle
     {
         sdcard_ocr = cmdinfo->response[0];
@@ -258,7 +258,7 @@ static esp_err_t sdcard_transfer(int slot, sdmmc_command_t *cmdinfo)
 }
 static esp_err_t sdcard_do_transaction(int slot, sdmmc_command_t *cmdinfo)
 {
-#if CONFIG_IDF_TARGET_ESP32S3 && defined(RG_STORAGE_SDSPI_HOST)
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && defined(RG_STORAGE_SDSPI_HOST)
     // SPI multi-block writes need a raw stop token on error, which the public
     // host API cannot send. Single-sector writes avoid leaving an open stream.
     // After a noisy read, keep reads single-sector too until the next mount.
@@ -315,8 +315,8 @@ void rg_storage_init(void)
     sdmmc_host_t host_config = SDSPI_HOST_DEFAULT();
     host_config.slot = RG_STORAGE_SDSPI_HOST;
     host_config.max_freq_khz = RG_STORAGE_SDSPI_SPEED;
-#if CONFIG_IDF_TARGET_ESP32S3
-    // 10 MHz gives jumper-wired S3 boards more timing margin than the 20 MHz default.
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    // 10 MHz gives jumper-wired S3/P4 boards more margin than the 20 MHz default.
     host_config.max_freq_khz = RG_MIN(host_config.max_freq_khz, 10000);
     sdcard_single_block_reads = false;
     sdcard_ocr_valid = false;
@@ -477,7 +477,7 @@ void rg_storage_deinit(void)
     disk_mounted = false;
 }
 
-#if CONFIG_IDF_TARGET_ESP32S3 && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
 static bool sdcard_has_requested_format(const char *drive)
 {
     FF_DIR dir;
@@ -490,7 +490,7 @@ static bool sdcard_has_requested_format(const char *drive)
 
 bool rg_storage_format(void)
 {
-#if CONFIG_IDF_TARGET_ESP32S3 && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
+#if (CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4) && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
     // Never allow the SD manager to format a flash-backed fallback volume.
     if (disk_mounted && !card_handle)
         return false;

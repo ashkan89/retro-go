@@ -24,6 +24,14 @@ extern "C" {
 #define RTC_NOINIT_ATTR
 #endif
 
+// Pre-v3 P4 executable SRAM is limited to the low SRAM region. Emulator hot
+// loops can use the flash cache; reserve IRAM for the OS and cache-safe I/O.
+#if CONFIG_IDF_TARGET_ESP32P4
+#define RG_EMULATOR_IRAM_ATTR
+#else
+#define RG_EMULATOR_IRAM_ATTR IRAM_ATTR
+#endif
+
 #include "rg_localization.h"
 #include "rg_audio.h"
 #include "rg_display.h"

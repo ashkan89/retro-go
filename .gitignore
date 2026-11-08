@@ -5,6 +5,7 @@ __pycache__/
 .venv/
 .vscode/
 build/
+/*/managed_components/espressif__esp_jpeg/
 
 # ESP32 build
 /partitions.bin

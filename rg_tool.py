@@ -39,6 +39,7 @@ try:
 except:
     PROJECT_VER = "unknown"
 FW_FORMAT = "none"
+NETWORKING_SUPPORTED = True
 
 TARGETS = []
 for t in glob.glob("components/retro-go/targets/*/config.h"):
@@ -204,7 +205,7 @@ def build_app(app, device_type, with_profiling=False, no_networking=False, is_re
     args.append(f"-DRG_BUILD_TARGET=RG_TARGET_{re.sub(r'[^A-Z0-9]', '_', device_type.upper())}")
     args.append(f"-DRG_BUILD_RELEASE={1 if is_release else 0}")
     args.append(f"-DRG_ENABLE_PROFILING={1 if with_profiling else 0}")
-    args.append(f"-DRG_ENABLE_NETWORKING={0 if no_networking else 1}")
+    args.append(f"-DRG_ENABLE_NETWORKING={int(NETWORKING_SUPPORTED and not no_networking)}")
     with open("partitions.csv", "w") as f:
         f.write("# This table isn't used, it's just needed to avoid esp-idf build failures.\n")
         f.write("dummy, app, ota_0, 65536, 3145728\n")

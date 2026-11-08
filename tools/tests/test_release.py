@@ -17,20 +17,33 @@ mkfw = importlib.util.module_from_spec(image_spec)
 image_spec.loader.exec_module(mkfw)
 
 
-def image_bytes(version, target, apps=release.APPS):
+def image_bytes(version, target, apps=release.APPS, chip_type="esp32s3", partition_size=0x10000):
     payload = bytearray(256)
     payload[0] = 0xE9
     struct.pack_into("<I", payload, 32, 0xABCD5432)
     payload[48:48 + len(version)] = version.encode()
     partitions = [(0, 0 if label == "factory" else 16, label,
-                   0x10000 * (i + 1), 0x10000, payload) for i, label in enumerate(apps)]
+                   0x10000 + partition_size * i, partition_size, payload) for i, label in enumerate(apps)]
     with tempfile.TemporaryDirectory() as folder:
         bootloader = Path(folder) / "bootloader.bin"
         bootloader.write_bytes(b"\xe9\x00")
-        return mkfw.create_image("esp32s3", partitions, str(bootloader), "Retro-Go", version, target)
+        return mkfw.create_image(chip_type, partitions, str(bootloader), "Retro-Go", version, target)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_p4_bootloader_and_16mb_image(self):
+        target = "esp32-p4-n16r32-st7796"
+        data = image_bytes("5.2.1", target, chip_type="esp32p4", partition_size=0x140000)
+        self.assertGreater(len(data), 8 * 1024 * 1024)
+        self.assertEqual(data[:0x2000], b"\xff" * 0x2000)
+        self.assertEqual(data[0x2000:0x2002], b"\xe9\x00")
+        self.assertEqual(data[0x8000:0x8002], b"\xaa\x50")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "p4.img"
+            path.write_bytes(data)
+            result = release.validate_image(path, "5.2.1", target)
+            self.assertEqual(result["target"], target)
+
     def test_release_changelog(self):
         with tempfile.TemporaryDirectory() as folder:
             (Path(folder) / "CHANGELOG.md").write_text(
@@ -76,8 +89,9 @@ class ReleaseTests(unittest.TestCase):
                 (Path(folder) / f"retro-go_4.5_{target}.img").write_bytes(image_bytes("4.5", target))
             release.package_release(folder, "v4.5")
             manifest = json.loads((Path(folder) / "release-manifest.json").read_text())
-            self.assertEqual(len(manifest["assets"]), 9)
-            self.assertEqual(len((Path(folder) / "SHA256SUMS").read_text().splitlines()), 9)
+            expected_assets = len(release.release_targets()) + 1
+            self.assertEqual(len(manifest["assets"]), expected_assets)
+            self.assertEqual(len((Path(folder) / "SHA256SUMS").read_text().splitlines()), expected_assets)
             structure = Path(folder) / "sdcard_structure.zip"
             with zipfile.ZipFile(structure) as archive:
                 self.assertIsNone(archive.testzip())

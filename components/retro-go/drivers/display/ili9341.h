@@ -242,7 +242,7 @@ static void lcd_init(void)
 #endif
 
     ILI9341_CMD(0x01);       // Reset
-    rg_usleep(5 * 1000);     // Wait 5ms after reset
+    rg_usleep(120 * 1000);   // Allow the controller to finish software reset
     ILI9341_CMD(0x3A, 0X55); // COLMOD (Pixel Format Set RGB565 65k)
 #if defined(RG_SCREEN_ROTATION) && defined(RG_SCREEN_RGB_BGR)
     // The rotation is designed so that the user can simply try all values 0-7 to find what works.
@@ -255,7 +255,7 @@ static void lcd_init(void)
     #warning "LCD init sequence is not defined for this device!"
 #endif
     ILI9341_CMD(0x11);    // Exit Sleep
-    rg_usleep(10 * 1000); // Wait 10ms after sleep out
+    rg_usleep(120 * 1000); // Allow power supplies and panel timing to stabilize
     ILI9341_CMD(0x29);    // Display on
 }
 

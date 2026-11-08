@@ -469,7 +469,7 @@ INLINE void draw_oamtile(uint8 *surface, uint8 attrib, uint32 pattern, const uin
    }
 }
 
-IRAM_ATTR INLINE void ppu_renderbg(uint8 *vidbuf)
+RG_EMULATOR_IRAM_ATTR INLINE void ppu_renderbg(uint8 *vidbuf)
 {
    /* draw a line of transparent background color if bg is disabled */
    if (!ppu.bg_on)
@@ -534,7 +534,7 @@ IRAM_ATTR INLINE void ppu_renderbg(uint8 *vidbuf)
 }
 
 /* TODO: fetch valid OAM a scanline before, like the Real Thing */
-IRAM_ATTR INLINE void ppu_renderoam(uint8 *vidbuf, int scanline, bool draw)
+RG_EMULATOR_IRAM_ATTR INLINE void ppu_renderoam(uint8 *vidbuf, int scanline, bool draw)
 {
    if (!ppu.obj_on)
       return;
@@ -657,7 +657,7 @@ void ppu_endline(void)
    }
 }
 
-IRAM_ATTR void ppu_renderline(uint8 *bmp, int scanline, bool draw_flag)
+RG_EMULATOR_IRAM_ATTR void ppu_renderline(uint8 *bmp, int scanline, bool draw_flag)
 {
    ppu.scanline = scanline;
 

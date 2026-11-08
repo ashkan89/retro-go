@@ -588,7 +588,7 @@ static void launcher_main(void)
         .event = &event_handler,
         .options = &options_handler,
         .about = &about_handler,
-        #if CONFIG_IDF_TARGET_ESP32S3
+        #if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
         .storageManager = &sdcard_manager_show_dialog,
         #endif
     };

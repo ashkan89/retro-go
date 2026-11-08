@@ -1,6 +1,7 @@
 # Table of contents
 - [Description](#description)
 - [Installation](#installation)
+- [ESP32-P4 N16R32 + ST7796 (DIY build)](#esp32-p4-n16r32--st7796-diy-build)
 - [ESP32-S3 N16R8 / N8R2 (DIY builds)](#esp32-s3-n16r8--n8r2-diy-builds)
 - [Usage](#usage)
 - [Media player](#media-player)
@@ -66,6 +67,15 @@ Your particular device may require extra steps (like holding a button during pow
 
 If your device is not already supported or if a prebuilt version isn't available for it you can check the [development section](#Development) for more information on how to build for your device.
 
+
+# ESP32-P4 N16R32 + ST7796 (DIY build)
+
+The `esp32-p4-n16r32-st7796` target supports a DIY wiring configuration for the
+Wireless-Tag **WT0132P4-A1-N16R32**, **P4 v1.x**, with a 480 x 320 SPI ST7796.
+It reuses the S3 peripheral hardware with new GPIO assignments and disables
+wireless support. See the [S3-to-P4 wiring table and build guide](components/retro-go/targets/esp32-p4-n16r32-st7796/docs/README.md).
+The newer N16R32X / P4 v3.2 variant needs a separate target. Hardware validation
+is required after wiring; reserved SDIO pins are documented for future radio targets.
 
 # ESP32-S3 N16R8 / N8R2 (DIY builds)
 
