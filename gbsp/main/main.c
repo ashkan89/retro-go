@@ -1,8 +1,10 @@
-// Retro-Go frontend for Midworld's RV32 gpSP port (GPL-3.0-or-later).
+// Retro-Go frontend for gpSP: P4 RV32 JIT / S3 interpreter (GPL-3.0-or-later).
 #include "rg_system.h"
 #include "libretro.h"
 #include "gpsp_memory.h"
+#if CONFIG_IDF_TARGET_ESP32P4
 #include "gpsp_rv32_platform.h"
+#endif
 #include "esp_heap_caps.h"
 #include <stdarg.h>
 #include <stdlib.h>
@@ -11,7 +13,9 @@
 #define RG_GBA_SELFTEST 0
 #endif
 
+#if CONFIG_IDF_TARGET_ESP32P4
 extern const struct gpsp_rv32_platform_ops gpsp_platform;
+#endif
 static rg_app_t *app;
 static rg_surface_t *screen;
 static char *sram_path;
@@ -215,16 +219,26 @@ void app_main(void)
         RG_ASSERT(ok, "Unable to cache unpacked GBA ROM");
         rom_path = RG_BASE_PATH_CACHE "/gba-unpacked.gba";
     }
+#if CONFIG_IDF_TARGET_ESP32P4
     gpsp_rv32_set_platform(&gpsp_platform);
-    // Leave room for both 2 MiB JIT arenas, core state, savestates and UI.
-    // A resident 16/24 MiB ROM avoids synchronous SD page faults during play.
-    // The core releases unused 1 MiB blocks for smaller games and still pages
-    // larger ROMs. Base the budget on free PSRAM, never on the internal heap.
+#endif
+    // Budget after static core storage and the screen, using free PSRAM rather
+    // than internal RAM. Release unused ROM blocks and page larger games.
     const size_t mib = 1024 * 1024;
     size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-    unsigned rom_mib = free_psram > 8 * mib ? RG_MIN(24, (free_psram - 8 * mib) / mib) : 1;
+#if CONFIG_IDF_TARGET_ESP32P4
+    // Leave room for both 2 MiB JIT arenas, core state, savestates and UI.
+    const unsigned reserve_mib = 8, max_rom_mib = 24;
+#else
+    // No JIT arenas on S3; leave room for core state, savestates and UI.
+    const unsigned reserve_mib = 3, max_rom_mib = 4;
+    RG_ASSERT(free_psram >= (reserve_mib + 1) * mib,
+              "GBA needs at least 4 MiB free PSRAM");
+#endif
+    unsigned rom_mib = free_psram > reserve_mib * mib
+        ? RG_MIN(max_rom_mib, (free_psram - reserve_mib * mib) / mib) : 1;
     RG_ASSERT(gpsp_set_rom_buffer_limit(rom_mib), "Invalid GBA ROM memory budget");
-    RG_LOGI("GBA ROM cache budget: %u MiB, keeping at least 8 MiB for runtime", rom_mib);
+    RG_LOGI("GBA ROM cache budget: %u MiB, reserving %u MiB for runtime", rom_mib, reserve_mib);
     retro_set_environment(environment);
     retro_set_video_refresh(video);
     retro_set_audio_sample(audio_sample);

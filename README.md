@@ -18,6 +18,7 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 
 ### Supported systems:
 - Nintendo: **NES, SNES (slow), Gameboy, Gameboy Color, Game & Watch**
+- Game Boy Advance: **ESP32-P4**, experimental interpreter on **ESP32-S3-N16R8** ([setup and limitations](gbsp/README.md))
 - Sega: **SG-1000, Master System, Mega Drive / Genesis, Game Gear**
 - Coleco: **Colecovision**
 - NEC: **PC Engine**

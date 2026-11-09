@@ -1,0 +1,5 @@
+# The interpreter benefits more from ROM cache capacity than copying its text
+# and rodata to PSRAM. Override the N16R8 board's normal XiP setting for gbsp.
+# CONFIG_SPIRAM_XIP_FROM_PSRAM is not set
+# CONFIG_SPIRAM_FETCH_INSTRUCTIONS is not set
+# CONFIG_SPIRAM_RODATA is not set

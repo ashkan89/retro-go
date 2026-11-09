@@ -32,11 +32,7 @@ jobs:
           BUILD_TARGET: ${{ matrix.target }}
         run: |
           . "$IDF_PATH/export.sh"
-          apps=(factory launcher retro-core prboom-go gwenesis fmsx retro-legacy)
-          if [[ "$BUILD_TARGET" == "esp32-p4-n16r32-st7796" ]]; then
-            apps+=(gbsp)
-          fi
-          python rg_tool.py --target "$BUILD_TARGET" release "${apps[@]}"
+          python rg_tool.py --target "$BUILD_TARGET" release
           python tools/release.py check "retro-go_${PROJECT_VER}_${BUILD_TARGET}.img" "$PROJECT_VER" "$BUILD_TARGET"
       - name: Upload validated image
         uses: actions/upload-artifact@v4

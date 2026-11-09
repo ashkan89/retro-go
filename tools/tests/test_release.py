@@ -19,8 +19,8 @@ image_spec.loader.exec_module(mkfw)
 
 def image_bytes(version, target, apps=None, chip_type="esp32s3", partition_size=0x10000):
     if apps is None:
-        apps = release.APPS + (("gbsp",) if target in (
-            "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341") else ())
+        apps = release.APPS + (("gbsp",) if target.startswith((
+            "esp32-p4-n16r32-", "esp32-s3-n16r8-")) else ())
     payload = bytearray(256)
     payload[0] = 0xE9
     struct.pack_into("<I", payload, 32, 0xABCD5432)
@@ -34,6 +34,34 @@ def image_bytes(version, target, apps=None, chip_type="esp32s3", partition_size=
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_s3_partition_capacity(self):
+        for panel in ("ili9341", "st7796", "st7789", "st7789v2"):
+            for memory, capacity in (("n16r8", 16 << 20), ("n8r2", 8 << 20)):
+                target = f"esp32-s3-{memory}-{panel}"
+                namespace = {"PROJECT_APPS": {app: [0, 0, 1 << 20] for app in release.APPS + ("gbsp",)}}
+                env_file = release.ROOT / "components/retro-go/targets" / target / "env.py"
+                exec(compile(env_file.read_text(), str(env_file), "exec"), namespace)
+                apps = namespace["DEFAULT_APPS"].split()
+                size = 0x10000 + sum(namespace["PROJECT_APPS"][app][2] for app in apps) + 256
+                with self.subTest(target=target):
+                    self.assertLessEqual(size, capacity)
+                    self.assertEqual("gbsp" in apps, memory == "n16r8")
+                    if memory == "n8r2":
+                        self.assertGreater(size + 0x200000, capacity)
+
+    def test_s3_gba_memory_variants(self):
+        for panel in ("ili9341", "st7796", "st7789", "st7789v2"):
+            for memory in ("n16r8", "n8r2"):
+                target = f"esp32-s3-{memory}-{panel}"
+                with self.subTest(target=target), tempfile.TemporaryDirectory() as folder:
+                    path = Path(folder) / "s3.img"
+                    path.write_bytes(image_bytes("5.2.1", target))
+                    release.validate_image(path, "5.2.1", target)
+                    wrong_apps = release.APPS if memory == "n16r8" else release.APPS + ("gbsp",)
+                    path.write_bytes(image_bytes("5.2.1", target, wrong_apps))
+                    with self.assertRaisesRegex(ValueError, "missing or unexpected applications"):
+                        release.validate_image(path, "5.2.1", target)
+
     def test_p4_bootloader_and_16mb_image(self):
         target = "esp32-p4-n16r32-st7796"
         data = image_bytes("5.2.1", target, chip_type="esp32p4", partition_size=0x140000)

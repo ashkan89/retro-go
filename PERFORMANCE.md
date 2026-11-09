@@ -1,5 +1,40 @@
 # ESP32-S3 performance audit
 
+## P4 changes reviewed for S3 (November 2026)
+
+The N16R8 ILI9341, ST7796, ST7789 and ST7789V2 targets now enable PSRAM
+frame snapshots (`RG_DISPLAY_ASYNC_FRAMES`) and ESP-IDF's S3 PSRAM XiP option.
+Snapshots let emulation continue while the display task reads a stable copy;
+they cost an extra source framebuffer in PSRAM. XiP copies flash instructions
+and rodata to octal PSRAM at boot. These changes require hardware benchmarking
+before claiming a speed improvement.
+
+N8R2 retains its smaller memory configuration: copying app code/data and adding
+another framebuffer would compete with ROM loading in its 2 MiB quad PSRAM.
+Both memory variants already use the recent shared bulk frame-copy path,
+software JPEG fallback fixes, display wakeups, audio optimizations and quiet
+release logging. P4 PPA scaling, PIE assembly, hardware JPEG, RV32 JIT and
+ESP-Hosted companion settings cannot be transferred to S3 as board options.
+S3 continues to use its native Wi-Fi and software scaling/JPEG paths.
+
+Both S3 memory variants also drop obsolete defaults for the bootloader and
+FreeRTOS mutex checks. IDF 5.5 derives those values. The image header flash-mode
+string is corrected to `dio`, as required by IDF for booting QIO flash; the
+`CONFIG_ESPTOOLPY_FLASHMODE_QIO` selection still enables QIO at runtime. This
+prevents the build tool repeatedly deleting valid builds because generated
+SDK settings disagree with those legacy defaults.
+
+N16R8 includes the experimental GBA interpreter with a separate 2 MiB app
+partition; GBA opts out of XiP to preserve its PSRAM ROM cache. N8R2 has neither
+flash space for that additional partition nor sufficient PSRAM for this port's
+runtime reserve. See [GBA setup and limitations](gbsp/README.md).
+
+Validation: ESP-IDF 5.5.5 built GBA for all four N16R8 display variants
+(approximately 948 KB each, within the 2 MiB partition) and the ILI9341
+launcher with XiP enabled (1,546,560 bytes, within its 0x1C0000 partition).
+Eight release tests, 120 host renderer cases and the frame-ownership harness
+passed. No S3 device boot, game compatibility or FPS measurement was performed.
+
 Scope: N16R8 and N8R2 target definitions, shared display/audio drivers, emulator
 frontends and compiler options. These are source-level findings; no physical board
 or game benchmark was available. Do not interpret build/test success as measured

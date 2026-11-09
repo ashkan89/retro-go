@@ -24,6 +24,8 @@
 #define RG_AUDIO_I2S_INTR_FLAGS     ESP_INTR_FLAG_LEVEL2
 
 // Video
+// Snapshot frames into PSRAM so emulation can overlap display rendering.
+#define RG_DISPLAY_ASYNC_FRAMES     1
 #define RG_SCREEN_DRIVER            0   // 0 = ILI9341/ST7789 compatible SPI command driver
 #define RG_SCREEN_HOST              SPI2_HOST
 #define RG_SCREEN_SPEED             SPI_MASTER_FREQ_40M

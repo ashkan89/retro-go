@@ -1,4 +1,4 @@
-# Game Boy Advance on ESP32-P4
+# Game Boy Advance on ESP32-P4 and ESP32-S3
 
 This app integrates the RV32 JIT from [midworld/gpsp-esp32](https://github.com/midworld/gpsp-esp32),
 commit `0015ff0eea6f8d21973beb7776682277e9ecefe5` (2026-11-08 checkout).
@@ -13,13 +13,30 @@ Build with ESP-IDF 5.5.5:
 python rg_tool.py --target esp32-p4-n16r32-st7796 build gbsp
 ```
 
-The standalone WT0132P4 target includes this eighth app by default. Other
-targets retain their current app selection. This implementation requires P4.
+Both P4 targets and all four ESP32-S3-N16R8 display targets include this eighth
+app by default. P4 uses the RV32 JIT; S3 uses the portable ARM7 interpreter.
+The S3 build is experimental: compilation does not establish playable speed or
+game compatibility. There is no Xtensa JIT in this core.
 Its 2 MiB partition follows retro-legacy, leaving existing app offsets intact.
 Installing it for the first time also requires the updated partition table.
 
+For example, build the complete N16R8 image with:
+
+```
+python rg_tool.py --target esp32-s3-n16r8-ili9341 --release-build build-img
+```
+
+N8R2 retains its seven apps: their reserved partitions plus the image footer
+already use 0x7E0100 bytes of its 8 MiB flash. Adding the 2 MiB GBA partition
+would exceed flash capacity. Its 2 MiB PSRAM also falls below this frontend's
+S3 memory budget, so removing other apps alone does not make it supported.
+Original Xtensa ESP32 targets are not enabled by this integration.
+
 Place ROMs in `/roms/gba`. Raw `.gba` files are recommended: the core uses an
-8 MiB ROM cache and pages larger cartridges from SD. ZIPs are unpacked to an
+a PSRAM ROM cache and pages larger cartridges from SD. S3 reserves 3 MiB of
+free PSRAM for runtime and uses up to 4 MiB for ROM blocks; P4 reserves 8 MiB
+and uses up to 24 MiB for ROM blocks. The budget is calculated at startup after
+static core storage and the frontend screen have been allocated. ZIPs are unpacked to an
 SD cache before the emulator starts; archives must fit available PSRAM during
 unpacking. Saves and save states retain the original ROM name. Battery-backed
 cartridge memory is saved on change every ten seconds, before opening a menu,
@@ -32,12 +49,18 @@ GPIO controls map A/B, D-pad, Start and Select as usual. GBA shoulder buttons
 use Retro-Go L/R inputs (USB controllers, or additional GPIO buttons configured
 by the user); this target's original ten-button wiring has no L/R buttons.
 
-JIT code lives in aligned PSRAM with explicit data writeback and instruction
+On P4, JIT code lives in aligned PSRAM with explicit data writeback and instruction
 cache invalidation through IDF 5.5 APIs. The two code caches grow in 256 KiB
 chunks to 2 MiB each. Core BSS is placed in PSRAM to preserve DMA/internal RAM.
 The source renderer uses -O3; the P4 PPA handles compatible filtered RGB565
 scaling, including the exact 240x160 to 480x320 GBA upscale. Unsupported geometry
 or nearest-neighbour filtering uses the software renderer.
+
+S3 uses software scaling and no executable JIT heap. GBA disables the N16R8
+board's usual PSRAM XiP option so ROM caching and save states retain headroom.
+Use raw `.gba` files on S3; ZIP extraction requires the whole uncompressed ROM
+to fit in available RAM. L/R need a USB controller or additional configured GPIO
+buttons on these DIY boards too.
 
 The hardware smoke test executed 121 native RV32 blocks and passed framebuffer rendering, PPA pixel readback,
 and state restoration on the v1.3 board. To repeat it, explicitly configure

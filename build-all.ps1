@@ -7,7 +7,7 @@ foreach ($Target in $Targets) {
     Write-Host "----------------------------------------" -ForegroundColor Cyan
     
     # Run the python build tool
-    python rg_tool.py --target $Target release factory launcher retro-core prboom-go gwenesis fmsx retro-legacy
+    python rg_tool.py --target $Target release
 
     # Check if the build failed ($LASTEXITCODE is not 0)
     if ($LASTEXITCODE -ne 0) {

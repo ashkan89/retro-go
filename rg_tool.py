@@ -198,6 +198,7 @@ def build_app(app, device_type, with_profiling=False, no_networking=False, is_re
     print("Building app '%s'" % app)
     app_defaults = dict(TARGET_SDKCONFIG_DEFAULTS)
     app_defaults.update(read_sdkconfig(os.path.join(app, "sdkconfig.defaults")))
+    app_defaults.update(read_sdkconfig(os.path.join(app, f"sdkconfig.defaults.{IDF_TARGET}")))
     clean_stale_app_config(app, app_defaults)
     args = [IDF_PY, "app"]
     args.append(f"-DRG_PROJECT_APP={app}")

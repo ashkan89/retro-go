@@ -6,7 +6,7 @@ IDF_TARGET = "esp32s3"
 FW_FORMAT = "none"
 
 # Include a factory flasher partition so the launcher can install downloaded .img updates.
-DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx retro-legacy"
+DEFAULT_APPS = "factory launcher retro-core prboom-go gwenesis fmsx retro-legacy gbsp"
 
 # This target has 16 MB flash, so keep enough app-partition headroom for OTA images.
 # The launcher now also carries the media player (decoders, DSP and UI).
@@ -16,3 +16,6 @@ PROJECT_APPS["prboom-go"][2] = 0x100000
 PROJECT_APPS["gwenesis"][2] = 0x140000
 PROJECT_APPS["fmsx"][2] = 0x100000
 PROJECT_APPS["retro-legacy"][2] = 0x200000
+
+# Portable GBA interpreter; append without moving existing application offsets.
+PROJECT_APPS["gbsp"][2] = 0x200000

@@ -60,21 +60,29 @@ set(gpsp_core_sources
 )
 
 
+if(IDF_TARGET STREQUAL "esp32s3")
+    # Xtensa uses the portable ARM7 interpreter, without RV32 translation caches.
+    list(FILTER gpsp_core_sources EXCLUDE REGEX "core/riscv/|core/cpu_threaded\\.c")
+elseif(NOT IDF_TARGET STREQUAL "esp32p4")
+    message(FATAL_ERROR "gpSP supports ESP32-P4 and ESP32-S3 with PSRAM")
+endif()
+
 idf_component_register(SRCS ${gpsp_core_sources}
     INCLUDE_DIRS "core/libretro/libretro-common/include" "core/include"
     PRIV_INCLUDE_DIRS "core" "core/libretro"
     LDFRAGMENTS "linker.lf")
-if(NOT IDF_TARGET STREQUAL "esp32p4")
-    message(FATAL_ERROR "This gpSP RV32 port requires ESP32-P4")
-endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE FRONTEND_SUPPORTS_RGB565
-    HAVE_INTTYPES_H HAVE_STDINT_H HAVE_STRINGS_H INLINE=inline __LIBRETRO__
-    GPSP_RV32_JIT=1 ROM_BUFFER_SIZE=24
-    GPSP_RV32_ROM_CACHE_KIB=2048 GPSP_RV32_RAM_CACHE_KIB=2048 GPSP_RV32_CODE_CHUNK_KIB=256
-    # WT0132P4 v1.3 traps on upstream's bexti instruction. Keep the RV32
-    # dynarec, but generate only the original P4's base ISA and RVC subset.
-    GPSP_RV32_USE_ZBA=0 GPSP_RV32_USE_ZBB=0 GPSP_RV32_USE_ZBS=0
-    GPSP_RV32_USE_RVC=1 GPSP_RV32_USE_ZCB=0)
+    HAVE_INTTYPES_H HAVE_STDINT_H HAVE_STRINGS_H INLINE=inline __LIBRETRO__)
+if(IDF_TARGET STREQUAL "esp32p4")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE GPSP_RV32_JIT=1 ROM_BUFFER_SIZE=24
+        GPSP_RV32_ROM_CACHE_KIB=2048 GPSP_RV32_RAM_CACHE_KIB=2048 GPSP_RV32_CODE_CHUNK_KIB=256
+        # WT0132P4 v1.3 traps on upstream's bexti instruction. Keep the RV32
+        # dynarec, but generate only the original P4's base ISA and RVC subset.
+        GPSP_RV32_USE_ZBA=0 GPSP_RV32_USE_ZBB=0 GPSP_RV32_USE_ZBS=0
+        GPSP_RV32_USE_RVC=1 GPSP_RV32_USE_ZCB=0)
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ROM_BUFFER_SIZE=4)
+endif()
 target_compile_options(${COMPONENT_LIB} PRIVATE -O2 -Wno-error
     $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>
     $<$<COMPILE_LANGUAGE:CXX>:-fno-rtti>
