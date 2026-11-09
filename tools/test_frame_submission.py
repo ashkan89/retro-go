@@ -76,9 +76,16 @@ int main(void) {
     busy=false;
     rg_display_submit(&input,0);
     assert(sends==2 && frees==1 && queued->width==4 && counters.totalFrames==2);
+    busy=false;
+    input.format=2; // Packed RGB565: exercise the full-frame copy with an offset.
+    for(int i=0;i<32;i++) pixels[i]=i+13;
+    rg_display_submit(&input,0);
+    assert(sends==3 && queued->stride==8 && !memcmp(queued->data,pixels+2,16));
+    memset(pixels,0,sizeof(pixels));
+    assert(((uint8_t *)queued->data)[0]==15 && ((uint8_t *)queued->data)[15]==30);
     busy=false; app.isLauncher=true;
     rg_display_submit(&input,0);
-    assert(sends==3 && queued==&input);
+    assert(sends==4 && queued==&input);
     rg_surface_free(frame_copy);
     return 0;
 }

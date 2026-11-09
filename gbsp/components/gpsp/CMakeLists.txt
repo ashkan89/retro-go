@@ -69,7 +69,7 @@ if(NOT IDF_TARGET STREQUAL "esp32p4")
 endif()
 target_compile_definitions(${COMPONENT_LIB} PRIVATE FRONTEND_SUPPORTS_RGB565
     HAVE_INTTYPES_H HAVE_STDINT_H HAVE_STRINGS_H INLINE=inline __LIBRETRO__
-    GPSP_RV32_JIT=1 ROM_BUFFER_SIZE=8
+    GPSP_RV32_JIT=1 ROM_BUFFER_SIZE=24
     GPSP_RV32_ROM_CACHE_KIB=2048 GPSP_RV32_RAM_CACHE_KIB=2048 GPSP_RV32_CODE_CHUNK_KIB=256
     # WT0132P4 v1.3 traps on upstream's bexti instruction. Keep the RV32
     # dynarec, but generate only the original P4's base ISA and RVC subset.

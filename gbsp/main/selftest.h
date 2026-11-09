@@ -21,21 +21,36 @@ static const char *prepare_selftest(void)
         0xe3a00406, 0xe3a0101f, 0xe3a02c96, 0xe0c010b2,
         0xe2522001, 0x1afffffc, 0xeafffffe,
     };
-    // Exactly 1 MiB selects upstream's mirrored mini-ROM interpreter path.
-    // Use 256 KiB so this test also proves native RV32 code execution.
-    uint8_t *rom = rg_alloc(256 * 1024, MEM_SLOW);
-    memset(rom, 0, 256 * 1024);
+    // Exactly 1 MiB selects the mirrored mini-ROM interpreter path. A 16 MiB
+    // synthetic cartridge checks both native RV32 execution and the expanded
+    // resident-ROM cache, without using a copyrighted game.
+    const size_t rom_size = 16 * 1024 * 1024;
+    uint8_t *rom = rg_alloc(rom_size, MEM_SLOW);
+    memset(rom, 0, rom_size);
     *(uint32_t *)rom = 0xea00002e; // Branch over the cartridge header.
     memcpy(rom + 0xa0, "RETROGO TEST", 12);
     memcpy(rom + 0xc0, program, sizeof(program));
     const char *path = RG_BASE_PATH_CACHE "/gba-hardware-test.gba";
-    RG_ASSERT(rg_storage_write_file(path, rom, 256 * 1024, 0), "Selftest ROM write failed");
+    // Preserve a completed fixture across diagnostic retries. Its code/header
+    // are checked before reuse, so interrupted writes are rebuilt.
+    uint8_t header[512];
+    rg_stat_t info = rg_storage_stat(path);
+    FILE *file = info.size == rom_size ? fopen(path, "rb") : NULL;
+    bool reuse = file && fread(header, 1, sizeof(header), file) == sizeof(header) &&
+                 memcmp(header, rom, sizeof(header)) == 0;
+    if (file) fclose(file);
+    RG_LOGI("GBA selftest: %s 16 MiB generated cartridge", reuse ? "reusing" : "writing");
+    if (!reuse)
+        RG_ASSERT(rg_storage_write_file(path, rom, rom_size, 0), "Selftest ROM write failed");
+    RG_LOGI("GBA selftest: cartridge ready");
     free(rom);
     return path;
 }
 
 static void finish_selftest(void)
 {
+    extern bool gamepak_must_swap(void);
+    RG_ASSERT(!gamepak_must_swap(), "16 MiB GBA cartridge is still paging from SD");
     uint64_t native_blocks = gpsp_rv32_block_execution_count();
     RG_ASSERT(native_blocks > 0, "GBA RV32 JIT did not execute native blocks");
     RG_LOGI("GBA native RV32 blocks: %llu", (unsigned long long)native_blocks);
@@ -68,7 +83,7 @@ static void finish_selftest(void)
     RG_ASSERT(load_state(state) && ram[0x1000] == 0x13579bdf, "GBA state restore selftest failed");
     retro_run();
     rg_display_sync(true);
-    RG_LOGI("GBA SELFTEST PASS: ARM7/RV32, framebuffer, PPA pixels, frame skip, state round trip");
+    RG_LOGI("GBA SELFTEST PASS: resident 16 MiB ROM, ARM7/RV32, framebuffer, PPA pixels, frame skip, state round trip");
     retro_unload_game();
     retro_deinit();
     loaded = false;

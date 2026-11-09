@@ -19,7 +19,8 @@ image_spec.loader.exec_module(mkfw)
 
 def image_bytes(version, target, apps=None, chip_type="esp32s3", partition_size=0x10000):
     if apps is None:
-        apps = release.APPS + (("gbsp",) if target == "esp32-p4-n16r32-st7796" else ())
+        apps = release.APPS + (("gbsp",) if target in (
+            "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341") else ())
     payload = bytearray(256)
     payload[0] = 0xE9
     struct.pack_into("<I", payload, 32, 0xABCD5432)
@@ -55,6 +56,16 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn("## Updates", notes)
                 self.assertIn("New updater.", notes)
                 self.assertNotIn("Old change.", notes)
+
+    def test_p4_ili9341_requires_gba(self):
+        target = "esp32-p4-n16r32-ili9341"
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "p4-ili9341.img"
+            path.write_bytes(image_bytes("5.2.1", target, chip_type="esp32p4"))
+            self.assertEqual(release.validate_image(path, "5.2.1", target)["target"], target)
+            path.write_bytes(image_bytes("5.2.1", target, release.APPS, chip_type="esp32p4"))
+            with self.assertRaisesRegex(ValueError, "missing or unexpected applications"):
+                release.validate_image(path, "5.2.1", target)
 
     def test_tags(self):
         for tag in ("v4.5", "v4.5.1", "v0.0.0"):

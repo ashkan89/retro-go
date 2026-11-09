@@ -5,6 +5,10 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#if CONFIG_ESP_SYSTEM_PMP_IDRAM_SPLIT && CONFIG_SPIRAM_XIP_FROM_PSRAM && CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION
+#error "gpSP JIT requires executable PSRAM: disable SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION for this app"
+#endif
+
 static void *exec_alloc(size_t alignment, size_t size)
 {
     if (alignment < 256)

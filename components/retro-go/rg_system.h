@@ -25,7 +25,8 @@ extern "C" {
 #endif
 
 // Pre-v3 P4 executable SRAM is limited to the low SRAM region. Emulator hot
-// loops can use the flash cache; reserve IRAM for the OS and cache-safe I/O.
+// loops use cached flash/PSRAM (according to XiP config); reserve IRAM for
+// the OS and cache-safe I/O.
 #if CONFIG_IDF_TARGET_ESP32P4
 #define RG_EMULATOR_IRAM_ATTR
 #else

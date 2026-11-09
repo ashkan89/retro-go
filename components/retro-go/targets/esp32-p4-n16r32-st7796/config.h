@@ -4,7 +4,7 @@
 #define RG_ENABLE_USB_XINPUT       1
 #define RG_ENABLE_USB_MSC          1
 
-// DIY wiring, not an integrated LCD carrier: see docs/README.md.
+// Wireless-Tag WT9932P4-TINY with an external ILI9341: see docs/README.md.
 // This module has no radio; the build disables networking for this target.
 
 // Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.
@@ -16,9 +16,9 @@
 // Storage
 #define RG_STORAGE_ROOT             "/sd"
 #define RG_STORAGE_SDSPI_HOST       SPI3_HOST
-#define RG_STORAGE_SDSPI_SPEED      SDMMC_FREQ_DEFAULT
+#define RG_STORAGE_SDSPI_SPEED      10000 // kHz; verified jumper-wired SPI bus, including USB MSC
 #define RG_STORAGE_SD_MEMORY_ONLY  1
-// GPIO45/46 belong to VDD_IO_5, supplied by the module's LDO4 output.
+// GPIO45/46 belong to VDD_IO_5, supplied by the board's LDO4 output.
 #define RG_STORAGE_SD_IO_LDO_CHANNEL 4
 #define RG_STORAGE_SD_IO_VOLTAGE_MV 3300
 

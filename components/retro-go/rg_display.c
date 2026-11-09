@@ -579,9 +579,19 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
                 return;
             }
         }
-        for (int y = 0; y < update->height; ++y)
-            memcpy((uint8_t *)frame_copy->data + y * frame_copy->stride,
-                   (const uint8_t *)update->data + update->offset + y * update->stride, frame_copy->stride);
+        if (update->stride == frame_copy->stride)
+        {
+            // Most emulator surfaces are tightly packed. Let the optimized
+            // memcpy handle the whole snapshot instead of 144-320 tiny calls.
+            memcpy(frame_copy->data, (const uint8_t *)update->data + update->offset,
+                   (size_t)frame_copy->stride * update->height);
+        }
+        else
+        {
+            for (int y = 0; y < update->height; ++y)
+                memcpy((uint8_t *)frame_copy->data + y * frame_copy->stride,
+                       (const uint8_t *)update->data + update->offset + y * update->stride, frame_copy->stride);
+        }
         if ((update->format & RG_PIXEL_PALETTE) && update->palette)
             memcpy(frame_copy->palette, update->palette, update->format == RG_PIXEL_PAL888 ? 768 : 512);
         update = frame_copy;

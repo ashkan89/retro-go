@@ -41,6 +41,10 @@ For brevity, all the commands listed in this document omit additional flags that
 
 Run `python rg_tool.py --help` to see all available flags and commands.
 
+Use `--release-build` with `build`, `build-img`, or `install` for release logging
+and settings while retaining incremental builds. The `release` command still
+cleans the selected applications before building.
+
 
 ## Build everything and generate a firmware image:
 - Generate a .fw file to be installed with odroid-go-firmware or odroid-go-multi-firmware from SD Card:\

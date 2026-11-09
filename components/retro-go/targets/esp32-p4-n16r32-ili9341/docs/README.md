@@ -1,188 +1,193 @@
-# WT0132P4-A1-N16R32 + ST7796 (DIY)
+# Wireless-Tag WT9932P4-TINY N16R32 + ILI9341
 
-Target: `esp32-p4-n16r32-st7796`. ESP-IDF **5.5.5** is required for the
-configuration verified here. This is a suggested wiring plan for the original
-Wireless-Tag core module, reusing the S3 target's external hardware. The module
-does not contain a display, SD socket, battery charger, buttons, or audio codec.
-These connections are our DIY assignment, not a manufacturer carrier pinout.
-JPEG artwork uses `espressif/esp_jpeg` 1.3.2, resolved by the ESP-IDF component
-manager during the first build; the firmware itself needs no network connection.
+Target: `esp32-p4-n16r32-ili9341`, ESP-IDF **5.5.5**, COM3.
+The connected board reports **P4 revision 1.3**. This target supports v1.0-v1.99:
+360 MHz dual-core CPU, 16 MB QIO flash at 80 MHz, 32 MB 16-line PSRAM at 200 MHz.
+P4X / N16R32X revision 3.x needs another target.
 
-## Silicon and memory
+The supplied [product page](https://en.wireless-tag.com/product-item-72.html)
+failed to load during this audit. Pin assignments were checked against the
+manufacturer's [TINY guide](https://wiki.wireless-tag.com/docs/en/WT9932P4-TINY/board_features.html)
+and [schematic V1.3](https://res.8ms.xyz/wiki_assets/WT9932P4-TINY/WT9932P4-TINY_SCH_V1.3.pdf).
+Positions below are **header positions**, not module solder-pad numbers.
+Follow the board silkscreen for orientation.
 
-- 16 MB QIO flash at 80 MHz; 32 MB in-package **16-line** PSRAM at 200 MHz.
-- Selects P4 revisions **1.0 through 1.99**, including 1.3, explicitly. A module
-  name alone cannot prove the fitted silicon revision. Run
-  `python -m esptool --chip esp32p4 --port COM3 chip_id` before flashing and
-  check the reported revision. Do not use `--force` to bypass incompatibility.
-- The newer **N16R32X / P4 v3.2** module needs a separate configuration.
-- CPU: **360 MHz**, the supported IDF default for pre-v3 silicon. 400 MHz on
-  pre-v3 chips requires additional Espressif qualification; no overclock is used.
-- The multi-system emulator's hot loops use the flash cache on P4, preserving
-  the small executable low-SRAM region for the OS and I/O. Other targets keep
-  their existing IRAM placement.
-- Wi-Fi, Bluetooth, hosted networking, web server, and netplay are disabled for
-  this target. No radio module or transport is assumed. Other targets retain
-  their existing networking settings.
+## Current wiring
 
-## Wiring from the current S3 build
+The user selected **keep the current SPI SD wiring**. LCD, audio, buttons,
+battery divider and vibration driver are external accessories. GPIO51 drives
+the onboard addressable RGB LED.
 
-All signal numbers below are **GPIO numbers**. The last column is the core
-module's physical pad number from the WT0132P4-A1 datasheet, not a carrier header.
-Use 3.3 V logic and common ground. Preserve the existing peripheral power and
-driver circuits; do not connect a speaker, motor, or raw LCD backlight to a GPIO.
+| Connection | GPIO | TINY header position |
+|---|---:|---|
+| ILI9341 CS | 28 | Left 20 |
+| ILI9341 MOSI / SDA | 29 | Left 21 |
+| ILI9341 SCK | 30 | Left 22 |
+| ILI9341 DC | 31 | Left 23 |
+| ILI9341 RESET | 32 | Left 17 |
+| LCD backlight driver | 33 | Left 16 |
+| SD CS / DAT3 | 45 | Right 21 |
+| SD MOSI / CMD | 46 | Right 20 |
+| SD SCK | 9 | Right 7 |
+| SD MISO / DAT0 | 10 | Right 6 |
+| I2S BCLK | 20 | Left 5 |
+| I2S LRCLK / WS | 21 | Left 6 |
+| I2S DATA to MAX98357A + PCM5102A | 22 | Left 7 |
+| MAX98357A SD_MODE circuit | 17 | Left 2 |
+| PCM5102A XSMT | 19 | Left 4 |
+| A | 2 | Right 12 |
+| B | 3 | Right 11 |
+| Select | 4 | Right 10 |
+| Start | 5 | Right 9 |
+| Menu | 6 | Right 8 |
+| Option | 11 | Right 5 |
+| Up | 12 | Right 4 |
+| Down | 13 | Right 3 |
+| Left | 14 | Right 2 |
+| Right | 15 | Right 1 |
+| Battery divider midpoint | 16 / ADC1_CH0 | Left 1 |
+| Vibration transistor input | 18 | Left 3 |
+| Onboard WS2812 data | 51 | Onboard LED |
 
-| Existing connection | S3 GPIO | P4 GPIO | Module pad |
-|---|---:|---:|---:|
-| ST7796 CS | 10 | 28 | 24 |
-| ST7796 MOSI / SDA | 13 | 29 | 25 |
-| ST7796 SCK | 14 | 30 | 26 |
-| ST7796 DC | 11 | 31 | 27 |
-| ST7796 RESET | 12 | 32 | 28 |
-| LCD backlight driver | 21 | 33 | 29 |
-| SD CS | 42 | 45 | 44 |
-| SD MOSI / CMD | 41 | 46 | 45 |
-| SD SCK | 40 | 9 | 62 |
-| SD MISO / DAT0 | 39 | 10 | 63 |
-| I2S BCLK | 5 | 20 | 78 |
-| I2S LRCLK / WS | 4 | 21 | 79 |
-| I2S DATA to both DACs | 6 | 22 | 80 |
-| MAX98357A SD_MODE circuit | 9 | 17 | 75 |
-| PCM5102A XSMT | 46 | 19 | 77 |
-| A button | 45 | 2 | 55 |
-| B button | 47 | 3 | 56 |
-| Select button | 16 | 4 | 57 |
-| Start button | 15 | 5 | 58 |
-| Menu button | 2 | 6 | 59 |
-| Option button | 7 | 11 | 65 |
-| Up button | 17 | 12 | 66 |
-| Down button | 3 | 13 | 67 |
-| Left button | 8 | 14 | 68 |
-| Right button | 18 | 15 | 69 |
-| Battery divider midpoint | 1 | 16 / ADC1_CH0 | 74 |
-| WS2812 data | 48 | 23 | 81 |
-| Vibration transistor input | 38 | 18 | 76 |
+Use common ground and 3.3 V logic. LCD MISO remains disconnected. Buttons switch
+to ground with internal pull-ups; Start + Select also opens Menu. Battery ADC
+uses the existing protected 1S battery and 100k/100k divider. See root AUDIO.md
+and BATTERY.md for the external amplifier, motor and battery circuits.
+Power the TINY through USB or its 5 V input. Its labeled 3.3 V header is an
+output, not the documented power input. Do not connect a raw motor, speaker or
+LCD backlight load directly to a GPIO.
 
-GPIO0/1/7/8 are not exposed on this board's headers. SD CS and MOSI use the
-confirmed exposed GPIO45/46 instead; SD clock and MISO stay on GPIO9/10.
-GPIO45/46 use the P4's VDD_IO_5 power bank. On this module it is supplied by
-LDO4, which the firmware must enable at 3.3 V **before** initializing SPI.
-This applies even though the SD card itself already has external power.
-Filesystem and USB MSC startup share the same I/O-bank initialization.
-This supersedes the earlier GPIO7/8 wiring assignment and firmware image.
+GPIO0/1/7/8 go to FPC connectors rather than these two headers. GPIO24/25 belong
+to FUSB; GPIO35 is BOOT. GPIO51 already connects to the onboard LED. GPIO37/38
+are reserved here for UART0/debug.
 
-LCD MISO stays disconnected. Buttons switch to ground with internal pull-ups.
-Start + Select also opens Menu. No headphone-detect GPIO is assigned; use the
-Audio out setting, as on the S3 build. See the root AUDIO.md and BATTERY.md for
-the shared amplifier routing and protected 1S battery / 100k + 100k divider.
-The P4 target uses the new ADC oneshot driver with curve-fitting calibration.
-If the chip lacks usable calibration eFuses, battery monitoring is disabled
-with a log message and the rest of the system continues to boot.
-Remove the battery/LED/vibration definitions in config.h if those accessories
-are omitted. The bare core module's VCC is pad 41 (5 V in the module datasheet);
-CHIP_PU is pad 70. A carrier's power input may differ.
+GPIO45/46 require **LDO4 at 3.3 V** before SD SPI startup. Normal filesystem and
+USB MSC modes both enable that supply and use a **10 MHz** SD clock. Filesystem
+transfers retain CRC checks, bounded retries, clock reduction after errors and
+single-sector SPI writes. USB MSC owns the raw card exclusively; FAT is not
+mounted at the same time.
 
-LCD uses SPI2's native CS/MOSI/CLK pins, RGB565, landscape 480 x 320, and the
-existing S3 ST7796 orientation/gamma settings. Start at **40 MHz** for jumper
-wiring; 80 MHz is an optional hardware experiment. SD uses a separate SPI3 bus
-capped at 10 MHz by the storage recovery driver. Keep wires short and retain SD pull-ups/decoupling. The two buses can
-transfer independently. The init driver now waits 120 ms after reset/sleep-out.
+## Optional SDMMC connection
 
-## Reserved pins and future wireless targets
+All six native signals are exposed. The rear TF footprint is shown with pull-ups
+in the schematic. A future 4-bit target could use the following wiring:
 
-GPIO34-38 (straps, with GPIO37/38 also used for the UART0 console), GPIO24-27
-(USB full-speed functions), and GPIO39-44 plus GPIO47/48 are left unused by this peripheral map. GPIO2-5 use
-the GPIO function rather than external pad JTAG; use USB Serial/JTAG or UART
-for debugging instead. Flash and PSRAM connections are internal to the module.
+| Signal | GPIO | Header |
+|---|---:|---|
+| CLK | 43 | Right 23 |
+| CMD | 44 | Right 22 |
+| D0 | 39 | Left 10 |
+| D1 | 40 | Right 24 |
+| D2 | 41 | Right 25 |
+| D3 | 42 | Right 26 |
 
-For a future SDIO radio, GPIO39-44 can supply SDMMC slot 1's D0/D1/D2/D3/CLK/CMD;
-the SD card remains on SPI3. GPIO45/46 are SD-card signals and must not be
-assigned to the radio; the future SDIO connection is 4-bit, with D4-D7 unused.
-Reserving these pins does not implement a radio.
-An ESP32-WROOM-32D will need matching ESP-Hosted slave firmware, host transport,
-reset/boot wiring, power, and a separately verified Bluetooth transport/profile
-stack. Add a new target rather than enabling the current native Wi-Fi code on P4.
+IDF supports 20/40 MHz SDMMC with GPIO routing through slot 1. The existing SPI
+wires do not provide that connection. This target keeps SPI, as requested.
 
-USB HID/XInput host and SD-card MSC device mode use the P4 high-speed USB
-interface (module pads **16 DM / 17 DP**). Use a suitable USB carrier/circuit.
-Host operation needs a powered, current-limited 5 V VBUS supply; the module's
-DP/DM pads do not supply VBUS. Host and MSC device modes are exclusive, as on S3.
-Keep the flash/debug console on UART0 GPIO37/38, or the separate USB Serial/JTAG
-interface supported by your carrier. USB wiring is not a GPIO remap of S3 USB.
+## Performance and capabilities
 
-## Build and install
+- Emulation runs on core 0; display, DMA completion and audio helpers use core 1.
+  Owned PSRAM snapshots let games advance while LCD transfers finish. Busy
+  submissions drop presentations without changing emulated game time.
+- PSRAM XiP loads code and constant tables into 200 MHz HEX PSRAM at boot,
+  reducing flash fetch traffic. It shares bandwidth with game data, so measure
+  individual games before claiming a speedup. Cache lines remain 64 bytes.
+- GBA retains the native RV32 JIT and original P4-safe ISA settings. ROM caching
+  budgets up to **24 MiB** of free PSRAM, retaining **8 MiB** for JIT arenas,
+  core/runtime state, savestates and UI. Smaller games release unused blocks;
+  32 MiB games still page from SD. A 32 MiB ROM cannot coexist with the emulator
+  entirely inside 32 MiB total PSRAM.
+  GBA's app defaults disable `SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION`: IDF 5.5's
+  XiP PSRAM split otherwise marks the JIT heap non-executable. The normal
+  IRAM/DRAM PMP split is enabled. A build guard rejects the incompatible JIT/XiP
+  configuration, which was reproduced as an instruction-access fault on COM3.
+  Loading shows a message and temporarily extends the responsiveness timeout while
+  reading/extracting a cartridge; the normal timeout resumes before gameplay.
+- PPA scales RGB565 when ratios are exact multiples of 1/16 and bilinear
+  filtering is selected. Other geometry, palettes, crops and nearest filtering
+  keep the software renderer. PPA does not execute emulator instructions.
+- Media artwork uses hardware baseline color JPEG decoding up to a 4 MiB DMA
+  output buffer. MCU padding stays in the stride, outside visible dimensions.
+  Hardware is used for 8-pixel-aligned dimensions of at least 64x64. Smaller
+  thumbnails and other geometry use software: tiny padded inputs timed out on
+  the connected rev 1.3. Compressed input is staged in DMA-readable PSRAM.
+  Large images, grayscale, unavailable hardware and low memory also use software
+  decoding with downscaling. Its explicit work pool fixes the component's
+  insufficient default buffer with the selected fast decoder. PNG and
+  MP3/FLAC/WAV paths remain supported.
+- ILI9341 is **320 x 240**, RGB565, **40 MHz SPI2**, with 16-row DMA buffers.
+  Payload-only full-screen throughput is **32.55 FPS**; unchanged regions can
+  be omitted. This differs from 60 Hz game simulation/audio. 80 MHz requires
+  separate panel/wiring validation and is not enabled here.
+- H.264 is an encoder, not a hardware decoder for game logic or arbitrary video
+  playback. ISP/MIPI CSI need a camera; MIPI DSI needs a compatible panel. This
+  ILI9341 uses SPI. P4 AI instruction extensions and ESP-DL can run inference,
+  but there is no general AI engine that accelerates these emulators. An AI
+  workload would compete for CPU and memory.
+- The LP CPU supports low-power control, not a third interchangeable game core.
+  USB HS HID/XInput host and SD MSC device modes already exist and are exclusive.
+  HUSB serves those functions; FUSB exposes the separate Serial/JTAG interface
+  used by COM3. P4 has no native Wi-Fi/Bluetooth; neither is enabled.
+- SPI/I2S already use DMA, LEDC drives the backlight, RMT drives the RGB LED,
+  ADC1 monitors the battery divider, and hardware timers pace emulation.
+  Cryptographic accelerators serve security workloads; Ethernet, TWAI/CAN,
+  I3C and camera interfaces need their corresponding external hardware and
+  provide no automatic acceleration of guest CPU instructions.
 
-From an ESP-IDF 5.5.5 environment at the repository root:
+Espressif sources: [PSRAM/XiP](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-guides/external-ram.html),
+[PPA](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/ppa.html),
+[JPEG](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/jpeg.html),
+[SDMMC](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/sdmmc_host.html),
+[P4 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-p4_datasheet_en.pdf).
+
+## Build and verification
+
+In an ESP-IDF 5.5.5 environment:
 
 ```powershell
-python rg_tool.py --target esp32-p4-n16r32-st7796 build-img
-python rg_tool.py --target esp32-p4-n16r32-st7796 --port COM3 install
+python rg_tool.py --target esp32-p4-n16r32-ili9341 --release-build build-img
+python rg_tool.py --target esp32-p4-n16r32-ili9341 --port COM3 --release-build install
+python -m unittest discover -s tools/tests -v
+python tools/test_p4_acceleration.py --cc cc
 ```
 
-The target automatically disables networking; `--no-networking` is unnecessary.
-Default apps include factory, launcher, retro-core, prboom-go, gwenesis, fmsx,
-and retro-legacy. Install the complete image first. A packed `.img` includes
-padding and must be written at flash offset **0**, although its P4 bootloader
-is at **0x2000**. The factory updater uses that same P4 bootloader range.
-Do not flash an S3 image on P4.
+The full image includes factory, launcher, retro-core, prboom-go, gwenesis,
+fmsx, retro-legacy and gbsp. Packed `.img` files are written at offset **0**;
+the P4 bootloader starts at **0x2000**. Never use `--force` to bypass revision
+compatibility.
+`--release-build` keeps incremental builds and uses release logging; the `release`
+command also cleans every selected application first. Unchanged placeholder
+partition contents are no longer rewritten between apps.
 
-## Local build verification
+Optional diagnostics: configure launcher with `-DRG_P4_SELFTEST=ON` to check
+actual JPEG 420/422/444 colors, odd dimensions/strides and PPA PSRAM readback.
+Configure gbsp with `-DRG_GBA_SELFTEST=ON` to check copyright-free ARM7/RV32
+execution, a resident 16 MiB cartridge, rendering, frame skip and save-state
+round trips. Disable both again
+for production images. Host mocks check failure handling and ownership; they
+do not establish accelerator timing or game FPS.
 
-Verified with ESP-IDF 5.5.5: all eight default applications build, and the full
-image fits in 16 MB with the configured partition headroom. The packed image
-passed footer/CRC, partition, chip-ID, v1.0-v1.99 revision-range, and exact
-application-byte checks. All five release unit tests passed. The 28 wiring
-assignments and module pad numbers were checked against both target configs
-and the manufacturer pin table.
+## Verified on COM3, 2026-11-09
 
-Native checks now pass with Zig as the host compiler: NES timing and sprite
-patterns, display rendering, frame ownership/drop behavior, DMA FIFO ordering,
-and both immediate and ramped audio gain paths. The CI workflow runs these too.
-
-## Emulation performance and GBA
-
-The display runs at 80 MHz SPI, as requested for the connected hardware, with
-16-row DMA buffers. P4 emulator apps use owned frame snapshots and drop busy
-presentations instead of waiting for LCD transfers. Contra scrolling now
-sustains 60 emulated FPS in the measured runs. The 480x320 SPI link still limits
-full-screen presentation to at most 32.6 FPS before overhead.
-
-The target now includes an eighth app, `gbsp`, for Game Boy Advance, and uses
-the P4 PPA for compatible RGB565 scaling. The hardware test verified native
-RV32 JIT execution, PPA output pixels and save-state restoration. See
-[performance measurements and audio findings](PERFORMANCE.md) and
-[GBA setup and limitations](../../../../../gbsp/README.md).
-
-## Hardware validation still required
-
-On the connected COM3 board, revision v1.3 and 32 MB PSRAM were confirmed.
-Enabling LDO4 resolved the SD initialization CRC error (0x109); the launcher
-mounted `/sd` and read its settings and a 1,650-entry CRC cache from the card.
-Mounting succeeded across three reset tests. All eight applications were then
-updated on COM3 and flash hashes verified; the final launcher boot mounted the
-card successfully too. The card was not formatted.
-
-A later warm restart exposed a second initialization issue: IDF's SDIO CMD52
-probe could return a function-number error (0x102) before CMD0 reset. This
-memory-card-only SPI socket now reports SDIO CMD52/CMD5 probes as unsupported
-in both filesystem and USB MSC initialization, so the normal SD memory-card
-handshake proceeds. Three consecutive reset tests passed with this fix. Normal
-SD data errors still use the existing recovery/retry checks. This does not
-change a future radio's separate SDIO transport.
-
-Compilation cannot verify wiring or a particular display module. Before calling
-the port hardware-verified, check the boot log for v1.x, 16 MB flash and 32 MB
-PSRAM/memory-test success; then check full-screen colors/orientation, every
-button, SD reads/writes, emulation/audio, headphone routing, battery voltage
-against a meter, LED/motor, USB HID/MSC, and a complete SD-image update/reboot.
-
-## Sources checked
-
-- [Wireless-Tag module datasheet v1.0 (pin table, module pads, N16R32 memory, power)](https://res.8ms.xyz/wiki_assets/WT99P4C5-S1/WT0132P4-A1_datasheet_v1.0_en.pdf)
-- [Wireless-Tag N16R32X / v3.2 listing](https://shop.wireless-tag.com/products/new-p4-v3-2-version-esp32-p4-som-board-wt0132p4-a1-som-module-with-esp32-p4-chip-multi-interface-for-esp32-p4-ev-board-with-lcd-display)
-- [Espressif P4 revision compatibility](https://docs.espressif.com/projects/esp-idf/en/release-v5.5/esp32p4/api-reference/system/chip_revision.html)
-- [Espressif P4 GPIO functions and boot straps](https://documentation.espressif.com/esp32-p4_datasheet_en.html)
-- [Espressif GPIO power-bank and SD I/O supply requirements](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32p4/schematic-checklist-esp32p4.html)
-- ESP-IDF 5.5.5 local Kconfig.hw_support, Kconfig.cpu and esp32p4/Kconfig.spiram
-  confirm pre-v3 revision selection, qualified-only 400 MHz, and HEX PSRAM mode.
-- [Espressif ST7796 reference driver](https://github.com/espressif/esp-bsp/blob/master/components/lcd/esp_lcd_st7796/esp_lcd_st7796_general.c)
+- All eight apps built with ESP-IDF 5.5.5, 360 MHz and PSRAM XiP. The complete
+  image is 13,959,424 bytes, within 16 MB flash. CRC, partition bounds, exact app
+  binary contents, P4 chip ID and revision range 1.0-1.99 passed validation.
+  Both diagnostic options are disabled in that release-mode image. The full
+  image was flashed with hash verification, and the final COM3 boot reached the
+  launcher with SD mounted and no panic or development debug output.
+- Hardware JPEG RGB565 readback passed for 128x128 YUV420/422/444 fixtures and
+  a 128x120 image with MCU padding. Solid-color fixture decode/readback took
+  about 1.4-1.9 ms; this is not a general-photo throughput benchmark. Software
+  decoding of the unsupported 31x17 fixture and PPA PSRAM readback also passed.
+- The 16 MiB generated GBA cartridge was fully resident, with a measured startup
+  ROM-cache budget of 19 MiB. Native RV32 execution (121 blocks), framebuffer
+  contents, PPA pixels, manual frame skip and save-state round trip passed after
+  the executable-PSRAM configuration fix.
+- Contra (Japan) then sustained 60 emulated FPS and about 30 presentations/sec
+  over the 40 MHz ILI9341 link. Other games/systems need individual benchmarks;
+  no universal FPS increase is claimed.
+- Host checks passed for display rendering/ownership, frame-skip policy, audio
+  FIFO/DMA ordering and gain ramps, NES timing/sprites, media playback paths,
+  P4 JPEG buffer ownership/failures, SPI recovery, ROM-scan preservation and six
+  release tests. The complete POSIX filesystem fault-injection test could not
+  run on this Windows host; its isolated SPI/snapshot checks passed.

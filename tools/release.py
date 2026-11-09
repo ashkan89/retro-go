@@ -72,7 +72,8 @@ def validate_image(path, version, target):
                     decode(image[start + 48:start + 80]) != version:
                 raise ValueError(f"{path}: {label} was built with a different version")
             apps.append(label)
-    expected_apps = APPS + (("gbsp",) if target == "esp32-p4-n16r32-st7796" else ())
+    expected_apps = APPS + (("gbsp",) if target in (
+        "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341") else ())
     if tuple(apps) != expected_apps:
         raise ValueError(f"{path}: missing or unexpected applications: {apps}")
     return {"target": target, "filename": Path(path).name, "size": len(data),

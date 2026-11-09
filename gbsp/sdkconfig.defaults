@@ -1,0 +1,4 @@
+# The RV32 JIT executes code written to the PSRAM heap. With XiP and the
+# preconfigured PSRAM PMP split, IDF 5.5 marks that heap RW (non-executable).
+# Keep the normal IRAM/DRAM PMP split but let this app use executable PSRAM.
+# CONFIG_SPIRAM_PRE_CONFIGURE_MEMORY_PROTECTION is not set

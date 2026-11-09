@@ -224,8 +224,10 @@ static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
 
 #elif defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32P4)
 
-// P4 has no ROM TJpgDec. Use Espressif's software decoder so the existing
-// baseline JPEG artwork and scaling path remain available on this target.
+#include "p4_jpeg.h"
+
+// Use the hardware codec for ordinary covers, retaining Espressif's software
+// decoder for unsupported formats, large images and resource contention.
 static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
 {
     if (len > UINT32_MAX)
@@ -251,6 +253,9 @@ static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
     }
     if (!baseline) return NULL;
 
+    rg_image_t *hardware = p4_jpeg_decode(data, len, max_dim);
+    if (hardware) return hardware;
+
     esp_jpeg_image_cfg_t cfg = {
         .indata = (uint8_t *)data, .indata_size = len,
         .out_format = JPEG_IMAGE_FORMAT_RGB565,
@@ -265,12 +270,26 @@ static rg_image_t *jpeg_decode(const uint8_t *data, size_t len, int max_dim)
            (info.width >> (shift + 1)) >= max_dim && (info.height >> (shift + 1)) >= max_dim)
         ++shift;
     int width = info.width >> shift, height = info.height >> shift;
-    rg_image_t *img = rg_surface_create(width, height, RG_PIXEL_565_LE, MEM_SLOW);
+    rg_image_t *img = rg_surface_create(width, height, RG_PIXEL_565_LE, MEM_SLOW | MEM_NOPANIC);
     if (!img) return NULL;
     cfg.out_scale = (esp_jpeg_image_scale_t)shift;
     cfg.outbuf = img->data;
     cfg.outbuf_size = (size_t)width * height * 2;
-    if (esp_jpeg_decode(&cfg, &info) != ESP_OK)
+    // esp_jpeg 1.3.2's default 3100-byte pool is insufficient for the selected
+    // 32-bit TJpgDec fast decoder (JDR_MEM1, even for a tiny baseline JPEG).
+    // Supply a per-request pool, sized for the configured Huffman implementation.
+    size_t work_size = CONFIG_JD_SZBUF + (CONFIG_JD_FASTDECODE == 2 ? 65536 : 8192);
+    void *work = rg_alloc(work_size, MEM_FAST | MEM_8BIT | MEM_NOPANIC);
+    if (!work)
+    {
+        rg_surface_free(img);
+        return NULL;
+    }
+    cfg.advanced.working_buffer = work;
+    cfg.advanced.working_buffer_size = work_size;
+    esp_err_t error = esp_jpeg_decode(&cfg, &info);
+    free(work);
+    if (error != ESP_OK)
     {
         rg_surface_free(img);
         return NULL;

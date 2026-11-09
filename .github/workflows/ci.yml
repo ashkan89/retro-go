@@ -26,6 +26,7 @@ jobs:
       - run: python tools/test_media_audio.py --cc cc
       - run: python tools/test_sdcard_manager.py --cc cc
       - run: python tools/test_storage_recovery.py --cc cc
+      - run: python tools/test_p4_acceleration.py --cc cc
       - run: python tools/test_battery.py --cc cc
       - run: |
           cc -std=c99 -Wall -Wextra -Werror tools/tests/test_update_version.c -o /tmp/test-update-version
@@ -35,4 +36,4 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     with:
       version: '0.0.0'
-      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796", "esp32-p4-n16r32-st7796"]'
+      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796", "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341"]'

@@ -1,9 +1,9 @@
 /**
  * Retro-Go media player - image decoding and colour analysis.
  *
- * JPEG goes through TJpgDec, which lives in the ESP32-S3 ROM and therefore costs no flash.
- * It also descales by 1/2, 1/4 or 1/8 while decoding, so a 3000x3000 cover is never fully
- * expanded in RAM. PNG reuses retro-go's lodepng path.
+ * ESP32/S3 JPEG uses ROM TJpgDec with decode-time downscaling. P4 uses the
+ * hardware codec for ordinary covers and a software fallback with downscaling
+ * for larger images or unavailable hardware. PNG uses retro-go's lodepng path.
  */
 #pragma once
 

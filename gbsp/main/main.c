@@ -3,6 +3,7 @@
 #include "libretro.h"
 #include "gpsp_memory.h"
 #include "gpsp_rv32_platform.h"
+#include "esp_heap_caps.h"
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -174,13 +175,16 @@ void app_main(void)
         .screenshot = screenshot, .event = event,
     };
     app = rg_system_init(32768, &handlers, NULL);
+    const int runtime_tick_timeout = app->tickTimeout;
+    // Large SPI cartridges and ZIP extraction legitimately exceed the normal
+    // 3-second responsiveness timeout. Restore it after refreshing the tick.
+    app->tickTimeout = 300000000;
 #if RG_GBA_SELFTEST
-    // This noninteractive test deliberately performs synchronous SD writes.
-    app->tickTimeout = 120000000;
     app->frameskip = 0;
     app->frameskipManual = false;
 #endif
     RG_ASSERT(RG_GBA_SELFTEST || (app->romPath && app->romPath[0]), "Select a GBA ROM from the launcher");
+    rg_gui_draw_message(_("Loading game..."));
     screen = rg_surface_create(240, 160, RG_PIXEL_565_LE, MEM_SLOW);
     RG_ASSERT(screen, "Unable to allocate GBA display");
     memset(screen->data, 0, screen->stride * screen->height);
@@ -212,7 +216,15 @@ void app_main(void)
         rom_path = RG_BASE_PATH_CACHE "/gba-unpacked.gba";
     }
     gpsp_rv32_set_platform(&gpsp_platform);
-    gpsp_set_rom_buffer_limit(8);
+    // Leave room for both 2 MiB JIT arenas, core state, savestates and UI.
+    // A resident 16/24 MiB ROM avoids synchronous SD page faults during play.
+    // The core releases unused 1 MiB blocks for smaller games and still pages
+    // larger ROMs. Base the budget on free PSRAM, never on the internal heap.
+    const size_t mib = 1024 * 1024;
+    size_t free_psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    unsigned rom_mib = free_psram > 8 * mib ? RG_MIN(24, (free_psram - 8 * mib) / mib) : 1;
+    RG_ASSERT(gpsp_set_rom_buffer_limit(rom_mib), "Invalid GBA ROM memory budget");
+    RG_LOGI("GBA ROM cache budget: %u MiB, keeping at least 8 MiB for runtime", rom_mib);
     retro_set_environment(environment);
     retro_set_video_refresh(video);
     retro_set_audio_sample(audio_sample);
@@ -221,7 +233,9 @@ void app_main(void)
     retro_set_input_state(input_state);
     retro_init();
     const struct retro_game_info game = {.path = rom_path};
+    RG_LOGI("Loading GBA cartridge: %s", rom_path);
     RG_ASSERT(retro_load_game(&game), "Unable to load GBA ROM");
+    RG_LOGI("GBA cartridge loaded");
     loaded = true;
     struct retro_system_av_info av;
     retro_get_system_av_info(&av);
@@ -240,7 +254,10 @@ void app_main(void)
     if (!RG_GBA_SELFTEST && (app->bootFlags & RG_BOOT_RESUME))
         rg_emu_load_state(app->saveSlot);
     last_save = rg_system_timer();
+    rg_system_tick(0);
+    app->tickTimeout = RG_GBA_SELFTEST ? 300000000 : runtime_tick_timeout;
 #if RG_GBA_SELFTEST
+    RG_LOGI("GBA selftest: running 120 ARM7/RV32 frames");
     for (int i = 0; i < 120; ++i)
     {
         retro_run();

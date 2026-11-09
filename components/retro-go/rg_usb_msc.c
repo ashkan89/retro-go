@@ -131,6 +131,11 @@ static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = *out_slot;
     host.max_freq_khz = RG_STORAGE_SDSPI_SPEED;
+#if CONFIG_IDF_TARGET_ESP32S3 || CONFIG_IDF_TARGET_ESP32P4
+    // Use the same jumper-wire limit as the filesystem mount. Rebooting into
+    // USB mode must not silently double the clock on the very same SD wires.
+    host.max_freq_khz = RG_MIN(host.max_freq_khz, 10000);
+#endif
     host.do_transaction = usb_sdcard_transaction;
     err = sdmmc_card_init(&host, card);
     if (err != ESP_OK)

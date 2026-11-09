@@ -1,6 +1,9 @@
 set(COMPONENT_SRCDIRS ". codecs")
 set(COMPONENT_ADD_INCLUDEDIRS ".")
 set(COMPONENT_REQUIRES "retro-go")
+if(IDF_TARGET STREQUAL "esp32p4")
+    list(APPEND COMPONENT_REQUIRES esp_driver_jpeg)
+endif()
 
 register_component()
 

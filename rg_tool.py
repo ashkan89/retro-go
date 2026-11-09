@@ -207,9 +207,18 @@ def build_app(app, device_type, with_profiling=False, no_networking=False, is_re
     args.append(f"-DRG_BUILD_RELEASE={1 if is_release else 0}")
     args.append(f"-DRG_ENABLE_PROFILING={1 if with_profiling else 0}")
     args.append(f"-DRG_ENABLE_NETWORKING={int(NETWORKING_SUPPORTED and not no_networking)}")
-    with open("partitions.csv", "w") as f:
-        f.write("# This table isn't used, it's just needed to avoid esp-idf build failures.\n")
-        f.write("dummy, app, ota_0, 65536, 3145728\n")
+    partition_table = ("# This table isn't used, it's just needed to avoid esp-idf build failures.\n"
+                       "dummy, app, ota_0, 65536, 3145728\n")
+    try:
+        with open("partitions.csv", "r") as f:
+            current_partition_table = f.read()
+    except FileNotFoundError:
+        current_partition_table = None
+    # Every app shares this placeholder. Rewriting identical contents forces
+    # CMake/partition regeneration in other apps and defeats incremental builds.
+    if current_partition_table != partition_table:
+        with open("partitions.csv", "w") as f:
+            f.write(partition_table)
     run(args, cwd=os.path.join(os.getcwd(), app))
     print("Done.\n")
 
@@ -261,6 +270,9 @@ parser.add_argument(
     "--no-networking", action="store_const", const=True, help="Build without networking support"
 )
 parser.add_argument(
+    "--release-build", action="store_true", help="Use release logging/settings without cleaning existing builds"
+)
+parser.add_argument(
     "--port", default=DEFAULT_PORT, help="Serial port to use for flash and monitor"
 )
 parser.add_argument(
@@ -300,7 +312,8 @@ try:
     if command in ["build", "build-fw", "build-img", "release", "run", "profile", "install"]:
         print("=== Step: Building ===\n")
         for app in apps:
-            build_app(app, args.target, command == "profile", args.no_networking, command == "release")
+            build_app(app, args.target, command == "profile", args.no_networking,
+                      command == "release" or args.release_build)
 
     if command in ["build-fw", "release"]:
         print("=== Step: Packing ===\n")

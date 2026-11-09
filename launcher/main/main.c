@@ -582,6 +582,10 @@ static void about_handler(rg_gui_option_t *dest)
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
+#if RG_P4_SELFTEST
+#include "../../tools/tests/p4_hardware_selftest.h"
+#endif
+
 static void launcher_main(void)
 {
     const rg_handlers_t handlers = {
@@ -596,6 +600,10 @@ static void launcher_main(void)
     app = rg_system_init(32000, &handlers, NULL);
     app->configNs = "launcher";
     app->isLauncher = true;
+
+#if RG_P4_SELFTEST
+    p4_hardware_selftest();
+#endif
 
     if (!rg_storage_ready())
     {
