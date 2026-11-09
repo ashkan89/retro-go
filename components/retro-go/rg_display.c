@@ -58,6 +58,10 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length);
 
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "drivers/display/p4_ppa.h"
+#include "drivers/display/p4_pixels.h"
+#ifdef RG_P4_SELFTEST
+static bool p4_force_software;
+#endif
 #endif
 
 static int draw_on_screen_display(int region_start, int region_end)
@@ -141,7 +145,11 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
     }
 
 #if CONFIG_IDF_TARGET_ESP32P4
-    if (!crop_left && !crop_top && config.filter == RG_DISPLAY_FILTER_BOTH)
+    if (!crop_left && !crop_top && config.filter == RG_DISPLAY_FILTER_BOTH
+#ifdef RG_P4_SELFTEST
+        && !p4_force_software
+#endif
+       )
     {
         const rg_surface_t *scaled = p4_scale_frame(update, draw_width, draw_height);
         if (scaled)
@@ -214,6 +222,14 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
                     memcpy(line_buffer_ptr, data + (hardware_scaled ? y : map_viewport_to_source_y[y]) * stride, draw_width * 2);
                     line_buffer_ptr += draw_width;
                 }
+#if CONFIG_IDF_TARGET_ESP32P4
+                else if (format == RG_PIXEL_565_LE && unscaled_x)
+                {
+                    p4_copy_rgb565_be(line_buffer_ptr,
+                        data + (hardware_scaled ? y : map_viewport_to_source_y[y]) * stride, draw_width);
+                    line_buffer_ptr += draw_width;
+                }
+#endif
                 else if (format & RG_PIXEL_PALETTE)
                     RENDER_LINE(uint8_t, palette[buffer[x]])
                 else if (format == RG_PIXEL_565_LE)
@@ -335,6 +351,16 @@ static void update_viewport_scaling(void)
     new_width &= ~1;
     new_height &= ~1;
 
+#if CONFIG_IDF_TARGET_ESP32P4 && RG_DISPLAY_PPA_VIEWPORT
+    // Smooth uses hardware bilinear interpolation. Its 1/16 scale precision
+    // can leave a few extra border pixels; Fit keeps the entire source image
+    // and one uniform scale instead of cropping or distorting the aspect ratio.
+    if (config.filter == RG_DISPLAY_FILTER_BOTH &&
+        (config.scaling == RG_DISPLAY_SCALING_FIT || config.scaling == RG_DISPLAY_SCALING_FULL))
+        p4_fit_viewport(src_width, src_height, screen_width, screen_height,
+                        config.scaling == RG_DISPLAY_SCALING_FIT, &new_width, &new_height);
+#endif
+
     display.viewport.left = (screen_width - new_width) / 2;
     display.viewport.top = (screen_height - new_height) / 2;
     display.viewport.width = new_width;
@@ -359,6 +385,46 @@ static void update_viewport_scaling(void)
             (float)src_width / src_height, new_width, new_height, (float)new_width / new_height,
             display.viewport.left, display.viewport.top, display.viewport.step_x, display.viewport.step_y);
 }
+
+#if CONFIG_IDF_TARGET_ESP32P4 && defined(RG_P4_SELFTEST)
+// Explicit diagnostic build only: compare the actual renderer at identical
+// geometry, including completed LCD transfers. The display task is idle here.
+void rg_display_p4_benchmark(const rg_surface_t *source)
+{
+    rg_display_sync(true);
+    rg_display_config_t saved_config = config;
+    rg_display_t saved_display = display;
+    config.filter = RG_DISPLAY_FILTER_BOTH;
+    config.scaling = RG_DISPLAY_SCALING_FIT;
+    display.source.width = source->width;
+    display.source.height = source->height;
+    update_viewport_scaling();
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        p4_force_software = pass == 0;
+        lcd_diagnostic_sync();
+        int64_t start = rg_system_timer();
+        for (int i = 0; i < 8; ++i)
+        {
+            // Force equal full-frame SPI work, independent of fixture content.
+            memset(screen_line_checksum, 0, sizeof(screen_line_checksum));
+            write_update(source);
+            lcd_sync();
+        }
+        lcd_diagnostic_sync();
+        RG_LOGI("P4 renderer %s: %dx%d format=%x => %dx%d avg=%lld us/frame including SPI",
+                pass ? "PPA+PIE" : "software", source->width, source->height, source->format,
+                display.viewport.width, display.viewport.height,
+                (long long)((rg_system_timer() - start) / 8));
+    }
+    p4_force_software = false;
+    config = saved_config;
+    display = saved_display;
+    if (display.source.width > 0 && display.source.height > 0)
+        update_viewport_scaling();
+    display.changed = true;
+}
+#endif
 
 static bool load_border_file(const char *filename)
 {

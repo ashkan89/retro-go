@@ -204,6 +204,19 @@ static void lcd_sync(void)
     // Unused for SPI LCD
 }
 
+#ifdef RG_P4_SELFTEST
+static void lcd_diagnostic_sync(void)
+{
+    // Production intentionally pipelines SPI transfers across frames. For a
+    // benchmark, wait for every descriptor to return from the completion task.
+    spi_transaction_t *transactions[SPI_TRANSACTION_COUNT];
+    for (int i = 0; i < SPI_TRANSACTION_COUNT; ++i)
+        xQueueReceive(spi_transactions, &transactions[i], portMAX_DELAY);
+    for (int i = 0; i < SPI_TRANSACTION_COUNT; ++i)
+        xQueueSend(spi_transactions, &transactions[i], portMAX_DELAY);
+}
+#endif
+
 static void lcd_init(void)
 {
 #ifdef RG_GPIO_LCD_BCKL

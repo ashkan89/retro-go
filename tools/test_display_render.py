@@ -22,11 +22,33 @@ code = r'''
 #define RG_PIXEL_PALETTE 0x80
 #define RG_PIXEL_565_BE 1
 #define RG_PIXEL_565_LE 2
+#define RG_DISPLAY_FILTER_BOTH 3
 #define RG_PIXEL_GET_SIZE(f) ((f)&RG_PIXEL_PALETTE ? 1 : 2)
 #define RG_SCREEN_PARTIAL_UPDATES partial_updates
 #define LCD_BUFFER_LENGTH (480*4)
 #define LINE_IS_REPEATED(y) (map_viewport_to_source_y[y] == map_viewport_to_source_y[(y)-1])
-typedef struct { int format, stride, offset; void *data; uint16_t *palette; } rg_surface_t;
+typedef struct { int width,height,format,stride,offset; void *data; uint16_t *palette; } rg_surface_t;
+static struct { int filter; } config = {3};
+#if CONFIG_IDF_TARGET_ESP32P4
+// PPA's real pixel math/endian handling is checked on the device. This stub
+// isolates the renderer's hardware-surface row selection and SPI byte order.
+static const rg_surface_t *p4_scale_frame(const rg_surface_t *s,int w,int h) {
+    static uint16_t pixels[480*320];
+    static rg_surface_t out;
+    for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+        const uint8_t *p=(const uint8_t*)s->data+s->offset+(y*s->height/h)*s->stride;
+        uint16_t v;
+        if(s->format&RG_PIXEL_PALETTE) v=s->palette[p[x*s->width/w]];
+        else memcpy(&v,p+(x*s->width/w)*2,2);
+        if(s->format!=RG_PIXEL_565_LE) v=(v<<8)|(v>>8);
+        pixels[y*w+x]=v;
+    }
+    out=(rg_surface_t){.width=w,.height=h,.format=2,.stride=w*2,.data=pixels}; return &out;
+}
+static void p4_copy_rgb565_be(uint16_t *d,const uint16_t *s,size_t n) {
+    while(n--) { uint16_t p=*s++; *d++=(p<<8)|(p>>8); }
+}
+#endif
 static struct {
     struct { bool filter_x, filter_y; int left, top, width, height; float step_x, step_y; } viewport;
     struct { struct { int left, top; } margins; } screen;
@@ -64,7 +86,8 @@ int main(void) {
     for (int partial = 0; partial <= 1; ++partial) {
         int w = widths[wi], h = 240, src_w = w / scale;
         int pixel_size = format == 3 ? 1 : 2;
-        rg_surface_t surface = {.format = format == 3 ? RG_PIXEL_PALETTE|RG_PIXEL_565_BE : format,
+        rg_surface_t surface = {.width=src_w,.height=h/2,
+            .format = format == 3 ? RG_PIXEL_PALETTE|RG_PIXEL_565_BE : format,
             .stride = src_w*pixel_size + 8, .offset = 16, .data = data, .palette = palette};
         for (size_t i = 0; i < sizeof(data); ++i) data[i] = i * 17 + i / 13;
         display.viewport.width = w; display.viewport.height = h;
@@ -91,6 +114,8 @@ with tempfile.TemporaryDirectory() as tmp:
     src = Path(tmp) / 'render.c'
     exe = Path(tmp) / 'render'
     src.write_text(code)
-    subprocess.run([args.cc, '-std=gnu99', '-O2', str(src), '-o', str(exe)], check=True)
-    subprocess.run([str(exe)], check=True)
-print('PASS: 60 render cases, native/scaled rows, RGB565 BE/LE, palettes, padded stride, offset, repeated rows, unchanged frames')
+    for hardware in (0, 1):
+        subprocess.run([args.cc, '-std=gnu99', '-O2', f'-DCONFIG_IDF_TARGET_ESP32P4={hardware}',
+                        str(src), '-o', str(exe)], check=True)
+        subprocess.run([str(exe)], check=True)
+print('PASS: 120 software/hardware render cases, RGB565 BE/LE, palettes, padded stride, offset, repeated rows, unchanged frames')

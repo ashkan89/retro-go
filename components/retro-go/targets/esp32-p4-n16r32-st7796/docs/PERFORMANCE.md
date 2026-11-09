@@ -1,7 +1,42 @@
 # P4 performance and GBA validation
 
-Measured on COM3, WT0132P4-A1 N16R32, P4 v1.3, IDF 5.5.5,
+Measured on COM3, WT9932P4-TINY N16R32, P4 v1.3, IDF 5.5.5,
 360 MHz CPU, 32 MiB HEX PSRAM at 200 MHz, ST7796 SPI display.
+
+## PPA and PIE screen scaling (2026-11-09)
+
+The launcher diagnostic verifies 24 combinations of RGB565 LE/BE and indexed
+RGB565 LE/BE at NES, GBA, SMS, Game Boy and Mega Drive dimensions, including
+320x241. Readback checks solid color bands and interpolated boundary pixels.
+All passed on COM3. PIE conversion also passed all 64 pairs of halfword address
+alignments, short/tail lengths and destination guards. Hardware misaligned
+accesses must be enabled explicitly, and the signed right shift must be masked
+before merging the swapped bytes.
+
+| Synthetic diagnostic | Time |
+|---|---:|
+| RGB565 scalar byte conversion, 320 repetitions of one 480-pixel row | 3.433 ms |
+| PIE conversion, same workload | 0.506 ms (6.8x faster) |
+| RGB565 PPA scaling, representative emulator sizes | 1.4–3.5 ms |
+| Palette expansion + PPA scaling | 2.1–7.3 ms |
+| NES-sized indexed frame, previous software filter, 336x315 | 21.757 ms/frame |
+| Same frame, PPA bilinear + PIE | 23.073 ms/frame |
+| GBA-sized RGB565 frame, previous software filter, 480x320 | 31.373 ms/frame |
+| Same frame, PPA bilinear + PIE | 31.632 ms/frame |
+
+Renderer measurements average eight full redraws of generated color bands,
+including completed SPI transfers. The diagnostic drains all SPI descriptors
+before and after each batch: the normal SPI `lcd_sync()` intentionally does
+nothing, so calling it alone would undercount outstanding transfers. Both paths
+use identical fitted viewports, and checksums are invalidated on each redraw.
+
+These results demonstrate faster byte conversion and real hardware bilinear
+interpolation. They do **not** show a game-FPS increase: the smoother PPA path
+cost about 1.32 ms/frame for the indexed NES fixture and 0.26 ms for the GBA
+fixture compared with the simpler previous filter. Emulation continues on its
+own core; the SPI transfer limit remains. Neural inference is not enabled.
+Palette buffers and PPA output remain reusable PSRAM allocations, rather than
+consuming memory needed for DMA/audio and emulator working data.
 
 ## Contra / NES
 

@@ -18,6 +18,13 @@ if(IDF_TARGET STREQUAL "esp32p4")
 endif()
 register_component()
 
+if(IDF_TARGET STREQUAL "esp32p4")
+    target_sources(${COMPONENT_LIB} PRIVATE drivers/display/p4_pixels.S)
+    if(RG_P4_SELFTEST)
+        target_compile_definitions(${COMPONENT_LIB} PRIVATE RG_P4_SELFTEST=1)
+    endif()
+endif()
+
 if(RG_SEPARATE_DISPLAY_AUDIO)
     component_compile_options(-DRG_SEPARATE_DISPLAY_AUDIO=1)
 endif()

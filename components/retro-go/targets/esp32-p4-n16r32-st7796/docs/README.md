@@ -1,8 +1,9 @@
-# WT0132P4-A1-N16R32 + ST7796 (DIY)
+# WT9932P4-TINY N16R32 + ST7796 (480 x 320)
 
 Target: `esp32-p4-n16r32-st7796`. ESP-IDF **5.5.5** is required for the
-configuration verified here. This is a suggested wiring plan for the original
-Wireless-Tag core module, reusing the S3 target's external hardware. The module
+configuration verified here. The board is the
+[Wireless-Tag WT9932P4-TINY](https://en.wireless-tag.com/product-item-72.html),
+using an external SPI ST7796 display. The module
 does not contain a display, SD socket, battery charger, buttons, or audio codec.
 These connections are our DIY assignment, not a manufacturer carrier pinout.
 JPEG artwork uses `espressif/esp_jpeg` 1.3.2, resolved by the ESP-IDF component
@@ -60,7 +61,7 @@ driver circuits; do not connect a speaker, motor, or raw LCD backlight to a GPIO
 | Left button | 8 | 14 | 68 |
 | Right button | 18 | 15 | 69 |
 | Battery divider midpoint | 1 | 16 / ADC1_CH0 | 74 |
-| WS2812 data | 48 | 23 | 81 |
+| Onboard WS2812 data | 48 | 51 | See TINY board header |
 | Vibration transistor input | 38 | 18 | 76 |
 
 GPIO0/1/7/8 are not exposed on this board's headers. SD CS and MOSI use the
@@ -83,10 +84,55 @@ are omitted. The bare core module's VCC is pad 41 (5 V in the module datasheet);
 CHIP_PU is pad 70. A carrier's power input may differ.
 
 LCD uses SPI2's native CS/MOSI/CLK pins, RGB565, landscape 480 x 320, and the
-existing S3 ST7796 orientation/gamma settings. Start at **40 MHz** for jumper
-wiring; 80 MHz is an optional hardware experiment. SD uses a separate SPI3 bus
+existing S3 ST7796 orientation/gamma settings. This target selects **80 MHz**.
+Use 40 MHz if the physical wiring cannot sustain 80 MHz. SD uses a separate SPI3 bus
 capped at 10 MHz by the storage recovery driver. Keep wires short and retain SD pull-ups/decoupling. The two buses can
 transfer independently. The init driver now waits 120 ms after reset/sleep-out.
+
+## Hardware screen scaling
+
+The default **Filter: Both** uses the P4 PPA's hardware bilinear scaler on the
+display task (core 1), alongside emulation on core 0. This applies to RGB565
+and indexed RGB565 frames, including NES, SMS, PCE and Mega Drive. Indexed
+frames are expanded into a reusable RGB565 PSRAM buffer at source resolution;
+the PPA handles interpolation and scaling. A separate aligned PSRAM output
+buffer avoids DMA overwriting the emulator's frame. Scratch buffers grow only
+when required and each is capped at 4 MiB. Native-size frames bypass scaling.
+
+PPA scale factors have 1/16 precision. **Fit** selects the largest uniform
+hardware factor that fits, preserves the whole image, and centers the result.
+This can leave a few more border pixels than software scaling. **Full** selects
+independent hardware factors for each axis and may also leave a narrow border.
+
+| Source | Smooth Fit on 480 x 320 |
+|---|---|
+| GBA 240 x 160 | 480 x 320 |
+| NES 256 x 240 | 336 x 315 |
+| SMS 256 x 192 | 416 x 312 |
+| Game Boy 160 x 144 | 350 x 315 |
+| SNES 256 x 224 | 352 x 308 |
+| Mega Drive 320 x 224 | 440 x 308 |
+| Doom 320 x 200 | 480 x 300 |
+
+The P4 PIE vector unit converts RGB565 rows to the LCD byte order eight pixels
+at a time, enabling hardware misaligned accesses for odd-width/cropped rows.
+Remaining pixels use a scalar path.
+Filter Off keeps nearest-neighbor rendering; single-axis filters and unsupported
+zoom geometries retain software rendering. Allocation/driver failure also falls
+back to software. Bilinear filtering smooths edges and can soften pixel art;
+Filter Off remains available for crisp pixels.
+
+This is image-processing acceleration, without a neural model. Neural super
+resolution would add inference cost and is not enabled. The 80 MHz SPI link
+still needs at least 30.72 ms to transmit a full 480 x 320 RGB565 frame (about
+32.6 full-screen frames/s before command overhead). Hardware scaling reduces
+rendering work but does not remove that transfer limit.
+
+Reference: [Espressif PPA API and scale precision](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/ppa.html).
+Native regression: `python tools/test_p4_scaling.py --cc cc`. Optional launcher
+diagnostics: configure `RG_P4_SELFTEST=ON` for pixel readback, endian/palette,
+bilinear, odd-height and PIE alignment/tail tests on the device. Restore it to
+`OFF` for production builds.
 
 ## Reserved pins and future wireless targets
 
