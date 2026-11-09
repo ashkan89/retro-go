@@ -6,6 +6,10 @@ __pycache__/
 .vscode/
 build/
 /*/managed_components/espressif__esp_jpeg/
+/*/managed_components/espressif__esp_hosted/
+/*/managed_components/espressif__esp_wifi_remote/
+/*/managed_components/espressif__esp_serial_slave_link/
+/*/managed_components/espressif__eppp_link/
 /gbsp/managed_components/
 
 # ESP32 build
@@ -26,3 +30,5 @@ build/
 /gmon.out
 /*.exe
 nul
+
+/*/managed_components/espressif__wifi_remote_over_eppp/

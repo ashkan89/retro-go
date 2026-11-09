@@ -14,11 +14,24 @@ endif()
 
 list(APPEND COMPONENT_REQUIRES mbedtls)
 if(IDF_TARGET STREQUAL "esp32p4")
-    list(APPEND COMPONENT_REQUIRES esp_driver_ppa)
+    list(APPEND COMPONENT_REQUIRES esp_driver_ppa esp_wifi_remote esp_hosted)
 endif()
 register_component()
 
 if(IDF_TARGET STREQUAL "esp32p4")
+    # ESP-Hosted 2.13.1 starts its transport from a global constructor. On
+    # this XiP P4 port that runs before the application can power VDD_IO_5
+    # and initialize the runtime. Start it explicitly in rg_network_init().
+    idf_component_get_property(hosted_lib espressif__esp_hosted COMPONENT_LIB)
+    get_target_property(hosted_sources ${hosted_lib} SOURCES)
+    list(LENGTH hosted_sources hosted_source_count)
+    list(FILTER hosted_sources EXCLUDE REGEX "(^|/)port_esp_hosted_host_init[.]c$")
+    list(LENGTH hosted_sources hosted_filtered_count)
+    if(hosted_filtered_count EQUAL hosted_source_count)
+        message(FATAL_ERROR "ESP-Hosted startup source changed; review explicit radio initialization")
+    endif()
+    set_property(TARGET ${hosted_lib} PROPERTY SOURCES "${hosted_sources}")
+
     target_sources(${COMPONENT_LIB} PRIVATE drivers/display/p4_pixels.S)
     if(RG_P4_SELFTEST)
         target_compile_definitions(${COMPONENT_LIB} PRIVATE RG_P4_SELFTEST=1)

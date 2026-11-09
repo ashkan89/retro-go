@@ -5,7 +5,7 @@
 #define RG_ENABLE_USB_MSC          1
 
 // Wireless-Tag WT9932P4-TINY with an external ST7796: see docs/README.md.
-// This module has no radio; the build disables networking for this target.
+// Wi-Fi uses an ESP32-WROOM-32D ESP-Hosted SDIO companion; see docs/WIFI.md.
 
 // Keep emulator/game logic on core 0 and IO/audio helper tasks on core 1.
 #define RG_TASK_AFFINITY_MAIN      0

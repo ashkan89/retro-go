@@ -18,5 +18,5 @@ PROJECT_APPS["fmsx"][2] = 0x180000
 PROJECT_APPS["retro-legacy"][2] = 0x280000
 PROJECT_APPS["gbsp"][2] = 0x200000
 
-# No native or external radio is present on this target.
-NETWORKING_SUPPORTED = False
+# ESP32-WROOM-32D companion running ESP-Hosted over SDIO; see ../esp32-p4-n16r32-st7796/docs/WIFI.md.
+NETWORKING_SUPPORTED = True

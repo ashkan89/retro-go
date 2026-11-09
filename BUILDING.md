@@ -12,7 +12,9 @@ You will need a working installation of [esp-idf](https://docs.espressif.com/pro
 _Note: As of retro-go 1.44, I use 4.4.8. I used 4.3 for 1.35 to 1.43. ESP-IDF 4.1 was used for 1.20 to 1.34 versions._
 
 The `esp32-p4-n16r32-st7796` target uses ESP-IDF **5.5.5**, P4 **v1.x**,
-16 MB flash and 32 MB HEX PSRAM. Networking is disabled automatically.
+16 MB flash and 32 MB HEX PSRAM. Both P4 display targets support an external
+ESP32-WROOM-32D ESP-Hosted Wi-Fi companion over SDIO. See the
+[Wi-Fi wiring and flash-voltage guide](components/retro-go/targets/esp32-p4-n16r32-st7796/docs/WIFI.md).
 See its [wiring and revision guide](components/retro-go/targets/esp32-p4-n16r32-st7796/docs/README.md)
 before connecting the existing S3 peripherals. The N16R32X / P4 v3.2 module
 requires a separate target. ESP-IDF 6.x is not supported by this port's legacy drivers.

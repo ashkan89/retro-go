@@ -1,0 +1,21 @@
+diff --git a/slave/main/sdio_slave_api.c b/slave/main/sdio_slave_api.c
+index 0d4f6be..9a9bae5 100644
+--- a/slave/main/sdio_slave_api.c
++++ b/slave/main/sdio_slave_api.c
+@@ -380,6 +380,16 @@ static interface_handle_t * sdio_init(void)
+ 		.timing             = SDIO_SLAVE_TIMING,
+ 	};
+ 
++#if CONFIG_IDF_TARGET_ESP32
++	/* Retro-Go uses 1-bit SDIO. Leave GPIO12/DAT2 at its 3.3 V flash
++	 * boot strap level instead of requiring an irreversible voltage eFuse.
++	 * Internal pulls assist prototypes; external pull-ups remain required. */
++	config.flags |= SDIO_SLAVE_FLAG_DAT2_DISABLED | SDIO_SLAVE_FLAG_INTERNAL_PULLUP |
++		SDIO_SLAVE_FLAG_DEFAULT_SPEED;
++	/* Fixed 1 MHz prototype profile: use IDF's default-speed edge timing. */
++	config.timing = SDIO_SLAVE_TIMING_NSEND_PSAMPLE;
++#endif
++
+ #if !SIMPLIFIED_SDIO_SLAVE
+   #if CONFIG_ESP_SDIO_STREAMING_MODE
+ 	ESP_LOGI(TAG, "%s: sending mode: SDIO_SLAVE_SEND_STREAM", __func__);

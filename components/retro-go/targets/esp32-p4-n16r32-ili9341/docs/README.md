@@ -191,3 +191,9 @@ do not establish accelerator timing or game FPS.
   P4 JPEG buffer ownership/failures, SPI recovery, ROM-scan preservation and six
   release tests. The complete POSIX filesystem fault-injection test could not
   run on this Windows host; its isolated SPI/snapshot checks passed.
+
+## External Wi-Fi
+
+This target uses the same ESP32-WROOM-32D SDIO companion as the ST7796 target.
+See the shared [Wi-Fi wiring, pull-ups and flash-voltage guide](../../esp32-p4-n16r32-st7796/docs/WIFI.md).
+The SD card keeps its existing SPI3 wiring. Bluetooth remains disabled.

@@ -1,15 +1,3 @@
-# This standalone P4 target has no radio or hosted transport. Future wireless
-# targets can opt into their own transport without changing other P4 builds.
-if(RG_BUILD_TARGET STREQUAL "RG_TARGET_ESP32_P4_N16R32_ST7796")
-    set(RG_ENABLE_NETWORKING OFF)
-    set(RG_ENABLE_NETPLAY OFF)
-endif()
-
-if(RG_BUILD_TARGET STREQUAL "RG_TARGET_ESP32_P4_N16R32_ILI9341")
-    set(RG_ENABLE_NETWORKING OFF)
-    set(RG_ENABLE_NETPLAY OFF)
-endif()
-
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/components")
 

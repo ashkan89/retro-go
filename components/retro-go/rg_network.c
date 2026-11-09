@@ -27,6 +27,12 @@
 #include <esp_system.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
+#ifdef CONFIG_ESP_HOSTED_ENABLED
+#include <esp_hosted.h>
+#endif
+#ifdef CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+#include <driver/gpio.h>
+#endif
 #include <esp_event.h>
 #include <nvs_flash.h>
 #include <lwip/err.h>
@@ -43,6 +49,38 @@ static rg_network_state_t network_state = RG_NETWORK_DISABLED;
 static rg_wifi_config_t wifi_config = {0};
 static esp_netif_t *netif_sta, *netif_ap, *netif;
 static bool network_stopping = false;
+static bool wifi_driver_initialized = false;
+
+static esp_err_t init_wifi_driver(void)
+{
+    if (wifi_driver_initialized)
+        return ESP_OK;
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK)
+    {
+#ifdef CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+        RG_LOGE("SDIO radio initialization failed: %s; CMD GPIO%d=%d, DAT0 GPIO%d=%d, DAT1 GPIO%d=%d",
+                esp_err_to_name(err),
+                CONFIG_ESP_HOSTED_SDIO_PIN_CMD, gpio_get_level(CONFIG_ESP_HOSTED_SDIO_PIN_CMD),
+                CONFIG_ESP_HOSTED_SDIO_PIN_D0, gpio_get_level(CONFIG_ESP_HOSTED_SDIO_PIN_D0),
+                CONFIG_ESP_HOSTED_SDIO_PIN_D1, gpio_get_level(CONFIG_ESP_HOSTED_SDIO_PIN_D1));
+        gpio_dump_io_configuration(stdout,
+            (1ULL << CONFIG_ESP_HOSTED_SDIO_PIN_CLK) | (1ULL << CONFIG_ESP_HOSTED_SDIO_PIN_CMD) |
+            (1ULL << CONFIG_ESP_HOSTED_SDIO_PIN_D0) | (1ULL << CONFIG_ESP_HOSTED_SDIO_PIN_D1) |
+            (1ULL << CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE));
+#endif
+        return err;
+    }
+    err = esp_wifi_set_storage(WIFI_STORAGE_RAM);
+    if (err != ESP_OK)
+    {
+        esp_wifi_deinit();
+        return err;
+    }
+    wifi_driver_initialized = true;
+    return ESP_OK;
+}
 
 static void network_event_handler(void *arg, esp_event_base_t event_base, int32_t event_id, void *event_data)
 {
@@ -62,6 +100,8 @@ static void network_event_handler(void *arg, esp_event_base_t event_base, int32_
         }
         else if (event_id == WIFI_EVENT_STA_DISCONNECTED)
         {
+            const wifi_event_sta_disconnected_t *event = event_data;
+            RG_LOGW("Wi-Fi station disconnected (reason=%u)", (unsigned)event->reason);
             rg_system_event(RG_EVENT_NETWORK_DISCONNECTED, NULL);
             if (network_stopping)
             {
@@ -207,6 +247,9 @@ bool rg_network_wifi_start(void)
 
     network_stopping = false;
 
+    // A hosted radio may not be wired yet. Contact it only when Wi-Fi is enabled.
+    TRY(init_wifi_driver());
+
     if (wifi_config.ap_mode)
     {
         netif = netif_ap;
@@ -250,7 +293,8 @@ void rg_network_wifi_stop(void)
 #ifdef RG_ENABLE_NETWORKING
     RG_ASSERT(network_state > RG_NETWORK_DISABLED, "Please call rg_network_init() first");
     network_stopping = true;
-    esp_wifi_stop();
+    if (wifi_driver_initialized)
+        esp_wifi_stop();
     netif = NULL;
 #endif
 }
@@ -289,8 +333,12 @@ void rg_network_deinit(void)
     esp_sntp_stop();
     esp_event_handler_unregister(IP_EVENT, ESP_EVENT_ANY_ID, &network_event_handler);
     esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, &network_event_handler);
-    esp_wifi_stop();
-    esp_wifi_deinit();
+    if (wifi_driver_initialized)
+    {
+        esp_wifi_stop();
+        esp_wifi_deinit();
+        wifi_driver_initialized = false;
+    }
     netif = netif_ap = netif_sta = NULL;
     network_state = RG_NETWORK_DISABLED;
 #endif
@@ -312,6 +360,22 @@ bool rg_network_init(void)
 
     // Then TCP stack
     TRY(esp_netif_init());
+#ifdef CONFIG_ESP_HOSTED_ENABLED
+    // Initialize the local transport after the runtime is ready, rather than
+    // in ESP-Hosted's global constructor. This does not contact the radio.
+    // GPIO39-48 share the SD card's fixed 3.3 V LDO4 supply on this module.
+    if (!rg_storage_init_sdcard_power())
+        goto fail;
+    TRY(esp_hosted_init());
+#ifdef CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE
+    // Assist prototype wiring. External bus pull-ups are still required
+    // for reliable operation; the companion also pulls up its unused DAT3.
+    TRY(gpio_pullup_en(CONFIG_ESP_HOSTED_SDIO_PIN_CMD));
+    TRY(gpio_pullup_en(CONFIG_ESP_HOSTED_SDIO_PIN_D0));
+    TRY(gpio_pullup_en(CONFIG_ESP_HOSTED_SDIO_PIN_D1));
+    TRY(gpio_input_enable(CONFIG_ESP_HOSTED_SDIO_PIN_D1));
+#endif
+#endif
     netif_sta = esp_netif_create_default_wifi_sta();
     netif_ap = esp_netif_create_default_wifi_ap();
 
@@ -323,9 +387,9 @@ bool rg_network_init(void)
         nvs_flash_init();
 
     // Initialize wifi driver (it won't enable the radio yet)
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    TRY(esp_wifi_init(&cfg));
-    TRY(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+#ifndef CONFIG_ESP_WIFI_REMOTE_ENABLED
+    TRY(init_wifi_driver());
+#endif
 
     // Setup SNTP client but don't query it yet
     esp_sntp_setoperatingmode(SNTP_OPMODE_POLL);

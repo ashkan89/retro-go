@@ -22,9 +22,9 @@ manager during the first build; the firmware itself needs no network connection.
 - The multi-system emulator's hot loops use the flash cache on P4, preserving
   the small executable low-SRAM region for the OS and I/O. Other targets keep
   their existing IRAM placement.
-- Wi-Fi, Bluetooth, hosted networking, web server, and netplay are disabled for
-  this target. No radio module or transport is assumed. Other targets retain
-  their existing networking settings.
+- Wi-Fi uses an external ESP32-WROOM-32D running ESP-Hosted over SDIO.
+  See [WIFI.md](WIFI.md) for wiring, pull-ups and the required flash-voltage
+  handling. Bluetooth remains disabled.
 
 ## Wiring from the current S3 build
 
@@ -137,17 +137,14 @@ bilinear, odd-height and PIE alignment/tail tests on the device. Restore it to
 ## Reserved pins and future wireless targets
 
 GPIO34-38 (straps, with GPIO37/38 also used for the UART0 console), GPIO24-27
-(USB full-speed functions), and GPIO39-44 plus GPIO47/48 are left unused by this peripheral map. GPIO2-5 use
+(USB full-speed functions), and GPIO41/42/48 are left unused by this peripheral map. GPIO2-5 use
 the GPIO function rather than external pad JTAG; use USB Serial/JTAG or UART
 for debugging instead. Flash and PSRAM connections are internal to the module.
 
-For a future SDIO radio, GPIO39-44 can supply SDMMC slot 1's D0/D1/D2/D3/CLK/CMD;
-the SD card remains on SPI3. GPIO45/46 are SD-card signals and must not be
-assigned to the radio; the future SDIO connection is 4-bit, with D4-D7 unused.
-Reserving these pins does not implement a radio.
-An ESP32-WROOM-32D will need matching ESP-Hosted slave firmware, host transport,
-reset/boot wiring, power, and a separately verified Bluetooth transport/profile
-stack. Add a new target rather than enabling the current native Wi-Fi code on P4.
+The ESP32-WROOM-32D radio uses GPIO39/40/43/44 for SDMMC slot 1's
+D0/D1/CLK/CMD and GPIO47 for EN/reset. Its 1-bit firmware leaves DAT2 disabled
+to preserve the ESP32 GPIO12 flash-voltage boot strap. The SD card stays on SPI3;
+GPIO45/46 remain exclusively SD-card signals. See [WIFI.md](WIFI.md).
 
 USB HID/XInput host and SD-card MSC device mode use the P4 high-speed USB
 interface (module pads **16 DM / 17 DP**). Use a suitable USB carrier/circuit.
@@ -165,7 +162,8 @@ python rg_tool.py --target esp32-p4-n16r32-st7796 build-img
 python rg_tool.py --target esp32-p4-n16r32-st7796 --port COM3 install
 ```
 
-The target automatically disables networking; `--no-networking` is unnecessary.
+Networking is enabled through the external SDIO radio; `--no-networking`
+disables the application networking features.
 Default apps include factory, launcher, retro-core, prboom-go, gwenesis, fmsx,
 and retro-legacy. Install the complete image first. A packed `.img` includes
 padding and must be written at flash offset **0**, although its P4 bootloader
