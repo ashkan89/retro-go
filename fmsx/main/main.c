@@ -372,14 +372,7 @@ void PlayAllSound(int uSec)
     audio_remainder += (uint64_t)uSec * AUDIO_SAMPLE_RATE;
     unsigned int samples = (audio_remainder / 1000000) * 2;
     audio_remainder %= 1000000;
-    if (samples)
-    {
-        if (rg_audio_is_enabled())
-            rg_task_send(audioQueue, &(rg_task_msg_t){.dataInt = samples});
-        else
-            // Keep the emulation clock on the main task; the mixer stays blocked on its queue.
-            rg_audio_submit(NULL, samples / 2);
-    }
+    if (samples) rg_task_send(audioQueue, &(rg_task_msg_t){.dataInt = samples});
     FrameStartTime += rg_system_timer() - start;
 }
 
@@ -448,8 +441,7 @@ static void audioTask(void *arg)
     rg_task_msg_t msg;
     while (rg_task_peek(&msg))
     {
-        if (rg_audio_is_enabled())
-            RenderAndPlayAudio(msg.dataInt);
+        RenderAndPlayAudio(msg.dataInt);
         rg_task_receive(&msg);
     }
 }

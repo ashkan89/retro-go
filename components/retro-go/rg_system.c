@@ -648,10 +648,6 @@ static void system_monitor_task(void *arg)
 
         update_statistics();
 
-        // Auto routing must still detect headphones when all audio workers are stopped.
-        if (!rg_audio_is_enabled())
-            rg_audio_get_route();
-
         rg_battery_t battery = rg_input_read_battery();
         rg_system_set_indicator(RG_INDICATOR_POWER_LOW, (battery.present && battery.level <= 2.f));
         update_indicators(false);

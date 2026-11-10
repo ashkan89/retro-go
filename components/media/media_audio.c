@@ -151,10 +151,6 @@ static void audio_task(void *arg)
 
     while (!audio.stop)
     {
-        // Leave PCM intact at zero volume and block before EQ/FFT/mixing. A bounded
-        // wait lets stop/seek controls finish even if the user leaves volume at zero.
-        if (!rg_audio_wait_enabled(100))
-            continue;
         rg_mutex_take(audio.lock, -1);
         if (__atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE) || (audio.paused && audio.fade <= 0.0f))
         {
@@ -337,7 +333,7 @@ void media_audio_stop(void)
     rg_mutex_take(audio.lock, -1);
     audio.fade_target = 0.0f;
     rg_mutex_give(audio.lock);
-    for (int i = 0; i < 10 && audio.fade > 0.0f && audio.alive && rg_audio_is_enabled(); ++i)
+    for (int i = 0; i < 10 && audio.fade > 0.0f && audio.alive; ++i)
         rg_task_delay(MEDIA_FADE_MS / 4 + 1);
 
     audio.stop = true;

@@ -162,10 +162,6 @@ void rg_buzzer_statistics(void *args)
 	int cacheSamples = (int) args;
     while (sampleQueue)
     {
-        if (!rg_audio_wait_enabled(500))
-            continue;
-        if (!sampleQueue)
-            break;
         RG_LOGD("underflows %d, overflows %d, averageSamplesNeeded: %.6f, sampleQueue: [0,%d,%d]", underflows, overflows, averageSamplesNeeded, uxQueueMessagesWaiting(sampleQueue), cacheSamples*2);
         rg_task_delay(500);
     }
@@ -374,17 +370,6 @@ static bool buzzer_set_mute(bool mute)
     return true;
 }
 
-static bool buzzer_set_enabled(bool enabled)
-{
-    if (!enabled)
-    {
-        buzzer_set_mute(true);
-        xQueueReset(sampleQueue);
-        averageSamplesNeeded = 0;
-    }
-    return true;
-}
-
 const rg_audio_driver_t rg_audio_driver_buzzer = {
     .name = "buzzer",
     .init = buzzer_init,
@@ -394,7 +379,6 @@ const rg_audio_driver_t rg_audio_driver_buzzer = {
     .set_volume = NULL,
     .set_sample_rate = NULL,
     .get_error = NULL,
-    .set_enabled = buzzer_set_enabled,
 };
 
 #endif // RG_AUDIO_USE_BUZZER_PIN

@@ -159,12 +159,6 @@ static uint64_t audio_remainder, msx_samples;
 static int64_t FrameStartTime;
 static int msx_error;
 static int64_t rg_system_timer(void) { return 0; }
-static bool msx_enabled = true;
-static bool rg_audio_is_enabled(void) { return msx_enabled; }
-static void rg_audio_submit(const rg_audio_frame_t *frames, size_t count) {
-    if (frames || msx_enabled) msx_error = 1;
-    msx_samples += count * 2;
-}
 static bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg) {
     msx_samples += msg->dataInt;
     if (msg->dataInt & 1) msx_error = 1;
@@ -174,9 +168,7 @@ static bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg) {
     msx_runner = r'''
 int msx_audio_selftest(void) {
     const unsigned intervals[] = {1, 509, 512, 20000, 50000};
-    for (unsigned enabled = 0; enabled < 2; enabled++)
     for (unsigned i = 0; i < RG_COUNT(intervals); i++) {
-        msx_enabled = enabled;
         audio_remainder = msx_samples = msx_error = 0;
         PlayAllSound(0); PlayAllSound(-1);
         for (unsigned n = 0; n < 1000; n++) PlayAllSound(intervals[i]);

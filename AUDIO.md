@@ -9,38 +9,6 @@ ESP32-S3 DIY configurations put emulator execution on core 0 and audio/display
 tasks on core 1. The speaker amplifier and optional headphone DAC share the
 same I2S clock/data bus; emulator selection does not change the physical wiring.
 
-## Zero-volume scheduling
-
-Setting the active output's volume to 0% stops the shared I2S writer, frees its
-software queue and synchronization objects, stops I2S DMA, and disables the
-speaker/headphone amplifier. Raising volume creates a fresh writer/queue and
-restarts DMA. This applies to every emulator through `rg_audio_submit()`.
-The buzzer stops its sample timer and discards queued samples; SDL pauses and
-clears its output queue. Temporary menu mute remains separate from this state.
-
-PC Engine and Doom audio workers block on the shared enabled event before
-synthesis/mixing. MSX stops posting audio requests and discards any outstanding
-requests without mixing, leaving its worker blocked on its queue. Emulators
-whose speed follows audio delivery use a sample-counted silent clock on their
-calling task, with fractional samples carried forward and scheduler sleeps
-outside the output lock. MSX moves this pacing to its main task at zero volume.
-Emulation continues while the audio workers are stopped.
-
-The media output worker waits before consuming PCM or running EQ/FFT at zero
-volume, preserving playback position and buffered PCM until volume is raised.
-Its event wait has a 100 ms timeout so stop/seek commands remain available.
-Speaker/headphone volumes remain independent. Status polling keeps automatic
-jack detection working even with the writer stopped, and switching to a route
-with nonzero saved volume wakes the audio workers. Sample-rate changes while
-disabled leave DMA stopped.
-
-`python tools/test_audio_power.py --cc /path/to/cc` checks the production output
-controls with mocked RTOS events and hardware: saved-zero startup, silent-clock
-timing, worker wakeups, route/sink changes, menu mute, sample rates, restart
-failures, I2S lifecycle with and without volume ramps, and MSX request/pacing
-behavior. The media regression suite also checks buffered PCM across zero-volume
-stop/resume. These tests do not measure physical audio or task scheduling on a board.
-
 ## Audio delivery by emulator
 
 | Emulator | Producer / adapter | Delivery and rendering relationship |

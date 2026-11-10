@@ -48,14 +48,6 @@ static bool driver_set_volume(int volume)
     return true;
 }
 
-static bool driver_set_enabled(bool enabled)
-{
-    SDL_PauseAudioDevice(audioDevice, !enabled);
-    if (!enabled)
-        SDL_ClearQueuedAudio(audioDevice);
-    return true;
-}
-
 static const char *driver_get_error(void)
 {
     return SDL_GetError();
@@ -70,7 +62,6 @@ const rg_audio_driver_t rg_audio_driver_sdl2 = {
     .set_volume = driver_set_volume,
     .set_sample_rate = NULL,
     .get_error = driver_get_error,
-    .set_enabled = driver_set_enabled,
 };
 
 #endif // RG_AUDIO_USE_SDL2

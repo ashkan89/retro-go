@@ -115,9 +115,9 @@ static struct {
     volatile bool running;
     uint32_t write_errors;
     int sample_rate;
-    volatile bool output_enabled;
 #if RG_AUDIO_VOLUME_RAMP_MS
     int ramp_gain, ramp_target, ramp_step, ramp_remaining;
+    volatile bool output_enabled;
 #endif
 #if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
     int64_t dma_deadline, diagnostic_time, maximum_gap;
@@ -135,7 +135,7 @@ static void apply_route(void)
 {
     // A board with no enable pins at all (amplifier hardwired on) has nothing to do here
     bool headphones = state.route == RG_AUDIO_ROUTE_HEADPHONES;
-    bool audible = state.output_enabled && !state.muted;
+    bool audible = !state.muted;
 #if RG_AUDIO_VOLUME_RAMP_MS
     // Software mute keeps the selected amplifier powered. Repeated SD_MODE /
     // XSMT transitions at menu entry/exit produce clicks on external DACs.
@@ -346,9 +346,9 @@ static bool driver_init(int device, int sample_rate)
     state.last_error = NULL;
     state.device = device;
     state.sample_rate = sample_rate;
-    state.output_enabled = false;
 #if RG_AUDIO_VOLUME_RAMP_MS
     state.ramp_gain = state.ramp_target = state.ramp_step = state.ramp_remaining = 0;
+    state.output_enabled = true;
 #endif
 #if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
     state.dma_deadline = state.diagnostic_time = state.maximum_gap = 0;
@@ -439,9 +439,8 @@ static bool driver_init(int device, int sample_rate)
     #endif
     }
 
-    // The shared service starts the writer only when the selected route has nonzero volume.
-    if (!state.last_error)
-        i2s_stop(I2S_NUM_0);
+    if (!state.last_error && !start_audio_task())
+        i2s_driver_uninstall(I2S_NUM_0);
 
     // The outputs stay shut down until rg_audio_init() applies the unmute, which happens once
     // the writer task is up and the DMA buffers hold real samples.
@@ -452,17 +451,16 @@ static bool driver_set_sample_rates(int sampleRate)
 {
     if (i2s_set_sample_rates(I2S_NUM_0, sampleRate) != ESP_OK)
         return false;
-    // The legacy clock setter restarts DMA even if it was stopped at zero volume.
-    if (!state.output_enabled)
-        i2s_stop(I2S_NUM_0);
     state.sample_rate = sampleRate;
     return true;
 }
 
 static bool driver_deinit(void)
 {
+#if RG_AUDIO_VOLUME_RAMP_MS
     state.output_enabled = false;
     apply_route();
+#endif
     stop_audio_task();
     i2s_driver_uninstall(I2S_NUM_0);
     if (state.device == DEVICE_INT_DAC)
@@ -509,50 +507,7 @@ static bool driver_set_device(int device)
 
 static rg_audio_route_t driver_get_route(void)
 {
-#if RG_AUDIO_USE_HEADPHONE_JACK
-    // The writer no longer polls when volume is zero. Control/status reads keep Auto alive.
-    if (!state.running)
-        poll_jack();
-#endif
     return state.route;
-}
-
-static bool driver_set_enabled(bool enabled)
-{
-    if (enabled == state.output_enabled)
-        return true;
-
-    if (!enabled)
-    {
-        state.output_enabled = false;
-        apply_route();
-        stop_audio_task();
-        i2s_stop(I2S_NUM_0);
-        i2s_zero_dma_buffer(I2S_NUM_0);
-    }
-    else
-    {
-        i2s_zero_dma_buffer(I2S_NUM_0);
-#if RG_AUDIO_VOLUME_RAMP_MS
-        state.ramp_gain = state.ramp_target = state.ramp_step = state.ramp_remaining = 0;
-#endif
-        if (i2s_start(I2S_NUM_0) != ESP_OK)
-        {
-            state.last_error = "Unable to restart I2S";
-            return false;
-        }
-        if (!start_audio_task())
-        {
-            i2s_stop(I2S_NUM_0);
-            return false;
-        }
-        state.output_enabled = true;
-#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
-        state.dma_deadline = 0;
-#endif
-        apply_route();
-    }
-    return true;
 }
 
 static bool write_dma(const rg_audio_frame_t *frames, size_t count)
@@ -761,7 +716,6 @@ const rg_audio_driver_t rg_audio_driver_i2s = {
     .set_device = driver_set_device,
     .get_route = driver_get_route,
     .get_error = driver_get_error,
-    .set_enabled = driver_set_enabled,
 };
 
 #endif // RG_AUDIO_USE_INT_DAC || RG_AUDIO_USE_EXT_DAC

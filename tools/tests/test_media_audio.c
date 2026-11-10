@@ -294,27 +294,6 @@ static void test_buffering_pause(void)
     assert(media_audio_underruns() == 1 && media_audio_get_buffering());
 }
 
-static void test_zero_volume(void)
-{
-    int16_t pcm[512] = {0};
-    start_output();
-    media_audio_set_buffering(false);
-    assert(media_audio_write(pcm, 256, 0) == 256);
-    system_audio_enabled = false;
-    delay_hook = stop_on_delay;
-    audio_task(NULL);
-    assert(submitted == 0 && media_audio_buffered_frames() == 256);
-    assert(media_audio_frames_played() == 0 && media_audio_underruns() == 0);
-    assert(!audio.lock->held);
-
-    // Raising volume resumes the preserved PCM, and stop remains usable at zero.
-    system_audio_enabled = true;
-    audio.stop = false;
-    delay_hook = NULL;
-    audio_task(NULL);
-    assert(submitted == 256 && media_audio_buffered_frames() == 0);
-}
-
 static void test_fifo_and_position(void)
 {
     int16_t pcm[600 * 2];
@@ -464,7 +443,6 @@ int main(void)
     media_audio_release(MEDIA_AUDIO_OWNER_EMULATOR);
     assert(media_audio_get_owner() == MEDIA_AUDIO_OWNER_PLAYER);
     test_buffering_pause();
-    test_zero_volume();
     test_transient_starvation();
     test_fifo_and_position();
     test_dma_tail();

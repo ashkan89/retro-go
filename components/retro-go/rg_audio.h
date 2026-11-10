@@ -32,7 +32,6 @@ typedef struct
     bool (*set_device)(int device);                               // Optional
     rg_audio_route_t (*get_route)(void);                          // Optional
     const char *(*get_error)(void);                               // Optional
-    bool (*set_enabled)(bool enabled);                           // Optional: stop/start output processing
 } rg_audio_driver_t;
 
 typedef struct
@@ -51,13 +50,7 @@ typedef struct
 
 void rg_audio_init(int sample_rate);
 void rg_audio_deinit(void);
-// At zero volume, samples are discarded and the caller sleeps to preserve playback timing.
-// NULL frames may be used to advance this silent clock without synthesizing samples.
 void rg_audio_submit(const rg_audio_frame_t *frames, size_t count);
-// Zero volume stops output processing. Temporary menu mute does not change this state.
-bool rg_audio_is_enabled(void);
-// Wait without doing audio work; timeout < 0 waits indefinitely. Returns the current state.
-bool rg_audio_wait_enabled(int timeout_ms);
 rg_audio_counters_t rg_audio_get_counters(void);
 
 // const char **rg_audio_get_drivers(void);

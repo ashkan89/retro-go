@@ -286,8 +286,6 @@ static void soundTask(void *arg)
 {
     while (1)
     {
-        if (!rg_audio_wait_enabled(-1))
-            continue;
         bool haveMusic = snd_MusicVolume > 0 && musicPlaying;
         bool haveSFX = snd_SfxVolume > 0 && I_AnySoundStillPlaying();
 
