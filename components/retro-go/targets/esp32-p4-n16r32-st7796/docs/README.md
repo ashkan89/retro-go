@@ -1,93 +1,33 @@
 # WT9932P4-TINY N16R32 + ST7796 (480 x 320)
 
-Target: `esp32-p4-n16r32-st7796`. ESP-IDF **5.5.5** is required for the
-configuration verified here. The board is the
-[Wireless-Tag WT9932P4-TINY](https://en.wireless-tag.com/product-item-72.html),
-using an external SPI ST7796 display. The module
-does not contain a display, SD socket, battery charger, buttons, or audio codec.
-These connections are our DIY assignment, not a manufacturer carrier pinout.
-JPEG artwork uses `espressif/esp_jpeg` 1.3.2, resolved by the ESP-IDF component
-manager during the first build; the firmware itself needs no network connection.
+Target: `esp32-p4-n16r32-st7796`, ESP-IDF **5.5.5**. This is the Wireless-Tag
+TINY development board with an external SPI ST7796 display and the onboard
+rear microSD socket. It uses 16 MB QIO flash at 80 MHz and 32 MB HEX PSRAM at
+200 MHz. P4 silicon revisions **1.0 through 1.99** are selected explicitly;
+P4X / revision 3.x needs another target. Revision checks stay enabled.
 
-## Silicon and memory
+## CPU and wiring
 
-- 16 MB QIO flash at 80 MHz; 32 MB in-package **16-line** PSRAM at 200 MHz.
-- Selects P4 revisions **1.0 through 1.99**, including 1.3, explicitly. A module
-  name alone cannot prove the fitted silicon revision. Run
-  `python -m esptool --chip esp32p4 --port COM3 chip_id` before flashing and
-  check the reported revision. Do not use `--force` to bypass incompatibility.
-- The newer **N16R32X / P4 v3.2** module needs a separate configuration.
-- CPU: **360 MHz**, the supported IDF default for pre-v3 silicon. 400 MHz on
-  pre-v3 chips requires additional Espressif qualification; no overclock is used.
-- The multi-system emulator's hot loops use the flash cache on P4, preserving
-  the small executable low-SRAM region for the OS and I/O. Other targets keep
-  their existing IRAM placement.
-- Wi-Fi uses an external ESP32-WROOM-32D running ESP-Hosted over SDIO.
-  See [WIFI.md](WIFI.md) for wiring, pull-ups and the required flash-voltage
-  handling. Bluetooth remains disabled.
+The requested CPU profile is **400 MHz**, using Espressif's explicit pre-v3
+experimental override. The generic board page advertises a 400 MHz maximum;
+Espressif still requires additional qualification for each pre-v3 chip.
+The earlier connected revision 1.3 board was tested at 360 MHz.
 
-## Wiring from the current S3 build
+Use the onboard J5 card socket in **4-bit SDMMC slot 0**, GPIO39-44, LDO4
+at 3.3 V, up to 40 MHz. Remove the old external SPI SD module/wires on
+GPIO45/46/9/10. Wi-Fi moves to slot 1 on GPIO49/50/52/53/54, including reset.
+USB mass-storage mode uses the same onboard card and bus settings as FAT.
 
-All signal numbers below are **GPIO numbers**. The last column is the core
-module's physical pad number from the WT0132P4-A1 datasheet, not a carrier header.
-Use 3.3 V logic and common ground. Preserve the existing peripheral power and
-driver circuits; do not connect a speaker, motor, or raw LCD backlight to a GPIO.
+See [BOARD.md](BOARD.md) for the complete GPIO/header table, card contacts,
+migration instructions, power requirements and official sources. The LCD
+uses exposed SPI2 CS/MOSI/CLK pins at its existing 80 MHz setting; I2S, buttons,
+battery and vibration use the exposed pins in that table. The onboard GPIO51
+WS2812 uses GRB byte order, matching the manufacturer BSP. Use common ground,
+3.3 V logic, and the existing external amplifier/backlight/motor drivers.
 
-| Existing connection | S3 GPIO | P4 GPIO | Module pad |
-|---|---:|---:|---:|
-| ST7796 CS | 10 | 28 | 24 |
-| ST7796 MOSI / SDA | 13 | 29 | 25 |
-| ST7796 SCK | 14 | 30 | 26 |
-| ST7796 DC | 11 | 31 | 27 |
-| ST7796 RESET | 12 | 32 | 28 |
-| LCD backlight driver | 21 | 33 | 29 |
-| SD CS | 42 | 45 | 44 |
-| SD MOSI / CMD | 41 | 46 | 45 |
-| SD SCK | 40 | 9 | 62 |
-| SD MISO / DAT0 | 39 | 10 | 63 |
-| I2S BCLK | 5 | 20 | 78 |
-| I2S LRCLK / WS | 4 | 21 | 79 |
-| I2S DATA to both DACs | 6 | 22 | 80 |
-| MAX98357A SD_MODE circuit | 9 | 17 | 75 |
-| PCM5102A XSMT | 46 | 19 | 77 |
-| A button | 45 | 2 | 55 |
-| B button | 47 | 3 | 56 |
-| Select button | 16 | 4 | 57 |
-| Start button | 15 | 5 | 58 |
-| Menu button | 2 | 6 | 59 |
-| Option button | 7 | 11 | 65 |
-| Up button | 17 | 12 | 66 |
-| Down button | 3 | 13 | 67 |
-| Left button | 8 | 14 | 68 |
-| Right button | 18 | 15 | 69 |
-| Battery divider midpoint | 1 | 16 / ADC1_CH0 | 74 |
-| Onboard WS2812 data | 48 | 51 | See TINY board header |
-| Vibration transistor input | 38 | 18 | 76 |
-
-GPIO0/1/7/8 are not exposed on this board's headers. SD CS and MOSI use the
-confirmed exposed GPIO45/46 instead; SD clock and MISO stay on GPIO9/10.
-GPIO45/46 use the P4's VDD_IO_5 power bank. On this module it is supplied by
-LDO4, which the firmware must enable at 3.3 V **before** initializing SPI.
-This applies even though the SD card itself already has external power.
-Filesystem and USB MSC startup share the same I/O-bank initialization.
-This supersedes the earlier GPIO7/8 wiring assignment and firmware image.
-
-LCD MISO stays disconnected. Buttons switch to ground with internal pull-ups.
-Start + Select also opens Menu. No headphone-detect GPIO is assigned; use the
-Audio out setting, as on the S3 build. See the root AUDIO.md and BATTERY.md for
-the shared amplifier routing and protected 1S battery / 100k + 100k divider.
-The P4 target uses the new ADC oneshot driver with curve-fitting calibration.
-If the chip lacks usable calibration eFuses, battery monitoring is disabled
-with a log message and the rest of the system continues to boot.
-Remove the battery/LED/vibration definitions in config.h if those accessories
-are omitted. The bare core module's VCC is pad 41 (5 V in the module datasheet);
-CHIP_PU is pad 70. A carrier's power input may differ.
-
-LCD uses SPI2's native CS/MOSI/CLK pins, RGB565, landscape 480 x 320, and the
-existing S3 ST7796 orientation/gamma settings. This target selects **80 MHz**.
-Use 40 MHz if the physical wiring cannot sustain 80 MHz. SD uses a separate SPI3 bus
-capped at 10 MHz by the storage recovery driver. Keep wires short and retain SD pull-ups/decoupling. The two buses can
-transfer independently. The init driver now waits 120 ms after reset/sleep-out.
+The emulator hot loops retain cached flash/PSRAM execution and the P4-specific
+memory/JIT settings. JPEG artwork retains the hardware/software fallback paths.
+See [WIFI.md](WIFI.md) for the external ESP32-WROOM-32D companion wiring.
 
 ## Hardware screen scaling
 
@@ -134,24 +74,16 @@ diagnostics: configure `RG_P4_SELFTEST=ON` for pixel readback, endian/palette,
 bilinear, odd-height and PIE alignment/tail tests on the device. Restore it to
 `OFF` for production builds.
 
-## Reserved pins and future wireless targets
+## Reserved pins and USB
 
-GPIO34-38 (straps, with GPIO37/38 also used for the UART0 console), GPIO24-27
-(USB full-speed functions), and GPIO41/42/48 are left unused by this peripheral map. GPIO2-5 use
-the GPIO function rather than external pad JTAG; use USB Serial/JTAG or UART
-for debugging instead. Flash and PSRAM connections are internal to the module.
+The [shared pin audit](BOARD.md) reserves FUSB, FPC, BOOT, UART/strap pins, and
+GPIO51 for their board functions. Slot 0 belongs to the onboard card. Slot 1
+routes the radio through GPIO49/50/52/53 with EN/reset on GPIO54. The two buses
+have separate signals; neither reuses the other's pins.
 
-The ESP32-WROOM-32D radio uses GPIO39/40/43/44 for SDMMC slot 1's
-D0/D1/CLK/CMD and GPIO47 for EN/reset. Its 1-bit firmware leaves DAT2 disabled
-to preserve the ESP32 GPIO12 flash-voltage boot strap. The SD card stays on SPI3;
-GPIO45/46 remain exclusively SD-card signals. See [WIFI.md](WIFI.md).
-
-USB HID/XInput host and SD-card MSC device mode use the P4 high-speed USB
-interface (module pads **16 DM / 17 DP**). Use a suitable USB carrier/circuit.
-Host operation needs a powered, current-limited 5 V VBUS supply; the module's
-DP/DM pads do not supply VBUS. Host and MSC device modes are exclusive, as on S3.
-Keep the flash/debug console on UART0 GPIO37/38, or the separate USB Serial/JTAG
-interface supported by your carrier. USB wiring is not a GPIO remap of S3 USB.
+HUSB supplies native high-speed USB HID/XInput host or exclusive SD-card MSC
+device mode. Host operation requires a suitable powered/current-limited VBUS
+connection. FUSB provides the separate Serial/JTAG flashing/debug interface.
 
 ## Build and install
 
@@ -170,7 +102,7 @@ padding and must be written at flash offset **0**, although its P4 bootloader
 is at **0x2000**. The factory updater uses that same P4 bootloader range.
 Do not flash an S3 image on P4.
 
-## Local build verification
+## Previous configuration build verification
 
 Verified with ESP-IDF 5.5.5: all eight default applications build, and the full
 image fits in 16 MB with the configured partition headroom. The packed image
@@ -197,7 +129,7 @@ RV32 JIT execution, PPA output pixels and save-state restoration. See
 [performance measurements and audio findings](PERFORMANCE.md) and
 [GBA setup and limitations](../../../../../gbsp/README.md).
 
-## Hardware validation still required
+## Previous 360 MHz / external-SPI hardware validation
 
 On the connected COM3 board, revision v1.3 and 32 MB PSRAM were confirmed.
 Enabling LDO4 resolved the SD initialization CRC error (0x109); the launcher

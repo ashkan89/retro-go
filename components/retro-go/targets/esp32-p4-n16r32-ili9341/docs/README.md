@@ -1,88 +1,25 @@
 # Wireless-Tag WT9932P4-TINY N16R32 + ILI9341
 
-Target: `esp32-p4-n16r32-ili9341`, ESP-IDF **5.5.5**, COM3.
-The connected board reports **P4 revision 1.3**. This target supports v1.0-v1.99:
-360 MHz dual-core CPU, 16 MB QIO flash at 80 MHz, 32 MB 16-line PSRAM at 200 MHz.
+Target: `esp32-p4-n16r32-ili9341`, ESP-IDF **5.5.5**.
+The board uses original P4 revision 1.x silicon, 16 MB QIO flash at 80 MHz,
+32 MB HEX PSRAM at 200 MHz, and an external 320 x 240 ILI9341 display.
+The requested CPU profile is **400 MHz**, using Espressif's explicit pre-v3
+experimental override. Qualification for that speed is required separately;
+the previously connected revision 1.3 board was tested at 360 MHz.
 P4X / N16R32X revision 3.x needs another target.
 
-The supplied [product page](https://en.wireless-tag.com/product-item-72.html)
-failed to load during this audit. Pin assignments were checked against the
-manufacturer's [TINY guide](https://wiki.wireless-tag.com/docs/en/WT9932P4-TINY/board_features.html)
-and [schematic V1.3](https://res.8ms.xyz/wiki_assets/WT9932P4-TINY/WT9932P4-TINY_SCH_V1.3.pdf).
-Positions below are **header positions**, not module solder-pad numbers.
-Follow the board silkscreen for orientation.
+## Board wiring and onboard storage
 
-## Current wiring
+Use the onboard rear J5 microSD socket: **4-bit SDMMC slot 0**, GPIO39-44,
+LDO4 at 3.3 V, up to 40 MHz. Remove the old external SPI SD wiring on
+GPIO45/46/9/10. Wi-Fi moves to slot 1 on GPIO49/50/52/53/54, including reset.
 
-The user selected **keep the current SPI SD wiring**. LCD, audio, buttons,
-battery divider and vibration driver are external accessories. GPIO51 drives
-the onboard addressable RGB LED.
-
-| Connection | GPIO | TINY header position |
-|---|---:|---|
-| ILI9341 CS | 28 | Left 20 |
-| ILI9341 MOSI / SDA | 29 | Left 21 |
-| ILI9341 SCK | 30 | Left 22 |
-| ILI9341 DC | 31 | Left 23 |
-| ILI9341 RESET | 32 | Left 17 |
-| LCD backlight driver | 33 | Left 16 |
-| SD CS / DAT3 | 45 | Right 21 |
-| SD MOSI / CMD | 46 | Right 20 |
-| SD SCK | 9 | Right 7 |
-| SD MISO / DAT0 | 10 | Right 6 |
-| I2S BCLK | 20 | Left 5 |
-| I2S LRCLK / WS | 21 | Left 6 |
-| I2S DATA to MAX98357A + PCM5102A | 22 | Left 7 |
-| MAX98357A SD_MODE circuit | 17 | Left 2 |
-| PCM5102A XSMT | 19 | Left 4 |
-| A | 2 | Right 12 |
-| B | 3 | Right 11 |
-| Select | 4 | Right 10 |
-| Start | 5 | Right 9 |
-| Menu | 6 | Right 8 |
-| Option | 11 | Right 5 |
-| Up | 12 | Right 4 |
-| Down | 13 | Right 3 |
-| Left | 14 | Right 2 |
-| Right | 15 | Right 1 |
-| Battery divider midpoint | 16 / ADC1_CH0 | Left 1 |
-| Vibration transistor input | 18 | Left 3 |
-| Onboard WS2812 data | 51 | Onboard LED |
-
-Use common ground and 3.3 V logic. LCD MISO remains disconnected. Buttons switch
-to ground with internal pull-ups; Start + Select also opens Menu. Battery ADC
-uses the existing protected 1S battery and 100k/100k divider. See root AUDIO.md
-and BATTERY.md for the external amplifier, motor and battery circuits.
-Power the TINY through USB or its 5 V input. Its labeled 3.3 V header is an
-output, not the documented power input. Do not connect a raw motor, speaker or
-LCD backlight load directly to a GPIO.
-
-GPIO0/1/7/8 go to FPC connectors rather than these two headers. GPIO24/25 belong
-to FUSB; GPIO35 is BOOT. GPIO51 already connects to the onboard LED. GPIO37/38
-are reserved here for UART0/debug.
-
-GPIO45/46 require **LDO4 at 3.3 V** before SD SPI startup. Normal filesystem and
-USB MSC modes both enable that supply and use a **10 MHz** SD clock. Filesystem
-transfers retain CRC checks, bounded retries, clock reduction after errors and
-single-sector SPI writes. USB MSC owns the raw card exclusively; FAT is not
-mounted at the same time.
-
-## Optional SDMMC connection
-
-All six native signals are exposed. The rear TF footprint is shown with pull-ups
-in the schematic. A future 4-bit target could use the following wiring:
-
-| Signal | GPIO | Header |
-|---|---:|---|
-| CLK | 43 | Right 23 |
-| CMD | 44 | Right 22 |
-| D0 | 39 | Left 10 |
-| D1 | 40 | Right 24 |
-| D2 | 41 | Right 25 |
-| D3 | 42 | Right 26 |
-
-IDF supports 20/40 MHz SDMMC with GPIO routing through slot 1. The existing SPI
-wires do not provide that connection. This target keeps SPI, as requested.
+The shared [board wiring guide](../../esp32-p4-n16r32-st7796/docs/BOARD.md)
+contains the complete GPIO/header table, card contacts, migration instructions,
+power connections, clock qualification requirement, and manufacturer sources.
+LCD, audio, buttons, battery and motor assignments match that table.
+The onboard GPIO51 WS2812 uses the manufacturer BSP's GRB byte order.
+USB mass-storage mode uses the same onboard card and bus settings as FAT.
 
 ## Performance and capabilities
 
@@ -167,7 +104,7 @@ round trips. Disable both again
 for production images. Host mocks check failure handling and ownership; they
 do not establish accelerator timing or game FPS.
 
-## Verified on COM3, 2026-11-09
+## Previous 360 MHz / external-SPI configuration: COM3, 2026-11-09
 
 - All eight apps built with ESP-IDF 5.5.5, 360 MHz and PSRAM XiP. The complete
   image is 13,959,424 bytes, within 16 MB flash. CRC, partition bounds, exact app
@@ -196,4 +133,5 @@ do not establish accelerator timing or game FPS.
 
 This target uses the same ESP32-WROOM-32D SDIO companion as the ST7796 target.
 See the shared [Wi-Fi wiring, pull-ups and flash-voltage guide](../../esp32-p4-n16r32-st7796/docs/WIFI.md).
-The SD card keeps its existing SPI3 wiring. Bluetooth remains disabled.
+The onboard SD card and Wi-Fi companion use separate SDMMC slots and GPIOs.
+Bluetooth remains disabled.

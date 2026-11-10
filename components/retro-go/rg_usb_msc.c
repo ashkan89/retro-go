@@ -1,12 +1,16 @@
 #include "rg_system.h"
 #include "rg_usb_msc.h"
 
-#if defined(ESP_PLATFORM) && defined(RG_ENABLE_USB_MSC) && defined(RG_STORAGE_SDSPI_HOST)
+#if defined(ESP_PLATFORM) && defined(RG_ENABLE_USB_MSC) && (defined(RG_STORAGE_SDSPI_HOST) || defined(RG_STORAGE_SDMMC_HOST))
 
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef RG_STORAGE_SDSPI_HOST
 #include <driver/sdspi_host.h>
+#else
+#include "rg_storage_sdmmc.h"
+#endif
 #include <esp_attr.h>
 #include <esp_system.h>
 #include <sdmmc_cmd.h>
@@ -77,7 +81,7 @@ void rg_usb_msc_request(void)
 
 static esp_err_t usb_sdcard_transaction(int slot, sdmmc_command_t *cmd)
 {
-#if RG_STORAGE_SD_MEMORY_ONLY
+#if RG_STORAGE_SD_MEMORY_ONLY && defined(RG_STORAGE_SDSPI_HOST)
     // Match the filesystem mount's memory-card-only SPI initialization.
     if (cmd->opcode == 52 || cmd->opcode == 5)
         return ESP_ERR_NOT_SUPPORTED;
@@ -92,9 +96,14 @@ static esp_err_t usb_sdcard_transaction(int slot, sdmmc_command_t *cmd)
         usb_activity_color = C_RED;
         usb_activity_sequence++;
     }
+#ifdef RG_STORAGE_SDSPI_HOST
     return sdspi_host_do_transaction(slot, cmd);
+#else
+    return sdmmc_host_do_transaction(slot, cmd);
+#endif
 }
 
+#ifdef RG_STORAGE_SDSPI_HOST
 static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
 {
     if (!rg_storage_init_sdcard_power())
@@ -149,6 +158,48 @@ static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
     *out_card = card;
     return ESP_OK;
 }
+#else
+static esp_err_t init_raw_sdcard(sdmmc_card_t **out_card, int *out_slot)
+{
+    if (!rg_storage_init_sdcard_power())
+        return ESP_FAIL;
+
+    sdmmc_host_t host;
+    sdmmc_slot_config_t slot;
+    rg_storage_configure_sdmmc(&host, &slot);
+    host.do_transaction = usb_sdcard_transaction;
+    sdmmc_card_t *card = calloc(1, sizeof(*card));
+    if (!card)
+        return ESP_ERR_NO_MEM;
+
+    esp_err_t err = host.init();
+    if (err != ESP_OK)
+    {
+        free(card);
+        return err;
+    }
+    err = sdmmc_host_init_slot(host.slot, &slot);
+    if (err != ESP_OK)
+    {
+        // This exclusive boot mode has no Wi-Fi/other SDMMC clients. The slot
+        // did not acquire a reference, so release the newly initialized host.
+        sdmmc_host_deinit();
+        free(card);
+        return err;
+    }
+    err = sdmmc_card_init(&host, card);
+    if (err != ESP_OK)
+    {
+        sdmmc_host_deinit_slot(host.slot);
+        free(card);
+        return err;
+    }
+
+    *out_slot = host.slot;
+    *out_card = card;
+    return ESP_OK;
+}
+#endif
 
 static void draw_status(const char *error)
 {
@@ -330,9 +381,13 @@ void rg_usb_msc_run(void)
         tinyusb_msc_uninstall_driver();
     if (card)
     {
+#ifdef RG_STORAGE_SDSPI_HOST
         sdspi_host_remove_device(sd_slot);
-        free(card);
         spi_bus_free(RG_STORAGE_SDSPI_HOST);
+#else
+        sdmmc_host_deinit_slot(sd_slot);
+#endif
+        free(card);
     }
     rg_task_delay(100);
     esp_restart();

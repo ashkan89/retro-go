@@ -8,26 +8,29 @@ ESP Wi-Fi Remote **1.3.1**. Bluetooth is disabled.
 
 ## Connect with power off
 
-All numbers are **GPIO numbers**, not physical header positions.
+All numbers are GPIO numbers. These pins replace the previous radio mapping;
+the onboard SD card now owns GPIO39-44 on native SDMMC slot 0.
 
-| P4 | ESP32-WROOM-32D / development board | Function |
-|---|---|---|
-| GPIO43 | GPIO14 | SDIO CLK |
-| GPIO44 | GPIO15 | SDIO CMD |
-| GPIO39 | GPIO2 | SDIO DAT0 |
-| GPIO40 | GPIO4 | SDIO DAT1 / interrupt |
-| GPIO47 | EN / CHIP_PU | P4 pulls EN low to reset companion |
-| GND | GND | Common signal ground |
+| P4 GPIO | TINY header | ESP32-WROOM-32D / development board | Function |
+|---|---|---|---|
+| 49 | Right 17 | GPIO14 | SDIO CLK |
+| 50 | Right 16 | GPIO15 | SDIO CMD |
+| 52 | Right 15 | GPIO2 | SDIO DAT0 |
+| 53 | Right 14 | GPIO4 | SDIO DAT1 / interrupt |
+| 54 | Right 13 | EN / CHIP_PU | P4 pulls EN low to reset companion |
+| GND | GND | GND | Common signal ground |
 
-The radio uses **SDMMC slot 1, 1-bit SDIO at 1 MHz**. The SD card stays on
-SPI3: CS=45, MOSI=46, CLK=9, MISO=10. No SD-card GPIO changes are required.
-LCD, audio, buttons, LED, battery, vibration and USB assignments are preserved.
-The radio pins, including reset, share VDD_IO_5 with SD GPIO45/46. Firmware
-reuses the storage driver's fixed **LDO4 at 3.3 V** before radio connection.
-The hosted driver's separate LDO/UHS voltage controller stays disabled, so it
-cannot switch the shared SD-card I/O bank to 1.8 V.
-The P4 SDMMC slot 1 signals are routed through the GPIO matrix to GPIO39/40/43/44. UART0 on both boards remains
-available for programming and logs.
+The radio uses **SDMMC slot 1, 1-bit SDIO at 1 MHz** through the GPIO matrix.
+The card uses **slot 0, 4-bit SDMMC up to 40 MHz** on the onboard PCB traces.
+Move the old P4 radio wires from GPIO43/44/39/40/47 to the five pins above.
+Remove the old external SPI SD module/wires from GPIO45/46/9/10, and insert
+the card in the onboard J5 socket. See [BOARD.md](BOARD.md) for its contacts.
+
+The radio's new header group avoids the SD-card I/O bank and the other
+peripherals. Storage powers the onboard card and GPIO39-44 using fixed LDO4
+at 3.3 V. The hosted driver's separate LDO/UHS controller stays disabled;
+neither bus requests a 1.8 V switch. Slot-scoped teardown preserves the other
+device when one client is stopped. UART0 and USB flashing remain available.
 
 Use **3.3 V logic** and short, matched connections under **5 cm**. Prefer a
 small PCB or soldered connection with adjacent ground returns. Jumper-wire
@@ -36,8 +39,7 @@ Add an external **10 kOhm pull-up to ESP32 3.3 V** on each of CMD (GPIO15),
 DAT0 (GPIO2), DAT1 (GPIO4), and DAT3 (GPIO13): four resistors. DAT3 needs its
 local pull-up although it is not wired to the P4. Do not pull up CLK or GPIO12.
 Leave ESP32 GPIO12/DAT2 disconnected from the P4; retain its default pull-down
-(or fit 10 kOhm to GND) so the 3.3 V flash boots normally. P4 GPIO41/42 are
-unused by this 1-bit radio configuration. Firmware enables internal pull-ups
+(or fit 10 kOhm to GND) so the 3.3 V flash boots normally. P4 GPIO41/42 belong exclusively to the onboard card, not the radio. Firmware enables internal pull-ups
 on the active bus pins and ESP32 DAT3 to assist initial prototyping. These
 weak internal pulls do not replace the external resistors for reliable operation.
 
@@ -77,7 +79,7 @@ The inspected eFuse values are saved in `.cache/esp32-efuses.txt`.
 GPIO2/DAT0 is another boot strap: its pull-up can prevent serial download mode.
 For later COM9 reflashing, disconnect the SDIO bus/pull-ups and P4 reset wire,
 or hold GPIO2 low along with GPIO0 when entering download mode. For normal
-operation GPIO0 must be high. P4 GPIO47 connects only to ESP32 EN, not GPIO0.
+operation GPIO0 must be high. P4 GPIO54 connects only to ESP32 EN, not GPIO0.
 
 ## Build and flash
 
@@ -127,7 +129,11 @@ References: [Espressif ESP-Hosted](https://github.com/espressif/esp-hosted-mcu/t
 [Wi-Fi Remote](https://components.espressif.com/components/espressif/esp_wifi_remote/versions/1.3.1),
 and [the ESP-IDF DAT2-disabled flag](https://github.com/espressif/esp-idf/blob/v5.5.5/components/esp_driver_sdio/include/driver/sdio_slave.h).
 
-## Hardware verification: 2026-11-09
+## Previous wiring verification: 2026-11-09
+
+These results used P4 GPIO43/44/39/40/47 and an external SPI SD card.
+They do not validate the new header group or concurrent onboard SDMMC access.
+
 
 The existing station profile connected and obtained a DHCP address after
 adding firmware internal pull-up assistance and changing the ESP32 to

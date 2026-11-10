@@ -363,7 +363,8 @@ bool rg_network_init(void)
 #ifdef CONFIG_ESP_HOSTED_ENABLED
     // Initialize the local transport after the runtime is ready, rather than
     // in ESP-Hosted's global constructor. This does not contact the radio.
-    // GPIO39-48 share the SD card's fixed 3.3 V LDO4 supply on this module.
+    // Keep the onboard card's 3.3 V supply ready. The companion uses separate
+    // GPIO49/50/52/53/54 on SDMMC slot 1, leaving native slot 0 for the card.
     if (!rg_storage_init_sdcard_power())
         goto fail;
     TRY(esp_hosted_init());

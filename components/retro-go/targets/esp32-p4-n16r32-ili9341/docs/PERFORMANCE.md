@@ -1,5 +1,8 @@
 # P4 performance and GBA validation
 
+These measurements describe the previous 360 MHz / external-SPI SD configuration.
+They do not validate the new 400 MHz / onboard-SDMMC profile.
+
 Measured on COM3, WT0132P4-A1 N16R32, P4 v1.3, IDF 5.5.5,
 360 MHz CPU, 32 MiB HEX PSRAM at 200 MHz, ST7796 SPI display.
 

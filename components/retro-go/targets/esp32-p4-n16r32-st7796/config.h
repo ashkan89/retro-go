@@ -15,10 +15,10 @@
 
 // Storage
 #define RG_STORAGE_ROOT             "/sd"
-#define RG_STORAGE_SDSPI_HOST       SPI3_HOST
-#define RG_STORAGE_SDSPI_SPEED      10000 // kHz; verified jumper-wired SPI bus, including USB MSC
-#define RG_STORAGE_SD_MEMORY_ONLY   1
-// GPIO45/46 belong to VDD_IO_5, supplied by the board's LDO4 output.
+#define RG_STORAGE_SDMMC_HOST       SDMMC_HOST_SLOT_0
+#define RG_STORAGE_SDMMC_SPEED      SDMMC_FREQ_HIGHSPEED // 40 MHz, negotiated down for slower cards
+#define RG_STORAGE_SDMMC_WIDTH      4
+// The onboard J5 TF socket and its I/O bank are powered by LDO4 at 3.3 V.
 #define RG_STORAGE_SD_IO_LDO_CHANNEL 4
 #define RG_STORAGE_SD_IO_VOLTAGE_MV 3300
 
@@ -89,7 +89,7 @@
 // Optional external accessories carried over from the S3 build.
 #define RG_GPIO_LED                 GPIO_NUM_51
 #define RG_GPIO_LED_WS2812          1
-#define RG_GPIO_LED_WS2812_RGB      1
+// The onboard WS2812 uses GRB byte order, as in Wireless-Tag's BSP.
 #define RG_GPIO_VIBRATOR            GPIO_NUM_18
 
 // Same 100k/100k 1S battery divider; P4 ADC1 channel 0 is GPIO16.
@@ -111,11 +111,13 @@
 #define RG_GPIO_LCD_BCKL            GPIO_NUM_33
 #define RG_GPIO_LCD_RST             GPIO_NUM_32
 
-// SPI SD Card. GPIO0/1/7/8 are not exposed on this board's headers.
-#define RG_GPIO_SDSPI_MISO          GPIO_NUM_10
-#define RG_GPIO_SDSPI_MOSI          GPIO_NUM_46
-#define RG_GPIO_SDSPI_CLK           GPIO_NUM_9
-#define RG_GPIO_SDSPI_CS            GPIO_NUM_45
+// Onboard J5 TF socket: slot 0's native IOMUX pins, no external SD wiring.
+#define RG_GPIO_SDMMC_CLK          GPIO_NUM_43
+#define RG_GPIO_SDMMC_CMD          GPIO_NUM_44
+#define RG_GPIO_SDMMC_D0           GPIO_NUM_39
+#define RG_GPIO_SDMMC_D1           GPIO_NUM_40
+#define RG_GPIO_SDMMC_D2           GPIO_NUM_41
+#define RG_GPIO_SDMMC_D3           GPIO_NUM_42
 
 // Shared I2S bus for the MAX98357A speaker amp and PCM5102A headphone DAC.
 #define RG_GPIO_SND_I2S_BCK         GPIO_NUM_20
