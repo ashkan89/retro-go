@@ -1,9 +1,111 @@
 # ESP32-S3 performance audit
 
+## Loading and scheduling follow-up (November 10, 2026)
+
+The four N16R8 defaults now restore flash execution: `SPIRAM_XIP_FROM_PSRAM`,
+`SPIRAM_FETCH_INSTRUCTIONS` and `SPIRAM_RODATA` are disabled. The recent XiP
+default copies each application's code and constants at boot, including every
+launcher-to-emulator switch. This is separate from loading a ROM from SD.
+Restoring the previous policy removes that boot copy and leaves more PSRAM for
+ROMs and framebuffers. It may trade away instruction-fetch performance; no S3
+before/after hardware timings are available. N8R2 already used flash execution.
+P4 keeps XiP: its faster memory interface and larger RAM budget are different,
+and its existing PPA/PIE/JIT paths are retained.
+
+Shared `rg_storage_read_at()` now seeks only at entry and after a failed chunk
+is reopened. Successful 16 KiB chunks stay sequential, preserving libc buffering
+and avoiding redundant FatFs seeks. Absolute-offset semantics, bounded transfers,
+short-read detection and sticky-error recovery are preserved. Fault injection
+covers a failure after a successful first chunk and a subsequent random read.
+
+Other storage limits found during the review:
+
+- S3/P4 SDSPI starts at at most 10 MHz. A failed data command enables
+  single-sector reads until remount and may reduce the clock repeatedly, down to
+  1 MHz. A mount recovered at probing speed also stays slow. These protective
+  paths can dominate ROM load time; inspect the SD recovery/clock messages
+  before attributing a slow load to PSRAM.
+- The explicit SD formatter chooses 512-byte clusters. FatFs cannot combine
+  file data across cluster boundaries into one contiguous disk read, so large
+  files on such cards have more command/FAT overhead. This change does not
+  reformat existing media or alter that storage contract.
+- IDF 5.5.5's `SDSPI_HOST_DEFAULT()` already selects 16-sector bounce-buffer
+  chunks for non-DMA destinations. Setting that field again is unnecessary.
+- GBA eagerly fills its ROM cache (up to 24 MiB on P4, 4 MiB on S3, subject to
+  free memory). Reducing this preload moves SD page misses into gameplay.
+  Keep the larger cache for smoothness; startup and sustained FPS are separate
+  measurements. Large compressed GBA games also incur unpacking/cache-file I/O.
+
+### Emulator and task paths reviewed
+
+| Application / emulators | Timing and execution path | Decision |
+|---|---|---|
+| retro-core: NES | scanline audio, native refresh timing, bounded audio submission | retain existing timing and sprite optimizations |
+| retro-core: GB/GBC, SMS/GG/Coleco, SNES | per-frame emulation, audio backpressure, adaptive presentation skipping | retain native simulation/audio rate and stable frame ownership |
+| retro-core: PC Engine | timed vsync plus dedicated PSG task on audio core | retain separate synthesis; needs hardware latency profiling before moving it |
+| retro-core: Game & Watch / Lynx | frontend/core timing and shared display/audio | covered by shared loader and renderer changes; game benchmarks remain needed |
+| gwenesis: Mega Drive | incremental FM/PSG audio and nonblocking presentation | retain CPU overlap and frame skipping |
+| fmsx: MSX | core refresh/UPeriod and batched stereo audio | retain core-specific scheduling |
+| prboom-go: Doom | game tic clock, asynchronous mixer/output and display ownership | retain independent simulation/render clocks |
+| retro-legacy: Atari 7800 / Spectrum | core step, audio-paced producer and display availability | retain presentation skipping without skipping audio |
+| gbsp: GBA | interpreter on S3; RV32 JIT and ROM paging on P4 | retain executable-cache publication and ROM reserve |
+
+Emulator main tasks use CPU0; display/SPI completion and audio workers use
+CPU1. Audio priority 9 exceeds SPI reclamation 7 and rendering 6; input is 6,
+system monitor 5, main 1. The PC Engine synthesis worker is priority 8. These
+workers block on queues/DMA, allowing the main task to execute. Raising main
+above device service tasks can increase underruns and queue stalls. Launcher
+dual-core media builds have their own topology and must be assessed separately.
+There is no hardware benchmark evidence here that reversing these affinities
+improves emulator throughput.
+
+### Hardware opportunities and limits
+
+S3 is a dual-core **Xtensa LX7**, whereas P4's application cores are **RISC-V**.
+S3 SIMD requires S3-specific kernels; the P4 PIE assembly cannot be reused on
+it. P4 already dispatches RGB565 conversion through PIE and scale/rotation
+through PPA with software fallback and explicit buffer/cache handling.
+PPA accelerates scale/rotate/mirror, blending and fill; hardware JPEG assists
+compressed images, not raw emulator pixels. Camera ISP, CSI, H.264 and neural
+image inference do not accelerate console instruction emulation or an SPI LCD.
+AI upscaling would add work and memory traffic and needs its own measured budget.
+The LP core is not another application core for these FreeRTOS emulator tasks.
+
+PPA, CPU frame snapshots, JIT and instruction/data fetches can compete for PSRAM
+bandwidth. Keep frequently accessed state and DMA bookkeeping internal where
+memory permits; measure cache changes instead of maximizing every cache or
+allocating all RAM. SPI panel payload ceilings below remain binding even if
+emulation reaches full speed. Aim for native game speed, bounded audio latency
+and consistent presentation deadlines, rather than forcing busy loops to show
+100% utilization.
+
+Primary references: [S3 speed and task placement](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-guides/performance/speed.html),
+[S3 external RAM and XiP](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-guides/external-ram.html),
+[P4 PPA and memory contention](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/ppa.html),
+[P4 datasheet](https://www.espressif.com/sites/default/files/documentation/esp32-p4_datasheet_en.pdf).
+
+Host fault, timing and renderer tests validate functional behavior, not device
+load time, FPS, cache contention, electrical stability or actual RTOS deadlines.
+An A/B run on each board with the same SD card, ROM, save state and settings is
+still required before claiming a measured speedup or optimal affinity.
+
+Follow-up host validation passed: storage fault injection (including the new
+sequential/reopen cases), 120 renderer cases, frame snapshot ownership, PPA
+geometry/conversion dispatch, 150 audio FIFO/DMA scenarios, exhaustive int16
+gain/mute/ramp checks, 32 NES timing scenarios and 262144 sprite cases,
+Auto/Manual frameskip checks, and all eight release tests. Storage tests now
+support Windows directory APIs and explicitly keep C assertions enabled.
+ESP-IDF 5.5.5 app builds passed for `retro-core` on N16R8/ILI9341
+(1,181,200 bytes) and `fmsx` on P4 N16R32/ST7796. The generated S3 config
+confirms all three XiP/code/rodata relocation options are disabled. These are
+representative app builds, not complete release images or every board variant.
+No device was flashed and no new on-device performance measurements were made.
+
 ## P4 changes reviewed for S3 (November 2026)
 
-The N16R8 ILI9341, ST7796, ST7789 and ST7789V2 targets now enable PSRAM
-frame snapshots (`RG_DISPLAY_ASYNC_FRAMES`) and ESP-IDF's S3 PSRAM XiP option.
+The N16R8 ILI9341, ST7796, ST7789 and ST7789V2 targets enable PSRAM
+frame snapshots (`RG_DISPLAY_ASYNC_FRAMES`). The earlier S3 XiP default is
+reverted in the follow-up above.
 Snapshots let emulation continue while the display task reads a stable copy;
 they cost an extra source framebuffer in PSRAM. XiP copies flash instructions
 and rodata to octal PSRAM at boot. These changes require hardware benchmarking

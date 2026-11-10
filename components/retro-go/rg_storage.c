@@ -52,10 +52,9 @@
 /**
  * File reads are split into chunks of this size, each retried on its own.
  *
- * One `fread` becomes one multi-block transfer, so an unbounded read hands the card a burst that
- * can span megabytes -- and a glitch anywhere in it loses the whole thing. Bounding the burst
- * bounds what a retry has to repeat. 16 KB is small enough for that and large enough that the
- * per-command overhead stays under the noise floor for ROM loading.
+ * One fread may issue multiple disk transfers (cluster and DMA-buffer limits
+ * determine their size). Bounding the file chunk limits how much a file-level
+ * retry must repeat, without seeking between successfully completed chunks.
  */
 #define FILE_IO_CHUNK_SIZE              0x4000
 #define FILE_IO_RETRIES                 3
@@ -820,6 +819,7 @@ bool rg_storage_read_at(FILE **stream, const char *path, size_t offset, void *bu
     if (!stream || !path || (!buffer && length) || offset > LONG_MAX || length > LONG_MAX - offset)
         return false;
     uint8_t *dest = buffer;
+    bool positioned = false;
     for (size_t done = 0; done < length;)
     {
         size_t chunk = RG_MIN(length - done, (size_t)FILE_IO_CHUNK_SIZE);
@@ -827,9 +827,13 @@ bool rg_storage_read_at(FILE **stream, const char *path, size_t offset, void *bu
         for (int attempt = 0; attempt <= FILE_IO_RETRIES; ++attempt)
         {
             if (!*stream) *stream = rg_storage_open_file(path, "rb");
-            if (*stream && fseek(*stream, offset + done, SEEK_SET) == 0 &&
+            // Keep successful chunks sequential. Even a seek to the current
+            // position can discard libc's read buffer and make FatFs seek
+            // again. Reposition only at entry or after reopening a failed read.
+            if (*stream && (positioned || fseek(*stream, offset + done, SEEK_SET) == 0) &&
                 fread(dest + done, 1, chunk, *stream) == chunk)
             {
+                positioned = true;
                 ok = true;
                 break;
             }
@@ -837,6 +841,7 @@ bool rg_storage_read_at(FILE **stream, const char *path, size_t offset, void *bu
             // not repair it; only a fresh open can retry the actual disk read.
             if (*stream) fclose(*stream);
             *stream = NULL;
+            positioned = false;
             RG_LOGW("Read retry %d at %u in '%s'", attempt + 1, (unsigned)(offset + done), path);
             rg_task_delay(20 * (attempt + 1));
         }

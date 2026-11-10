@@ -19,7 +19,7 @@ def run_c(cc, folder, name, source, *args):
     path = folder / (name + '.c')
     exe = folder / name
     path.write_text(source)
-    subprocess.run([cc, '-std=gnu99', '-Wall', '-Wextra', '-Werror', '-O1',
+    subprocess.run([cc, '-std=gnu99', '-Wall', '-Wextra', '-Werror', '-O1', '-UNDEBUG',
                     '-I', str(ROOT / 'components/retro-go'), str(path), '-o', str(exe)], check=True)
     subprocess.run([str(exe), *map(str, args)], check=True)
 
@@ -36,6 +36,10 @@ BASE = r'''
 #include <dirent.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(p,m) _mkdir(p)
+#endif
 #define RG_MIN(a,b) ((a)<(b)?(a):(b))
 #define RG_MAX(a,b) ((a)>(b)?(a):(b))
 #define RG_LOGE(...) ((void)0)
@@ -57,9 +61,11 @@ def test_files(cc, folder):
 #define FILE_IO_CHUNK_SIZE 16384
 #define CHECK_PATH(p) if (!(p) || !*(p)) return false
 static int read_failures, bad_reads, poison, opens, close_failures, write_failures;
+static int seeks, reads_until_failure;
 static int directory_failures, stat_failures, unknown_type, nested_failures, publish_failures;
 static FILE *fault_open(const char *p, const char *m) { ++opens; poison=0; return fopen(p,m); }
 static size_t fault_read(void *p,size_t a,size_t b,FILE *fp) {
+    if (reads_until_failure && --reads_until_failure == 0) read_failures=1;
     if (poison || read_failures) {
         if (read_failures>0) --read_failures;
         poison=1; errno=EIO; return 0;
@@ -68,6 +74,7 @@ static size_t fault_read(void *p,size_t a,size_t b,FILE *fp) {
     if (n && bad_reads) { if (bad_reads>0) --bad_reads; ((uint8_t*)p)[0]^=1; }
     return n;
 }
+static int fault_seek(FILE *fp,long offset,int whence) { ++seeks; return fseek(fp,offset,whence); }
 static size_t fault_write(const void *p,size_t a,size_t b,FILE *fp) {
     if (write_failures) { if(write_failures>0)--write_failures; errno=EIO; return 0; }
     return fwrite(p,a,b,fp);
@@ -83,7 +90,9 @@ static struct dirent *fault_readdir(DIR *d) {
         if(directory_failures>0) { --directory_failures; }
         errno=EIO; return NULL;
     }
+#ifdef DT_UNKNOWN
     if(e && unknown_type && !strcmp(e->d_name,"b.bin")) e->d_type=DT_UNKNOWN;
+#endif
     return e;
 }
 static int fault_stat(const char *p,struct stat *st) {
@@ -101,6 +110,7 @@ static const char *rg_basename(const char *p) { const char *s=strrchr(p,'/'); re
 static const char *rg_extension(const char *p) { const char *s=strrchr(p,'.'); return s?s+1:""; }
 #define fopen fault_open
 #define fread fault_read
+#define fseek fault_seek
 #define fwrite fault_write
 #define fclose fault_close
 #define readdir fault_readdir
@@ -162,6 +172,18 @@ int main(int argc,char **argv) {
     snprintf(file,sizeof(file),"%s/image.bin",argv[1]);
     uint8_t data[32768],out[32768]; for(size_t i=0;i<sizeof(data);i++) data[i]=(uint8_t)(i*7);
     create(file,data,sizeof(data)); FILE *fp=fopen(file,"rb");
+    // Sequential chunks must keep libc/FatFs read-ahead; only the first
+    // chunk seeks. A failure in the second chunk must reopen at that chunk,
+    // without losing or repeating any bytes from the first.
+    seeks=0;
+    assert(rg_storage_read_at(&fp,file,0,out,sizeof(out)));
+    assert(seeks==1 && !memcmp(out,data,sizeof(out)));
+    seeks=0; reads_until_failure=2;
+    assert(rg_storage_read_at(&fp,file,0,out,sizeof(out)));
+    assert(seeks==2 && !memcmp(out,data,sizeof(out)));
+    // Entry must still honour an absolute offset on an existing stream.
+    assert(rg_storage_read_at(&fp,file,123,out,711));
+    assert(!memcmp(out,data+123,711));
     int before=opens; read_failures=1;
     assert(rg_storage_read_at(&fp,file,8192,out,8192));
     assert(opens>before && !memcmp(out,data+8192,8192)); fclose(fp);

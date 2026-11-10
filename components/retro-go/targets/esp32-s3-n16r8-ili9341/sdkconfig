@@ -204,6 +204,7 @@ CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
-# S3 equivalent of P4 XiP: octal PSRAM holds flash instructions and rodata.
-# GBA overrides this to retain memory for ROM paging and save states.
-CONFIG_SPIRAM_XIP_FROM_PSRAM=y
+# Keep code in flash: avoid copying each app to PSRAM at game launch.
+CONFIG_SPIRAM_XIP_FROM_PSRAM=n
+CONFIG_SPIRAM_FETCH_INSTRUCTIONS=n
+CONFIG_SPIRAM_RODATA=n
