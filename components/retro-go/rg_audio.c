@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef ESP_PLATFORM
+#include <freertos/FreeRTOS.h>
+#include <freertos/event_groups.h>
+static EventGroupHandle_t enabled_event;
+#define AUDIO_ENABLED_BIT (1U << 0)
+#endif
+
 extern const rg_audio_driver_t rg_audio_driver_dummy;
 extern const rg_audio_driver_t rg_audio_driver_buzzer;
 extern const rg_audio_driver_t rg_audio_driver_i2s;
@@ -58,6 +65,9 @@ static struct
     int volumeHeadphones;
     rg_audio_route_t route;
     bool muted;
+    bool enabled;
+    int64_t silent_deadline;
+    uint64_t silent_remainder;
 } audio;
 static rg_audio_counters_t counters;
 
@@ -79,13 +89,38 @@ static int *active_volume(void)
     return audio.route == RG_AUDIO_ROUTE_HEADPHONES ? &audio.volumeHeadphones : &audio.volumeSpeaker;
 }
 
-// The driver may re-route on its own (a plug being inserted), so we poll it rather than
-// being called back from an interrupt-adjacent context. Both fields are plain words and
-// the worst outcome of a race with the driver is applying the same volume twice.
+// Caller holds the device lock. Publish only after the backend has completed the transition.
+static void apply_output(bool force)
+{
+    bool enabled = *active_volume() > 0;
+    bool changed = enabled != rg_audio_is_enabled();
+    if (audio.driver->set_volume)
+        audio.driver->set_volume(*active_volume());
+    if (changed || force)
+    {
+        if (audio.driver->set_enabled && !audio.driver->set_enabled(enabled))
+        {
+            RG_LOGE("Unable to %s audio output: %s\n", enabled ? "start" : "stop", get_last_driver_error());
+            enabled = false;
+        }
+        audio.silent_deadline = 0;
+        audio.silent_remainder = 0;
+    }
+    if (audio.driver->set_mute && (changed || force))
+        audio.driver->set_mute(audio.muted || !enabled);
+    __atomic_store_n(&audio.enabled, enabled, __ATOMIC_RELEASE);
+#ifdef ESP_PLATFORM
+    if (enabled)
+        xEventGroupSetBits(enabled_event, AUDIO_ENABLED_BIT);
+    else
+        xEventGroupClearBits(enabled_event, AUDIO_ENABLED_BIT);
+#endif
+}
+
+// Caller holds the device lock. The driver may re-route on its own (a plug being inserted),
+// so pick up its route before applying the corresponding volume and output state.
 static void sync_route(void)
 {
-    // Read the driver once: the getters call this without holding the lock, so rg_audio_deinit
-    // could clear audio.driver underneath us.
     const rg_audio_driver_t *driver = audio.driver;
     rg_audio_route_t route = RG_AUDIO_ROUTE_SPEAKER;
 
@@ -98,8 +133,7 @@ static void sync_route(void)
         return;
 
     audio.route = route;
-    if (driver->set_volume)
-        driver->set_volume(*active_volume());
+    apply_output(true);
 
     RG_LOGI("Audio route is now '%s', volume %d%%\n", rg_audio_route_name(route), *active_volume());
 }
@@ -123,6 +157,11 @@ void rg_audio_init(int sampleRate)
         audio.lock = rg_mutex_create();
         RELEASE_DEVICE();
     }
+#ifdef ESP_PLATFORM
+    if (!enabled_event)
+        enabled_event = xEventGroupCreate();
+    RG_ASSERT(enabled_event != NULL, "Unable to create audio wake event!");
+#endif
     ACQUIRE_DEVICE(1000);
 
     char *driver_name = rg_settings_get_string(NS_GLOBAL, SETTING_DRIVER, "DEFAULT");
@@ -145,11 +184,6 @@ void rg_audio_init(int sampleRate)
         // The driver resolved its route during init, so pick up the matching volume before unmuting
         sync_route();
 
-        if (audio.driver->set_mute)
-            audio.driver->set_mute(audio.muted);
-        if (audio.driver->set_volume)
-            audio.driver->set_volume(*active_volume());
-
         RG_LOGI("Audio ready. sink='%s', route='%s', samplerate=%d, volume=%d\n",
             audio.sink->name, rg_audio_route_name(audio.route), audio.sampleRate, *active_volume());
     }
@@ -161,6 +195,8 @@ void rg_audio_init(int sampleRate)
         audio.sink = &sinks[0]; // Switching to dummy might allow us to at least boot
         audio.driver = audio.sink->driver;
         audio.route = RG_AUDIO_ROUTE_UNKNOWN;
+        audio.driver->init(0, sampleRate);
+        sync_route();
     }
 
     RELEASE_DEVICE();
@@ -175,6 +211,12 @@ void rg_audio_deinit(void)
     ACQUIRE_DEVICE(1000);
 
     audio.driver->deinit();
+    __atomic_store_n(&audio.enabled, false, __ATOMIC_RELEASE);
+#ifdef ESP_PLATFORM
+    xEventGroupClearBits(enabled_event, AUDIO_ENABLED_BIT);
+#endif
+    audio.silent_deadline = 0;
+    audio.silent_remainder = 0;
 
     RG_LOGI("Audio terminated. sink='%s'\n", audio.sink->name);
 
@@ -192,7 +234,7 @@ void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
     if (!audio.driver)
         return;
 
-    if (!frames || !count)
+    if (!count)
         return;
 
     // A momentary settings operation must not silently discard a whole audio
@@ -200,12 +242,53 @@ void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
     if (ACQUIRE_DEVICE(10))
     {
         sync_route();
-        audio.driver->submit(frames, count);
+        int64_t delay = 0;
+        if (!rg_audio_is_enabled() && audio.sampleRate > 0)
+        {
+            // Emulators paced by audio must keep their speed when DMA is stopped.
+            // Accumulate tiny submissions and fractions instead of sleeping a tick per sample.
+            int64_t now = rg_system_timer();
+            if (!audio.silent_deadline || now - audio.silent_deadline > 100000)
+                audio.silent_deadline = now;
+            audio.silent_remainder += (uint64_t)count * 1000000;
+            audio.silent_deadline += audio.silent_remainder / audio.sampleRate;
+            audio.silent_remainder %= audio.sampleRate;
+            delay = audio.silent_deadline - now;
+        }
+        else if (frames && rg_audio_is_enabled())
+        {
+            audio.driver->submit(frames, count);
+        }
         RELEASE_DEVICE();
+        // Never hold the control lock while waiting for the silent clock.
+        if (delay >= 1000)
+            rg_task_delay(delay / 1000);
     }
 
     counters.totalSamples += count;
     counters.busyTime += rg_system_timer() - time_start;
+}
+
+bool rg_audio_is_enabled(void)
+{
+    return __atomic_load_n(&audio.enabled, __ATOMIC_ACQUIRE);
+}
+
+bool rg_audio_wait_enabled(int timeout_ms)
+{
+#ifdef ESP_PLATFORM
+    if (enabled_event && !rg_audio_is_enabled())
+    {
+        TickType_t ticks = timeout_ms < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+        xEventGroupWaitBits(enabled_event, AUDIO_ENABLED_BIT, pdFALSE, pdFALSE,
+                            timeout_ms > 0 && !ticks ? 1 : ticks);
+    }
+#else
+    int64_t deadline = rg_system_timer() + (int64_t)timeout_ms * 1000;
+    while (!rg_audio_is_enabled() && (timeout_ms < 0 || rg_system_timer() < deadline))
+        rg_task_delay(10);
+#endif
+    return rg_audio_is_enabled();
 }
 
 rg_audio_counters_t rg_audio_get_counters(void)
@@ -269,7 +352,7 @@ void rg_audio_get_sink_label(char *buffer, size_t length)
     if (!buffer || !length)
         return;
 
-    sync_route();
+    rg_audio_get_route();
 
     if (!audio.sink)
         snprintf(buffer, length, "-");
@@ -281,7 +364,13 @@ void rg_audio_get_sink_label(char *buffer, size_t length)
 
 rg_audio_route_t rg_audio_get_route(void)
 {
-    sync_route();
+    // Status polling must not wait behind a producer blocked on DMA back-pressure.
+    // That producer also synchronizes the route on its next submission.
+    if (audio.driver && rg_mutex_take(audio.lock, 0))
+    {
+        sync_route();
+        RELEASE_DEVICE();
+    }
     return audio.route;
 }
 
@@ -307,14 +396,17 @@ void rg_audio_set_volume(int percent)
 {
     RG_ASSERT(audio.driver != NULL, "Audio device not ready!");
 
+    if (!ACQUIRE_DEVICE(1000))
+        return;
+    sync_route();
     bool headphones = audio.route == RG_AUDIO_ROUTE_HEADPHONES;
     int volume = RG_MIN(RG_MAX(percent, 0), 100);
 
     *active_volume() = volume;
-    if (audio.driver->set_volume)
-        audio.driver->set_volume(volume);
+    apply_output(false);
     rg_settings_set_number(NS_GLOBAL, headphones ? SETTING_VOLUME_HP : SETTING_VOLUME, volume);
     RG_LOGI("Volume set to %d%% (%s)\n", volume, rg_audio_route_name(audio.route));
+    RELEASE_DEVICE();
 }
 
 bool rg_audio_get_mute(void)
@@ -330,7 +422,7 @@ void rg_audio_set_mute(bool mute)
         return;
 
     if (audio.driver->set_mute)
-        audio.driver->set_mute(mute);
+        audio.driver->set_mute(mute || !rg_audio_is_enabled());
 
     audio.muted = mute;
     RELEASE_DEVICE();

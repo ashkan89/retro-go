@@ -36,6 +36,7 @@ jobs:
           python tools/test_i2s_gain.py --cc cc
           python tools/test_audio_dma.py --cc cc
           python tools/test_audio_queue.py --cc cc
+          python tools/test_audio_power.py --cc cc
           python tools/test_msx_timing.py --cc cc
           python tools/test_gba_rom_signature.py --cc cc
           python tools/test_nes_timing.py --cc cc

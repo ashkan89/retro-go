@@ -66,6 +66,13 @@ static rg_task_t *rg_task_create(const char *name, void (*fn)(void *), void *arg
 }
 static int system_rate = 32000;
 static bool system_muted;
+static bool system_audio_enabled = true;
+static bool rg_audio_is_enabled(void) { return system_audio_enabled; }
+static bool rg_audio_wait_enabled(int timeout_ms)
+{
+    if (!system_audio_enabled) rg_task_delay(timeout_ms);
+    return system_audio_enabled;
+}
 static int rg_audio_get_sample_rate(void) { return system_rate; }
 static void rg_audio_set_sample_rate(int rate) { system_rate = rate; }
 static bool rg_audio_get_mute(void) { return system_muted; }
