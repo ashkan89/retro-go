@@ -84,7 +84,7 @@ typedef uint32_t *EventGroupHandle_t;
 #define BIT0 1
 #define pdFALSE 0
 #define portMAX_DELAY UINT32_MAX
-#define pdMS_TO_TICKS(ms) ((ms)/10)
+#define pdMS_TO_TICKS(ms) ((TickType_t)((TickType_t)(ms) / 10U))
 static uint32_t event_bits, last_timeout;
 static unsigned event_waits;
 static void (*wake_hook)(void);
