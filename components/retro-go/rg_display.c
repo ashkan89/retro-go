@@ -164,6 +164,15 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
     const int stride = update->stride;
     const void *data = update->data + update->offset + (crop_top * stride) + (crop_left * RG_PIXEL_GET_SIZE(format));
     const uint16_t *palette = update->palette;
+    uint16_t wire_palette[256];
+    if (format == RG_PIXEL_PAL565_LE && palette)
+    {
+        // Convert once per palette, not once per displayed pixel. The CPU
+        // path is also the fallback when PPA cannot handle this frame.
+        for (int i = 0; i < 256; ++i)
+            wire_palette[i] = (palette[i] << 8) | (palette[i] >> 8);
+        palette = wire_palette;
+    }
 
     const bool partial_update = RG_SCREEN_PARTIAL_UPDATES;
 

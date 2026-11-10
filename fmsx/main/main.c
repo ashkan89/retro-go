@@ -13,7 +13,7 @@ static uint64_t audio_remainder;
 static int JoyState, LastKey, InMenu, InKeyboard;
 static int KeyboardCol, KeyboardRow, KeyboardKey;
 static int64_t KeyboardDebounce = 0;
-static int FrameStartTime;
+static int64_t FrameStartTime;
 static int KeyboardEmulation, CropPicture;
 static char *PendingLoadSTA = NULL;
 

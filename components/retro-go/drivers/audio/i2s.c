@@ -222,6 +222,7 @@ static void audio_task(void *arg)
         {
             size_t count = 0;
             bool running;
+            bool wake_producer = false;
 
             portENTER_CRITICAL(&queue_lock);
             running = state.running;
@@ -231,6 +232,7 @@ static void audio_task(void *arg)
             // Commit complete DMA buffers, even when cores submit tiny chunks.
             if (running && state.queue_count >= RG_COUNT(frames))
             {
+                wake_producer = state.queue_count == RG_AUDIO_QUEUE_LENGTH;
                 count = RG_COUNT(frames);
                 size_t first = RG_MIN(count, RG_AUDIO_QUEUE_LENGTH - state.queue_read);
                 memcpy(frames, &state.queue[state.queue_read], first * sizeof(*frames));
@@ -250,10 +252,12 @@ static void audio_task(void *arg)
             if (!count)
                 break;
 
-            // Wake a producer which is applying back-pressure because the
-            // software queue is full. The writer itself remains the only task
+            // rg_audio_submit serializes producers with the device mutex, so
+            // only a full queue can leave a submitter waiting for space.
+            // The writer itself remains the only task
             // allowed to block on I2S DMA.
-            xSemaphoreGive(state.queue_space);
+            if (wake_producer)
+                xSemaphoreGive(state.queue_space);
             if (!write_frames(frames, count))
                 state.write_errors++;
         }
@@ -638,6 +642,7 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
     while (submitted < count)
     {
         size_t copied = 0;
+        bool notify = false;
         TaskHandle_t task;
 
         portENTER_CRITICAL(&queue_lock);
@@ -646,6 +651,12 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
         {
             copied = RG_MIN(count - submitted, RG_AUDIO_QUEUE_LENGTH - state.queue_count);
             copied = RG_MIN(copied, RG_AUDIO_QUEUE_LENGTH - state.queue_write);
+            // The consumer only writes complete DMA blocks. Wake it when
+            // this append makes one available; it drains any further blocks
+            // itself. Tiny scanline submissions otherwise cause needless
+            // cross-core interrupts and high-priority task switches.
+            notify = state.queue_count < DMA_BUFFER_LEN &&
+                     state.queue_count + copied >= DMA_BUFFER_LEN;
             memcpy(&state.queue[state.queue_write], &frames[submitted], copied * sizeof(*frames));
             state.queue_write = (state.queue_write + copied) % RG_AUDIO_QUEUE_LENGTH;
             state.queue_count += copied;
@@ -658,7 +669,8 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
         if (copied)
         {
             submitted += copied;
-            xTaskNotifyGive(task);
+            if (notify)
+                xTaskNotifyGive(task);
         }
         else
         {

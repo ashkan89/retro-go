@@ -1,5 +1,47 @@
 # ESP32-S3 performance audit
 
+## Additional hot-path fixes (November 10, 2026)
+
+- The I2S producer now notifies the writer only when the queue crosses from
+  less than one DMA block to at least one block. The writer already drains
+  complete blocks until none remain. This avoids waking a priority-9 task for
+  sub-block scanline audio, without changing the queue capacity, sample clock,
+  backpressure or DMA block size. Notification eligibility is computed under
+  the existing queue lock. The notification remains pending if the writer has
+  not yet entered its wait. Shutdown still sends an unconditional wakeup.
+  In the reverse direction, the writer signals queue space only after draining
+  a previously full queue, which is the only condition that blocks a producer.
+  This also avoids stale space signals and redundant semaphore calls.
+- The software display path now converts little-endian RGB565 palettes to SPI
+  byte order once per frame (256 entries), preserving a plain lookup in the
+  pixel loop. Previously those palettes had incorrect colors whenever PPA was
+  unavailable or bypassed. Conversion uses a 512-byte temporary palette on the
+  display task's stack; the task's stack allocation remains 4 KiB.
+- fMSX keeps its frame timestamp in 64 bits, matching the system timer. This
+  avoids truncating absolute microsecond timestamps at long uptimes and signed
+  overflow when accounting for audio-queue waits near the 32-bit boundary.
+- GBA's initial backup-signature search uses `memchr` to find candidate first
+  bytes before calling `memcmp`. The old path compared at every ROM byte for
+  each signature. Byte-aligned and unaligned matches are both preserved;
+  backup-type precedence, ROM preload size and paging are unchanged.
+
+New host checks exercise 126 producer schedules (including concurrent drain
+before notification, ring wrap, full-queue backpressure and stop), 240 renderer
+cases across software/PPA/fallback and both palette byte orders, 10000 MSX
+frames across 32-bit boundaries and a 24-hour uptime, and 209254 signature
+cases against the original bytewise search. With 8192 single-sample submissions
+and 192-frame DMA blocks, the producer test observes 42 notifications instead
+of the previous 8192. This is a scheduler-call count, not a measured device
+speedup. The new tests run in CI and release validation.
+
+Validation for these additional changes: nine packaging/release unit tests and
+the existing frame ownership, frameskip, audio conversion and DMA checks passed.
+ESP-IDF 5.5.5 app builds passed for `retro-core` and `fmsx` on S3 N16R8/ILI9341,
+and `fmsx` and `gbsp` on P4 N16R32/ST7796. The generated renderer function stack
+frames are 688 bytes on S3 and 704 bytes on P4; these are individual function
+frames, not measurements of total task stack use. No device was flashed and no
+new on-device load-time, FPS or scheduling-latency measurements were made.
+
 ## Loading and scheduling follow-up (November 10, 2026)
 
 The four N16R8 defaults now restore flash execution: `SPIRAM_XIP_FROM_PSRAM`,

@@ -3352,15 +3352,26 @@ static s32 load_gamepak_raw(const char *name)
 
 static bool rom_has_signature(const u8 *rom, u32 rom_size, const char *sig)
 {
-  u32 i;
   u32 sig_len = (u32)strlen(sig);
   if (rom_size < sig_len)
     return false;
+  if (!sig_len)
+    return true;
 
-  for (i = 0; i + sig_len <= rom_size; i++)
+  // Search candidate first bytes with libc's bulk scan instead of calling
+  // memcmp at every byte of the ROM, for each backup signature. Keep byte
+  // alignment unrestricted: patched ROMs may store these strings unaligned.
+  const u8 *cursor = rom;
+  u32 remaining = rom_size - sig_len + 1;
+  while (remaining)
   {
-    if (memcmp(&rom[i], sig, sig_len) == 0)
+    const u8 *match = memchr(cursor, (u8)sig[0], remaining);
+    if (!match)
+      break;
+    if (memcmp(match, sig, sig_len) == 0)
       return true;
+    remaining -= (u32)(match - cursor) + 1;
+    cursor = match + 1;
   }
 
   return false;

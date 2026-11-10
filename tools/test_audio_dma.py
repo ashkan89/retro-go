@@ -49,6 +49,7 @@ static struct {
     unsigned write_errors;
 } state;
 static unsigned input_total, input_next, burst, output_count, error;
+static unsigned space_wakes, full_batches;
 static void *memcpy(void *dest, const void *src, size_t length) {
     unsigned char *d = dest; const unsigned char *s = src;
     while (length--) *d++ = *s++;
@@ -64,9 +65,13 @@ static unsigned ulTaskNotifyTake(int clear, unsigned timeout) {
         state.queue_write = (state.queue_write + 1) % RG_AUDIO_QUEUE_LENGTH;
         state.queue_count++; input_next++;
     }
+    if (state.queue_count == RG_AUDIO_QUEUE_LENGTH) full_batches++;
     return 1;
 }
-static int xSemaphoreGive(void *semaphore) { return 1; }
+static int xSemaphoreGive(void *semaphore) {
+    if (semaphore == state.queue_space) space_wakes++;
+    return 1;
+}
 static void vTaskDelete(void *task) {}
 static bool write_frames(const rg_audio_frame_t *frames, size_t count) {
     if (count != DMA_BUFFER_LEN) error = 1;
@@ -82,13 +87,18 @@ __declspec(dllexport)
 #endif
 int check_consumer(unsigned chunk, unsigned total, unsigned initial_position) {
     state.queue = queue;
+    state.queue_space = queue;
+    state.task_stopped = (void *)1;
     state.queue_read = state.queue_write = initial_position;
     state.queue_count = state.write_errors = 0;
     state.running = true;
     burst = chunk; input_total = total;
-    input_next = output_count = error = 0;
+    input_next = output_count = error = space_wakes = full_batches = 0;
     audio_task(0);
     if (output_count != (total / DMA_BUFFER_LEN) * DMA_BUFFER_LEN) return 3;
+    // Only a previously full queue can have a waiting producer. Shutdown
+    // supplies one unconditional wake so blocked submitters can exit.
+    if (space_wakes != full_batches + 1) return 4;
     return error;
 }
 '''
@@ -146,7 +156,8 @@ typedef void rg_task_t;
 typedef struct { unsigned dataInt; } rg_task_msg_t;
 static rg_task_t *audioQueue;
 static uint64_t audio_remainder, msx_samples;
-static int FrameStartTime, msx_error;
+static int64_t FrameStartTime;
+static int msx_error;
 static int64_t rg_system_timer(void) { return 0; }
 static bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg) {
     msx_samples += msg->dataInt;
