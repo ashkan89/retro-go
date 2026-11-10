@@ -28,7 +28,8 @@ class BuildWorkflowTests(unittest.TestCase):
         self.assertIsNotNone(block, "Missing firmware build step")
         script = textwrap.dedent(block[1])
         for target in ("esp32-p4-n16r32-ili9341", "esp32-p4-n16r32-st7796",
-                       "esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796"):
+                       "esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796",
+                       "esp32-s3-n8r2-ili9341"):
             with self.subTest(target=target), tempfile.TemporaryDirectory() as folder:
                 root = Path(folder)
                 (root / "tools").mkdir()
@@ -54,6 +55,11 @@ class BuildWorkflowTests(unittest.TestCase):
                     build = Path("build")
                     build.mkdir(exist_ok=True)
                     payload = bytearray(256)
+                    if os.environ["BUILD_TARGET"] == "esp32-s3-n8r2-ili9341":
+                        # Reproduce the release overflow: two app reservations
+                        # grow by a 64 KiB block, exhausting the footer space.
+                        size = {"factory": 0x90001, "launcher": 0x170001}.get(app, 256)
+                        payload = bytearray(size)
                     payload[0] = 0xE9
                     struct.pack_into("<I", payload, 32, 0xABCD5432)
                     version = os.environ["PROJECT_VER"].encode()

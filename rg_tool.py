@@ -89,7 +89,8 @@ def check_image_size(apps, target, fatsize=0):
         alignment = 0x10000 if PROJECT_APPS[app][0] == 0 else 0x1000
         size = max(PROJECT_APPS[app][2], os.path.getsize(f"{app}/build/{app}.bin"))
         end = math.ceil(end / alignment) * alignment
-        end += math.ceil(size / alignment) * alignment
+        # Match mkfw's raw-image sizes: 4 KiB sectors, 64 KiB app starts.
+        end += math.ceil(size / 0x1000) * 0x1000
     if fatsize:
         end = math.ceil(end / 0x1000) * 0x1000
         end += math.ceil(parse_size(fatsize) / 0x1000) * 0x1000

@@ -16,4 +16,5 @@ PROJECT_APPS["retro-core"][2] = 0x120000
 PROJECT_APPS["prboom-go"][2] = 0x100000
 PROJECT_APPS["gwenesis"][2] = 0x120000
 PROJECT_APPS["fmsx"][2] = 0xD0000
-PROJECT_APPS["retro-legacy"][2] = 0x1C0000
+# Leave one 4 KiB sector for the updater footer if earlier apps grow.
+PROJECT_APPS["retro-legacy"][2] = 0x1BF000

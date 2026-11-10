@@ -32,8 +32,9 @@ complete image to add that partition to an existing installation; flashing only
 the app cannot create the new partition. The cores require PSRAM.
 
 All eight ESP32-S3 N16R8/N8R2 targets with ST7796, ST7789v2, ST7789, or ILI9341
-include this app in their default full builds. N8R2 uses a 1.75 MiB legacy
-partition and smaller reservations for the other apps to fit the factory updater
+include this app in their default full builds. N8R2 reserves 1.75 MiB minus one
+4 KiB sector for the legacy app, leaving space for the image's updater footer.
+Smaller reservations for the other apps fit the factory updater
 and all apps within 8 MiB. Packaging checks actual binary sizes and rejects
 images exceeding the board's flash capacity.
 

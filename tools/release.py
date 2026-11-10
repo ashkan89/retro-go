@@ -63,7 +63,7 @@ def validate_image(path, version, target):
             raise ValueError(f"{path}: invalid partition {label}")
         end = start + size
         if kind == 0:
-            if start % 0x10000 or size % 0x10000 or image[start] != 0xE9:
+            if start % 0x10000 or size % 0x1000 or image[start] != 0xE9:
                 raise ValueError(f"{path}: invalid app partition {label}")
             if label == "factory" and subtype != 0:
                 raise ValueError(f"{path}: factory must use the factory subtype")

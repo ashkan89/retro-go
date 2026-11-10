@@ -34,6 +34,18 @@ def image_bytes(version, target, apps=None, chip_type="esp32s3", partition_size=
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_raw_app_partition_sizes_use_sectors_and_aligned_starts(self):
+        args = ["0", "0", "0x11001", "factory", "factory.bin",
+                "0", "16", "0x1BF000", "retro-legacy", "legacy.bin"]
+        with patch.object(mkfw, "readfile", return_value=b"\xe9"):
+            parts = mkfw.get_partitions(args.copy(), 0x10000, app_size_alignment=0x1000)
+            self.assertEqual([(p[3], p[4]) for p in parts],
+                             [(0x10000, 0x12000), (0x30000, 0x1BF000)])
+            # Keep the existing .fw layout for devices which use that format.
+            fw_parts = mkfw.get_partitions(args.copy())
+            self.assertEqual([(p[3], p[4]) for p in fw_parts],
+                             [(0, 0x20000), (0x20000, 0x1C0000)])
+
     def test_s3_partition_capacity(self):
         for panel in ("ili9341", "st7796", "st7789", "st7789v2"):
             for memory, capacity in (("n16r8", 16 << 20), ("n8r2", 8 << 20)):

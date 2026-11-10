@@ -36,8 +36,9 @@ class Targets(unittest.TestCase):
                 with self.subTest(target=target):
                     ctx = self.context(target)
                     apps = ctx["DEFAULT_APPS"].split()
-                    self.assertEqual(set(apps), set(sizes))
-                    with patch("os.path.getsize", side_effect=lambda path: sizes[Path(path).stem]), contextlib.redirect_stdout(io.StringIO()):
+                    expected = set(sizes) | ({"gbsp"} if memory == "n16r8" else set())
+                    self.assertEqual(set(apps), expected)
+                    with patch("os.path.getsize", side_effect=lambda path: 2097152 if Path(path).stem == "gbsp" else sizes[Path(path).stem]), contextlib.redirect_stdout(io.StringIO()):
                         end = ctx["check_image_size"](apps, target)
                     self.assertLessEqual(end, (8 if memory == "n8r2" else 16)*1048576)
     def test_grown_app_is_rejected_before_packing(self):
@@ -46,6 +47,22 @@ class Targets(unittest.TestCase):
         with patch("os.path.getsize", return_value=3*1048576):
             with self.assertRaisesRegex(ValueError, "has 8388608 bytes of flash"):
                 ctx["check_image_size"](ctx["DEFAULT_APPS"].split(), target)
+    def test_n8r2_grown_apps_leave_room_for_footer(self):
+        # Two extra 64 KiB app blocks previously filled flash exactly, leaving
+        # no room for mkfw's 256-byte footer (8388864 > 8388608).
+        grown = dict(sizes, factory=0x90001, launcher=0x170001)
+        for display in ("st7796", "st7789v2", "st7789", "ili9341"):
+            target = f"esp32-s3-n8r2-{display}"
+            with self.subTest(target=target):
+                ctx = self.context(target)
+                with patch("os.path.getsize", side_effect=lambda path: grown[Path(path).stem]), contextlib.redirect_stdout(io.StringIO()):
+                    end = ctx["check_image_size"](ctx["DEFAULT_APPS"].split(), target)
+                self.assertEqual(end, 0x7FF100)
+                grown["retro-legacy"] = 0x1BF001
+                with patch("os.path.getsize", side_effect=lambda path: grown[Path(path).stem]):
+                    with self.assertRaises(ValueError):
+                        ctx["check_image_size"](ctx["DEFAULT_APPS"].split(), target)
+                grown["retro-legacy"] = sizes["retro-legacy"]
     def test_optional_storage_cannot_overrun_flash(self):
         target = "esp32-s3-n8r2-ili9341"
         ctx = self.context(target)
@@ -57,7 +74,7 @@ class Targets(unittest.TestCase):
         ctx = self.context(target)
         with patch("os.path.getsize", side_effect=lambda path: sizes[Path(path).stem]):
             with self.assertRaises(ValueError):
-                ctx["check_image_size"](ctx["DEFAULT_APPS"].split(), target, "128K")
+                ctx["check_image_size"](ctx["DEFAULT_APPS"].split(), target, "132K")
     def test_size_units(self):
         ctx = self.context("esp32-s3-n8r2-ili9341")
         self.assertEqual(ctx["parse_size"]('"8MB"'), 8388608)

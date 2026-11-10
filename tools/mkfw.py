@@ -9,7 +9,7 @@ def readfile(filepath):
         exit("\nERROR: Failed to read file '%s': %s\n" % (err.filename, err.strerror))
 
 
-def get_partitions(args, flash_offset = 0):
+def get_partitions(args, flash_offset = 0, app_size_alignment = 0x10000):
     print("\nPartitions:")
     partitions = []
     # ota_next_id = 16
@@ -24,8 +24,10 @@ def get_partitions(args, flash_offset = 0):
 
         flash_alignment = 0x10000 if partype == 0 else 0x1000
         flash_offset = math.ceil(flash_offset / flash_alignment) * flash_alignment
-        # Technically the size only has to be aligned to 0x1000, but it's wasted space if two apps follow eachother
-        flash_size = math.ceil(max(size, len(data)) / flash_alignment) * flash_alignment
+        # Raw images can use sector-sized app partitions. The next app still
+        # starts on a 64 KiB boundary, but the final app need not waste that space.
+        size_alignment = app_size_alignment if partype == 0 else 0x1000
+        flash_size = math.ceil(max(size, len(data)) / size_alignment) * size_alignment
 
         print("  [%d]: type=%d, subtype=%d, size=%d (%d%% used), label=%s"
             % (len(partitions), partype, subtype, flash_size, len(data) / flash_size * 100, label))
@@ -119,7 +121,7 @@ if __name__ == "__main__":
         partitions = get_partitions(args.partitions)
         data = create_firmware(args.type, partitions, args.icon, args.name, args.version, args.target)
     else:
-        partitions = get_partitions(args.partitions, 0x10000)
+        partitions = get_partitions(args.partitions, 0x10000, app_size_alignment=0x1000)
         data = create_image(args.type, partitions, args.bootloader, args.name, args.version, args.target)
 
     with open(args.output_file, "wb") as fp:

@@ -20,6 +20,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m unittest discover -s tools/tests -v
+      - run: python -m unittest discover -s retro-legacy/tests -p test_targets.py -v
       - run: python tools/test_display_render.py --cc cc
       - run: python tools/test_i2s_gain.py --cc cc
       - run: python tools/test_audio_queue.py --cc cc
@@ -43,4 +44,4 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     with:
       version: '0.0.0'
-      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796", "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341"]'
+      targets: '["esp32-s3-n16r8-ili9341", "esp32-s3-n8r2-st7796", "esp32-s3-n8r2-ili9341", "esp32-p4-n16r32-st7796", "esp32-p4-n16r32-ili9341"]'
