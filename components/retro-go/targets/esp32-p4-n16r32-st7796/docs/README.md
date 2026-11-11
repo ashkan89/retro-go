@@ -8,10 +8,10 @@ P4X / revision 3.x needs another target. Revision checks stay enabled.
 
 ## CPU and wiring
 
-The requested CPU profile is **400 MHz**, using Espressif's explicit pre-v3
-experimental override. The generic board page advertises a 400 MHz maximum;
-Espressif still requires additional qualification for each pre-v3 chip.
-The earlier connected revision 1.3 board was tested at 360 MHz.
+The CPU runs at **360 MHz**. ESP-IDF 5.5.5's pre-v3 runtime clock driver
+rejects 400 MHz even when its experimental Kconfig override is enabled.
+That setting caused the factory app to assert in `esp_clk_init` and reboot
+on the connected revision 1.3 board before application startup.
 
 Use the onboard J5 card socket in **4-bit SDMMC slot 0**, GPIO39-44, LDO4
 at 3.3 V, up to 40 MHz. Remove the old external SPI SD module/wires on
@@ -102,6 +102,23 @@ padding and must be written at flash offset **0**, although its P4 bootloader
 is at **0x2000**. The factory updater uses that same P4 bootloader range.
 Do not flash an S3 image on P4.
 
+## Boot-loop repair: COM3, 2026-11-11
+
+The 400 MHz image repeatedly asserted at `0x48000d02` before factory startup.
+Disassembly placed the assertion in `esp_clk_init`: the pre-v3 runtime clock
+driver rejects 400 MHz. Both revision-1.x target defaults now select 360 MHz
+and disable the experimental override; the native board checks enforce this.
+The corrected factory app reached `Retro-Go ready` across three reset captures.
+The corrected launcher also mounted `/sd` and reached `Retro-Go ready`.
+All eight release apps were rebuilt with 360 MHz configurations and packed
+into a 13,959,424-byte image. Image CRC, identity, partition layout and exact
+app bytes passed validation; the bootloader and all apps were flashed with
+esptool hash verification while preserving NVS and the selected boot app.
+The final 45-second capture booted `retro-core`, mounted `/sd` (after a
+probing-speed retry), and loaded a NES game without an assertion or reboot.
+The external SDIO Wi-Fi companion did not initialize during that launcher
+capture; this was logged without an assertion or reboot.
+
 ## Previous configuration build verification
 
 Verified with ESP-IDF 5.5.5: all eight default applications build, and the full
@@ -160,5 +177,5 @@ against a meter, LED/motor, USB HID/MSC, and a complete SD-image update/reboot.
 - [Espressif P4 GPIO functions and boot straps](https://documentation.espressif.com/esp32-p4_datasheet_en.html)
 - [Espressif GPIO power-bank and SD I/O supply requirements](https://docs.espressif.com/projects/esp-hardware-design-guidelines/en/latest/esp32p4/schematic-checklist-esp32p4.html)
 - ESP-IDF 5.5.5 local Kconfig.hw_support, Kconfig.cpu and esp32p4/Kconfig.spiram
-  confirm pre-v3 revision selection, qualified-only 400 MHz, and HEX PSRAM mode.
+  define pre-v3 revision selection, CPU clock choices, and HEX PSRAM mode.
 - [Espressif ST7796 reference driver](https://github.com/espressif/esp-bsp/blob/master/components/lcd/esp_lcd_st7796/esp_lcd_st7796_general.c)

@@ -156,8 +156,10 @@ def check_target(target):
     assert '#define RG_STORAGE_SDSPI_HOST' not in config
     assert '#define RG_GPIO_SDSPI_' not in config
     assert '#define RG_GPIO_LED_WS2812_RGB' not in config
-    assert 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400=y' in sdk
-    assert 'CONFIG_ESP_FORCE_400MHZ_ON_REV_LESS_V3=y' in sdk
+    # The pre-v3 runtime driver rejects 400 MHz, even with the Kconfig override.
+    assert 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_360=y' in sdk
+    assert '# CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400 is not set' in sdk
+    assert '# CONFIG_ESP_FORCE_400MHZ_ON_REV_LESS_V3 is not set' in sdk
     assert 'CONFIG_ESP32P4_REV_MIN_100=y' in sdk
     assert 'CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y' in sdk
     assert 'CONFIG_ESP_HOSTED_SDIO_SLOT_1=y' in sdk
@@ -179,7 +181,7 @@ def check_target(target):
     assert pins['RADIO_RESET'] == 54
     assert pins['RG_GPIO_LED'] == 51
     assert pins['RG_GPIO_LCD_CS'] == 28 and pins['RG_GPIO_LCD_MOSI'] == 29 and pins['RG_GPIO_LCD_CLK'] == 30
-    print(f'PASS: {target}: 400 MHz/pre-v3 profile, onboard SD, all {len(pins)} GPIO assignments unique and exposed')
+    print(f'PASS: {target}: 360 MHz/pre-v3 profile, onboard SD, all {len(pins)} GPIO assignments unique and exposed')
     return folder
 
 

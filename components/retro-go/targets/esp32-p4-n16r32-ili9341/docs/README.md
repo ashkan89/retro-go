@@ -3,9 +3,9 @@
 Target: `esp32-p4-n16r32-ili9341`, ESP-IDF **5.5.5**.
 The board uses original P4 revision 1.x silicon, 16 MB QIO flash at 80 MHz,
 32 MB HEX PSRAM at 200 MHz, and an external 320 x 240 ILI9341 display.
-The requested CPU profile is **400 MHz**, using Espressif's explicit pre-v3
-experimental override. Qualification for that speed is required separately;
-the previously connected revision 1.3 board was tested at 360 MHz.
+The CPU runs at **360 MHz**. ESP-IDF 5.5.5's pre-v3 runtime clock driver
+rejects 400 MHz even with the experimental Kconfig override, causing an
+assertion in `esp_clk_init` before application startup.
 P4X / N16R32X revision 3.x needs another target.
 
 ## Board wiring and onboard storage

@@ -7,12 +7,12 @@ firmware is different; the revision compatibility checks remain enabled.
 
 ## CPU frequency
 
-Both targets request **400 MHz** with ESP-IDF 5.5.5's
-`CONFIG_ESP_FORCE_400MHZ_ON_REV_LESS_V3` and `CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_400`.
-The board feature page advertises a 400 MHz maximum. Espressif's chip-specific
-Kconfig nevertheless requires additional qualification for revision <3.0
-and labels the override experimental. The earlier connected board reported
-revision 1.3; its qualification for 400 MHz has not been established here.
+Both targets use **360 MHz**. ESP-IDF 5.5.5's pre-v3 implementation of
+`rtc_clk_cpu_freq_mhz_to_config` supports 90, 180 and 360 MHz, plus crystal
+divisors. It rejects 400 MHz even with `CONFIG_ESP_FORCE_400MHZ_ON_REV_LESS_V3`.
+The rejected setting triggered `assert(res)` in `esp_clk_init` on COM3
+(revision 1.3), causing a boot loop before the factory app could start.
+The experimental 400 MHz override is disabled.
 Firmware revision compatibility checks remain set to v1.x silicon.
 
 Flash remains 80 MHz QIO and PSRAM remains 200 MHz HEX. Existing 360 MHz
@@ -116,8 +116,7 @@ common ground and 3.3 V signal levels; the 3.3 V header is a power output.
 `python tools/test_p4_board.py --cc cc` checks both target pin maps, signal
 collisions, the native slot settings, USB raw-card lifecycle/error cleanup and
 the older 1-bit SDMMC configuration. Compilation/host mocks do not establish
-400 MHz qualification, physical SD signal integrity, or the rewired radio link.
-The new configuration has not been flashed as part of this change.
+physical SD signal integrity or the rewired radio link.
 
 - [Wireless-Tag board feature and header-pin table](https://wiki.wireless-tag.com/docs/en/WT9932P4-TINY/board_features.html)
 - [Wireless-Tag user guide V2.0, J5 and header tables](https://res.8ms.xyz/wiki_assets/WT9932P4-TINY/WT9932P4-TINY_UserGuide_V2.0.pdf)
