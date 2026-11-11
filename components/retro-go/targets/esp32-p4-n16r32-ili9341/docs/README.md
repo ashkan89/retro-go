@@ -62,7 +62,9 @@ USB mass-storage mode uses the same onboard card and bus settings as FAT.
   but there is no general AI engine that accelerates these emulators. An AI
   workload would compete for CPU and memory.
 - The LP CPU supports low-power control, not a third interchangeable game core.
-  USB HS HID/XInput host and SD MSC device modes already exist and are exclusive.
+  HUSB HID/XInput host and SD MSC device modes are exclusive. Host mode uses
+  full-speed negotiation for keyboards, mice and controllers behind hubs;
+  MSC retains high-speed capability. See the shared [USB setup and checks](../../esp32-p4-n16r32-st7796/docs/README.md#reserved-pins-and-usb).
   HUSB serves those functions; FUSB exposes the separate Serial/JTAG interface
   used by COM3. P4 has no native Wi-Fi/Bluetooth; neither is enabled.
 - SPI/I2S already use DMA, LEDC drives the backlight, RMT drives the RGB LED,

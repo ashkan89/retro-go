@@ -107,7 +107,8 @@ and ESP32 flash-voltage strap handling; the companion firmware is unchanged.
 GPIO0/1/7/8 serve the FPC interfaces. GPIO24/25 serve FUSB. GPIO35 is BOOT,
 and GPIO34/36/37/38 are straps or UART0 pins; they are not peripheral assignments
 in this map. GPIO26/27 remain available for a future MIPI display. HUSB provides
-the native high-speed USB connection for HID/XInput host or MSC device mode.
+the native USB connection for HID/XInput host or MSC device mode. Host mode
+negotiates full speed for HID hubs; MSC device mode retains high-speed capability.
 Those USB modes remain exclusive. Power through USB or the 5 V input, use
 common ground and 3.3 V signal levels; the 3.3 V header is a power output.
 

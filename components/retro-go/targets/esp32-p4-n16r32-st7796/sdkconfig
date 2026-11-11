@@ -51,7 +51,8 @@ CONFIG_PARTITION_TABLE_FILENAME="../partitions.csv"
 # CONFIG_ESP_WIFI_ENABLED is not set
 # Bluetooth is disabled on the host and Wi-Fi companion.
 
-# USB OTG uses the high-speed DP/DM interface; console stays on UART0.
+# USB OTG uses HUSB DP/DM; host negotiates full speed for HID hubs.
+# MSC device mode can use high speed; console stays on UART0.
 CONFIG_USB_HOST_HUBS_SUPPORTED=y
 CONFIG_TINYUSB_MSC_ENABLED=y
 CONFIG_TINYUSB_MSC_BUFSIZE=8192

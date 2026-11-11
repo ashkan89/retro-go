@@ -2,6 +2,7 @@
 #define RG_TARGET_NAME             "ESP32-P4-N16R32-ST7796"
 #define RG_ENABLE_USB_HID_HOST     1
 #define RG_ENABLE_USB_XINPUT       1
+#define RG_USB_HOST_FULL_SPEED     1   // HUSB: FS/LS devices behind USB hubs (IDF 5.5 has no TT)
 #define RG_ENABLE_USB_MSC          1
 
 // Wireless-Tag WT9932P4-TINY with an external ST7796: see docs/README.md.

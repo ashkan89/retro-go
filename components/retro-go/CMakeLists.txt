@@ -19,6 +19,10 @@ endif()
 register_component()
 
 if(IDF_TARGET STREQUAL "esp32p4")
+    # Root-port recovery resets HCFG; restore the target's host speed policy
+    # after every HAL reset, before the hub driver repowers the port.
+    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=usb_dwc_hal_core_soft_reset")
+
     # ESP-Hosted 2.13.1 starts its transport from a global constructor. On
     # this XiP P4 port that runs before the application can power VDD_IO_5
     # and initialize the runtime. Start it explicitly in rg_network_init().
