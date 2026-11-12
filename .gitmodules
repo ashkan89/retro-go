@@ -1,0 +1,3 @@
+[submodule "retro-core/components/nestopia/upstream"]
+	path = retro-core/components/nestopia/upstream
+	url = https://github.com/ashkan89/nestopia-liberto.git
