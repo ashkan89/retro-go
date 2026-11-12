@@ -1,5 +1,5 @@
 set(COMPONENT_SRCDIRS ".")
 set(COMPONENT_ADD_INCLUDEDIRS ".")
-set(COMPONENT_REQUIRES "nestopia")
+set(COMPONENT_REQUIRES "retro-go nestopia nofrendo gnuboy pce-go gw-emulator handy smsplus snes9x")
 register_component()
 rg_setup_compile_options(-O2 -Wno-error=format -fexceptions)
