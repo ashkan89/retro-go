@@ -1,3 +1,37 @@
+# Retro-Go 5.7.0 (Released)
+
+### P4 hardware and performance
+- Added the ESP32-P4 N16R32 ILI9341 target alongside ST7796.
+- Configured both P4 targets for 400 MHz using the supplied ESP-IDF clock patch.
+- Switched storage to onboard 4-bit SDMMC, including USB mass-storage mode.
+- Added ESP32-WROOM-32D Wi-Fi companion support through ESP-Hosted SDIO.
+- Updated Wi-Fi wiring to avoid conflicts with the onboard SD card.
+- Added board wiring, migration and performance documentation.
+
+### Emulation and rendering
+- Added Game Boy Advance emulation with RV32 JIT on P4.
+- Added experimental GBA support to all four ESP32-S3 N16R8 display variants.
+- Expanded GBA ROM caching and corrected JIT memory permissions.
+- Added PPA hardware bilinear scaling and PIE pixel conversion on P4.
+- Improved frame copying and enabled P4 code execution from PSRAM.
+- Added hardware JPEG decoding with software fallback.
+- Corrected palette byte order and fMSX timing overflow during long sessions.
+- Reduced audio synchronization overhead and unnecessary seeks during ROM loading.
+- Restored the previous code-loading defaults on S3 N16R8 targets.
+
+### USB host
+- Added full-speed negotiation for P4 USB hubs.
+- Backported early-revision P4 UTMI host detection setup.
+- Restored host configuration after controller resets and reconnects.
+
+### Builds and CI
+- Applied the ESP-IDF 5.5.5 clock patch automatically before P4 CI and release builds.
+- Updated release packaging to use each target's default application set.
+- Fixed N8R2 image overflow by reserving updater-footer space and supporting
+  4 KiB partition sizing.
+- Expanded regression coverage and corrected workflow-step selection.
+- Updated P4 board tests for the patched 400 MHz configuration.
+
 # Retro-Go 3.7.0 (unreleased)
 
 ## SD card reliability
