@@ -4,17 +4,42 @@
 #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32P4)
 #include "hal/usb_dwc_hal.h"
 
+static void configure_p4_host(usb_dwc_hal_context_t *hal)
+{
+    if (hal->dev != USB_DWC_LL_GET_HW(0))
+        return;
+#if CONFIG_ESP32P4_SELECTS_REV_LESS_V3
+    // Pre-v3 UTMI pulldowns are controlled by the OTG core. IDF 5.5
+    // disables HNP, leaving device attachment unreliable. Mirror the newer
+    // IDF host setup: enable HNP and anchor the internal A-host session.
+    // HUSB has no GPIO-matrix ID/VBUS sense inputs to strap like FUSB.
+    usb_dwc_ll_gusbcfg_en_hnp_cap(hal->dev);
+    hal->dev->gotgctl_reg.vbvalidoven = 1;
+    hal->dev->gotgctl_reg.vbvalidovval = 1;
+    hal->dev->gotgctl_reg.avalidoven = 1;
+    hal->dev->gotgctl_reg.avalidovval = 1;
+#endif
+#if RG_USB_HOST_FULL_SPEED
+    usb_dwc_ll_hcfg_set_fsls_supp_only(hal->dev);
+#endif
+}
+
+void __real_usb_dwc_hal_init(usb_dwc_hal_context_t *hal, int port_id);
+
+void __wrap_usb_dwc_hal_init(usb_dwc_hal_context_t *hal, int port_id)
+{
+    __real_usb_dwc_hal_init(hal, port_id);
+    configure_p4_host(hal);
+}
+
 void __real_usb_dwc_hal_core_soft_reset(usb_dwc_hal_context_t *hal);
 
 // IDF resets the controller during root-port disconnect/error recovery.
-// Restore the speed restriction before it powers the root port again.
+// Restore host detection and speed policy before it repowers the root port.
 void __wrap_usb_dwc_hal_core_soft_reset(usb_dwc_hal_context_t *hal)
 {
     __real_usb_dwc_hal_core_soft_reset(hal);
-#if RG_USB_HOST_FULL_SPEED
-    if (hal->dev == USB_DWC_LL_GET_HW(0))
-        usb_dwc_ll_hcfg_set_fsls_supp_only(hal->dev);
-#endif
+    configure_p4_host(hal);
 }
 #endif
 

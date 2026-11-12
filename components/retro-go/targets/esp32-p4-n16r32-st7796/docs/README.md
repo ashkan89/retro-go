@@ -87,8 +87,11 @@ keyboards, mice and controllers can be used behind a USB hub. ESP-IDF 5.5.5
 has no transaction translator for full/low-speed devices behind a high-speed
 hub ([Espressif limitations](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/usb_host.html#features-limitations)).
 `RG_USB_HOST_FULL_SPEED` applies before root-port power, including when a hub
-is attached at boot. A P4 HAL reset wrapper restores it after root-port recovery,
-before the SDK repowers the port. MSC device mode retains high-speed capability.
+is attached at boot. P4 HAL initialization and reset wrappers also restore the
+pre-v3 UTMI host pulldowns and A-host session signals required for attachment
+detection, including after root-port recovery. This backports the newer IDF
+host setup without modifying the installed SDK. MSC device mode retains
+high-speed capability.
 Host operation requires a suitable powered/current-limited 5 V VBUS connection;
 use a powered hub when the peripherals need more current. Enable **USB HID
 input** in the input settings for keyboards, mice and HID gamepads, or **Xbox

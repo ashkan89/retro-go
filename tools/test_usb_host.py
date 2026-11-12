@@ -38,14 +38,24 @@ static int usb_host_install(const usb_host_config_t *config) {
     return install_error;
 }
 #if TEST_FORCE_FULL_SPEED
-#define USB_DWC_LL_GET_HW(n) ((n) + 100)
-typedef struct { int dev; } usb_dwc_hal_context_t;
+typedef struct {
+    struct { unsigned vbvalidoven, vbvalidovval, avalidoven, avalidovval; } gotgctl_reg;
+    bool hnp;
+} mock_hw_t;
+static mock_hw_t hardware[2];
+#define USB_DWC_LL_GET_HW(n) (&hardware[n])
+typedef struct { mock_hw_t *dev; } usb_dwc_hal_context_t;
 static bool full_speed;
-void __real_usb_dwc_hal_core_soft_reset(usb_dwc_hal_context_t *hal) {
-    (void)hal; full_speed = false; record('R');
+void __real_usb_dwc_hal_init(usb_dwc_hal_context_t *hal, int port_id) {
+    hal->dev = USB_DWC_LL_GET_HW(port_id);
+    memset(hal->dev, 0, sizeof(*hal->dev)); full_speed = false; record('N');
 }
-static void usb_dwc_ll_hcfg_set_fsls_supp_only(int hw) {
-    assert(hw == 100); full_speed = true; record('F');
+void __real_usb_dwc_hal_core_soft_reset(usb_dwc_hal_context_t *hal) {
+    memset(hal->dev, 0, sizeof(*hal->dev)); full_speed = false; record('R');
+}
+static void usb_dwc_ll_gusbcfg_en_hnp_cap(mock_hw_t *hw) { hw->hnp = true; }
+static void usb_dwc_ll_hcfg_set_fsls_supp_only(mock_hw_t *hw) {
+    assert(hw == USB_DWC_LL_GET_HW(0)); full_speed = true; record('F');
 }
 static int usb_host_lib_set_root_port_power(bool enable) {
     assert(enable); assert(strcmp(calls, "IF") == 0); record('P'); return power_error;
@@ -72,12 +82,22 @@ int main(void) {
     run(0, 1, "IFPU", false);
     // A controller reset clears HCFG. Repeated hub reconnects must restore it.
     usb_dwc_hal_context_t hal = {.dev = USB_DWC_LL_GET_HW(0)};
+    calls[0] = 0;
+    __wrap_usb_dwc_hal_init(&hal, 0);
+    assert(full_speed && strcmp(calls, "NF") == 0);
+    assert(hal.dev->hnp && hal.dev->gotgctl_reg.vbvalidoven && hal.dev->gotgctl_reg.vbvalidovval);
+    assert(hal.dev->gotgctl_reg.avalidoven && hal.dev->gotgctl_reg.avalidovval);
     for (int reconnect = 0; reconnect < 3; ++reconnect) {
         calls[0] = 0;
         __wrap_usb_dwc_hal_core_soft_reset(&hal);
         assert(full_speed && strcmp(calls, "RF") == 0);
+        assert(hal.dev->hnp && hal.dev->gotgctl_reg.vbvalidoven && hal.dev->gotgctl_reg.vbvalidovval);
+        assert(hal.dev->gotgctl_reg.avalidoven && hal.dev->gotgctl_reg.avalidovval);
     }
-    hal.dev = USB_DWC_LL_GET_HW(1);
+    calls[0] = 0;
+    __wrap_usb_dwc_hal_init(&hal, 1);
+    assert(!full_speed && !hal.dev->hnp && strcmp(calls, "N") == 0);
+    assert(!hal.dev->gotgctl_reg.vbvalidoven && !hal.dev->gotgctl_reg.avalidoven);
     calls[0] = 0;
     __wrap_usb_dwc_hal_core_soft_reset(&hal);
     assert(!full_speed && strcmp(calls, "R") == 0);
@@ -85,7 +105,7 @@ int main(void) {
     run(0, 0, "IEU", true);
 #endif
     run(1, 0, "I", false);
-    puts("PASS: USB host startup, speed-before-power ordering and failure cleanup");
+    puts("PASS: USB host startup, UTMI host detection, recovery and failure cleanup");
 }
 '''
 
@@ -97,7 +117,7 @@ def main():
     compiler = [args.cc] + (['cc'] if Path(args.cc).stem.lower() == 'zig' else [])
     source = (ROOT / 'components/retro-go/rg_usb_host.c').read_text()
     task = source[source.index('static void usb_host_task('):source.index('bool rg_usb_host_acquire(')]
-    reset = source[source.index('void __real_usb_dwc_hal_core_soft_reset('):
+    reset = source[source.index('static void configure_p4_host('):
                    source.index('\n#endif\n\n#if defined(ESP_PLATFORM) && (')]
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)
@@ -108,6 +128,7 @@ def main():
             if target:
                 config = ROOT / 'components/retro-go/targets' / target / 'config.h'
                 defines = ['-DCONFIG_IDF_TARGET_ESP32P4=1', '-DTEST_FORCE_FULL_SPEED=1',
+                           '-DCONFIG_ESP32P4_SELECTS_REV_LESS_V3=1',
                            '-include', str(config)]
             subprocess.run(compiler + ['-std=c11', '-Wall', '-Wextra', '-Werror', '-UNDEBUG'] +
                            defines + [str(harness), '-o', str(executable)], check=True)
