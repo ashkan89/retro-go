@@ -26,6 +26,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Apply ESP-IDF 5.5.5 P4 clock patch
+        if: startsWith(matrix.target, 'esp32-p4-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$IDF_PATH/components/esp_hw_support/port/esp32p4/rtc_clk.c"
+          cp esp-idf-patch/v5.5.5/rtc_clk.c "$IDF_PATH/components/esp_hw_support/port/esp32p4/rtc_clk.c"
       - name: Build complete image with factory updater
         shell: bash
         env:
