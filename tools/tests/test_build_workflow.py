@@ -24,7 +24,9 @@ class BuildWorkflowTests(unittest.TestCase):
             self.skipTest("The Actions build step requires bash")
 
         workflow = (ROOT / ".github/workflows/build-images.yml").read_text()
-        block = re.search(r"(?m)^        run: \|\n((?:          .*\n)+)", workflow)
+        block = re.search(
+            r"(?m)^      - name: Build complete image with factory updater\n"
+            r"(?:        .*\n)*?        run: \|\n((?:          .*\n)+)", workflow)
         self.assertIsNotNone(block, "Missing firmware build step")
         script = textwrap.dedent(block[1])
         for target in ("esp32-p4-n16r32-ili9341", "esp32-p4-n16r32-st7796",
