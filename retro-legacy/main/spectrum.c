@@ -120,6 +120,13 @@ static void step(uint32_t keys, rg_surface_t *surface)
     if (keys & RG_KEY_B) press(rows, 35);
     if (keys & RG_KEY_START) press(rows, 30);
     if (keys & RG_KEY_SELECT) press(rows, 20);
+    // P2 uses the independent Sinclair 1 keyboard interface (1,2,3,4,5).
+    uint32_t keys2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    if (keys2 & RG_KEY_LEFT) press(rows, 15);
+    if (keys2 & RG_KEY_RIGHT) press(rows, 16);
+    if (keys2 & RG_KEY_DOWN) press(rows, 17);
+    if (keys2 & RG_KEY_UP) press(rows, 18);
+    if (keys2 & (RG_KEY_A | RG_KEY_B)) press(rows, 19);
     if (caps_shift) press(rows, 0);
     if (symbol_shift) press(rows, 36);
     if (injected_frames > 0) { press(rows, injected_key); injected_frames--; }

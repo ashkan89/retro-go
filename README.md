@@ -313,8 +313,11 @@ _Note: CRC32-based, which is what is used in the pre-made pack, is much slower t
 Some emulators support loading a BIOS. The files should be placed as follows:
 - GB: `/retro-go/bios/gb_bios.bin`
 - GBC: `/retro-go/bios/gbc_bios.bin`
-- FDS: `/retro-go/bios/fds_bios.bin`
+- FDS: `/retro-go/bios/disksys.rom` (`fds_bios.bin` is accepted as a legacy fallback)
 - MSX: In folder `/retro-go/bios/msx/` put: `MSX.ROM` `MSX2.ROM` `MSX2EXT.ROM` `MSX2P.ROM` `MSX2PEXT.ROM` `FMPAC.ROM` `DISK.ROM` `MSXDOS2.ROM` `PAINTER.ROM` `KANJI.ROM`
+
+See the [P1/P2 multiplayer guide](MULTIPLAYER.md) for controller assignments,
+P4 button wiring, and per-emulator local multiplayer support.
 
 
 ## Game & Watch

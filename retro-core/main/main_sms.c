@@ -5,6 +5,7 @@
 static rg_app_t *app;
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
+static int colecoKeypadPlayer;
 
 const rg_keyboard_layout_t coleco_keyboard = {
     .layout = "123" "456" "789" "*0#",
@@ -101,9 +102,22 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *opt, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t keypad_player_cb(rg_gui_option_t *opt, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        colecoKeypadPlayer ^= 1;
+        rg_settings_set_number(NS_APP, "keypad_player", colecoKeypadPlayer);
+    }
+    strcpy(opt->value, colecoKeypadPlayer ? "P2" : "P1");
+    return RG_DIALOG_VOID;
+}
+
 static void options_handler(rg_gui_option_t *dest)
 {
     *dest++ = (rg_gui_option_t){0, _("Palette"), "-", RG_DIALOG_FLAG_NORMAL, &palette_update_cb};
+    if (sms.console == CONSOLE_COLECO)
+        *dest++ = (rg_gui_option_t){0, _("Keypad player"), "-", RG_DIALOG_FLAG_NORMAL, &keypad_player_cb};
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
@@ -119,6 +133,7 @@ void sms_main(void)
     };
 
     app = rg_system_reinit(AUDIO_SAMPLE_RATE, &handlers, NULL);
+    colecoKeypadPlayer = rg_settings_get_number(NS_APP, "keypad_player", 0) == 1;
 
     updates[0] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
     updates[1] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
@@ -177,6 +192,7 @@ void sms_main(void)
     int skipFrames = 0;
     int colecoKey = 0;
     int colecoKeyDecay = 0;
+    int colecoKeyPlayer = 0;
 
     while (true)
     {
@@ -231,7 +247,7 @@ void sms_main(void)
 
             if (colecoKeyDecay > 0)
             {
-                coleco.keypad[0] = colecoKey;
+                coleco.keypad[colecoKeyPlayer] = colecoKey;
                 colecoKeyDecay--;
             }
 
@@ -251,6 +267,7 @@ void sms_main(void)
                 else
                     colecoKey = 255;
                 colecoKeyDecay = 4;
+                colecoKeyPlayer = colecoKeypadPlayer;
                 continue;
             }
             else if (joystick & RG_KEY_SELECT)

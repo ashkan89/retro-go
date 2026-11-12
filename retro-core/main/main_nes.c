@@ -213,7 +213,7 @@ void nes_nofrendo_main(void)
     updates[1] = rg_surface_create(NES_SCREEN_PITCH, NES_SCREEN_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
     currentUpdate = updates[0];
 
-    nes = nes_init(SYS_DETECT, app->sampleRate, true, RG_BASE_PATH_BIOS "/fds_bios.bin");
+    nes = nes_init(SYS_DETECT, app->sampleRate, true, nes_fds_bios_path());
     if (!nes)
         RG_PANIC("Init failed.");
 

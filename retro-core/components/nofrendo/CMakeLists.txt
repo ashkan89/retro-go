@@ -1,3 +1,8 @@
+if(CONFIG_RG_NES_EMULATOR_NESTOPIA)
+    register_component()
+    return()
+endif()
+
 set(COMPONENT_SRCDIRS "nes mappers .")
 set(COMPONENT_ADD_INCLUDEDIRS ".")
 set(COMPONENT_REQUIRES "retro-go")

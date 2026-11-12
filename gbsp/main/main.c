@@ -118,7 +118,10 @@ static int16_t input_state(unsigned port, unsigned device, unsigned index, unsig
         RG_KEY_B, RG_KEY_Y, RG_KEY_SELECT, RG_KEY_START, RG_KEY_UP, RG_KEY_DOWN,
         RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_X, RG_KEY_L, RG_KEY_R,
     };
-    return port == 0 && device == RETRO_DEVICE_JOYPAD && id < RG_COUNT(map) && (keys & map[id]) ? 1 : 0;
+    // One emulated GBA has one keypad. P2 is a separate logical controller,
+    // not a second handheld or a link-cable connection.
+    return port == 0 && index == 0 && device == RETRO_DEVICE_JOYPAD &&
+           id < RG_COUNT(map) && (keys & map[id]) ? 1 : 0;
 }
 
 static bool save_sram(void)
@@ -281,7 +284,7 @@ void app_main(void)
 #endif
     while (true)
     {
-        keys = rg_input_read_gamepad();
+        keys = rg_input_read_gamepad_player(RG_PLAYER_1);
         if (keys & (RG_KEY_MENU | RG_KEY_OPTION))
         {
             save_sram();

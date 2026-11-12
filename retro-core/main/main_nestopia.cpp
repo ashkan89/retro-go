@@ -7,6 +7,7 @@
 #include <NstApiNsf.hpp>
 #include <NstApiSound.hpp>
 #include <NstApiVideo.hpp>
+#include <NstApiUser.hpp>
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,6 +16,7 @@
 #include <istream>
 #include <new>
 #include <streambuf>
+#include <string>
 
 static Nes::Api::Emulator *activeEmulator;
 static Nes::Api::Machine *activeMachine;
@@ -39,6 +41,26 @@ static const char *SETTING_SPRITELIMIT = "spritelimit";
 
 class MemoryStreamBuffer : public std::streambuf
 {
+protected:
+    pos_type seekoff(off_type offset, std::ios_base::seekdir direction,
+                     std::ios_base::openmode mode) override
+    {
+        if (!(mode & std::ios_base::in))
+            return pos_type(off_type(-1));
+        off_type base = direction == std::ios_base::beg ? 0 :
+                        direction == std::ios_base::cur ? gptr() - eback() : egptr() - eback();
+        const off_type length = egptr() - eback();
+        if (offset < -base || offset > length - base)
+            return pos_type(off_type(-1));
+        setg(eback(), eback() + base + offset, egptr());
+        return pos_type(base + offset);
+    }
+
+    pos_type seekpos(pos_type position, std::ios_base::openmode mode) override
+    {
+        return seekoff(off_type(position), std::ios_base::beg, mode);
+    }
+
 public:
     MemoryStreamBuffer(const void *data, size_t size)
     {
@@ -46,6 +68,48 @@ public:
         setg(begin, begin, begin + size);
     }
 };
+
+// Keep native saves separate from Nofrendo's SRAM and state formats.
+static void NST_CALLBACK file_io(void *, Nes::Api::User::File &file)
+{
+    using File = Nes::Api::User::File;
+    const char *suffix;
+    bool save = false;
+    switch (file.GetAction())
+    {
+        case File::SAVE_BATTERY: save = true; // fall through
+        case File::LOAD_BATTERY: suffix = ".nestopia.battery"; break;
+        case File::SAVE_EEPROM: save = true; // fall through
+        case File::LOAD_EEPROM: suffix = ".nestopia.eeprom"; break;
+        case File::SAVE_FDS: save = true; // fall through
+        case File::LOAD_FDS: suffix = ".nestopia.ips"; break;
+        default: return;
+    }
+    char *base = rg_emu_get_path(RG_PATH_SAVE_SRAM, app->romPath);
+    std::string path = std::string(base) + suffix;
+    free(base);
+    if (save)
+    {
+        rg_storage_mkdir(rg_dirname(path.c_str()));
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        Nes::Result result = file.GetAction() == File::SAVE_FDS ?
+            file.GetPatchContent(File::PATCH_IPS, output) : file.GetContent(output);
+        output.flush();
+        if (result < Nes::RESULT_OK || !output.good())
+            RG_LOGE("Nestopia: could not save persistent data: %s", path.c_str());
+    }
+    else
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (input)
+        {
+            Nes::Result result = file.GetAction() == File::LOAD_FDS ?
+                file.SetPatchContent(input) : file.SetContent(input);
+            if (result < Nes::RESULT_OK)
+                RG_LOGE("Nestopia: could not load persistent data: %s", path.c_str());
+        }
+    }
+}
 
 static void draw_nsf_overlay(void)
 {
@@ -65,7 +129,7 @@ static void draw_nsf_overlay(void)
 
 static void submit_video(void)
 {
-    int cropV = overscan ? 8 : 0;
+    int cropV = overscan && refreshRate == 60 ? 8 : 0;
     int cropH = autocrop ? 8 : 0;
     currentUpdate->width = 256 - cropH * 2;
     currentUpdate->height = 240 - cropV * 2;
@@ -76,6 +140,12 @@ static void submit_video(void)
 static void event_handler(int event, void *arg)
 {
     (void)arg;
+    if (event == RG_EVENT_SHUTDOWN && activeMachine)
+    {
+        // Power-off invokes Nestopia's battery, EEPROM and disk save callbacks.
+        activeMachine->Power(false);
+        return;
+    }
     if (event != RG_EVENT_REDRAW)
         return;
 
@@ -236,12 +306,29 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t disk_side_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    Nes::Api::Fds fds(*activeEmulator);
+    int side = fds.IsAnyDiskInserted() ? fds.GetCurrentDisk() * 2 + fds.GetCurrentDiskSide() : -1;
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        const int count = fds.GetNumSides();
+        side = event == RG_DIALOG_NEXT ? (side + 1) % count : (side + count - 1) % count;
+        if (fds.EjectDisk() < Nes::RESULT_OK || fds.InsertDisk(side / 2, side % 2) < Nes::RESULT_OK)
+            RG_LOGE("Nestopia: could not change disk side.");
+    }
+    snprintf(option->value, 32, "%d %c", side / 2 + 1, 'A' + side % 2);
+    return RG_DIALOG_VOID;
+}
+
 static void options_handler(rg_gui_option_t *dest)
 {
     *dest++ = rg_gui_option_t{0, _("Palette"), "-", RG_DIALOG_FLAG_NORMAL, &palette_update_cb};
     *dest++ = rg_gui_option_t{0, _("Overscan"), "-", RG_DIALOG_FLAG_NORMAL, &overscan_update_cb};
     *dest++ = rg_gui_option_t{0, _("Crop sides"), "-", RG_DIALOG_FLAG_NORMAL, &autocrop_update_cb};
     *dest++ = rg_gui_option_t{0, _("Sprite limit"), "-", RG_DIALOG_FLAG_NORMAL, &sprite_limit_cb};
+    if (activeMachine->Is(Nes::Api::Machine::DISK))
+        *dest++ = rg_gui_option_t{0, _("Disk side"), "-", RG_DIALOG_FLAG_NORMAL, &disk_side_cb};
     *dest++ = rg_gui_option_t RG_DIALOG_END;
 }
 
@@ -343,12 +430,13 @@ void nes_nestopia_main(void)
     Nes::Api::Video video(*activeEmulator);
     activeMachine = &machine;
     activeVideo = &video;
+    Nes::Api::User::fileIoCallback.Set(file_io, NULL);
 
     bool spriteLimit = rg_settings_get_number(NS_APP, SETTING_SPRITELIMIT, 1) != 0;
     if (video.EnableUnlimSprites(!spriteLimit) < Nes::RESULT_OK)
         RG_PANIC("Nestopia: could not configure sprite limit.");
 
-    std::ifstream bios(RG_BASE_PATH_BIOS "/fds_bios.bin", std::ios::in | std::ios::binary);
+    std::ifstream bios(nes_fds_bios_path(), std::ios::in | std::ios::binary);
     if (bios)
     {
         Nes::Result result = fds.SetBIOS(&bios);
@@ -365,6 +453,8 @@ void nes_nestopia_main(void)
         RG_LOGE("Nestopia: ROM load failed (result %d)", result);
         RG_PANIC("Nestopia: ROM load failed.");
     }
+    if (machine.SetMode(machine.GetDesiredMode()) < Nes::RESULT_OK)
+        RG_PANIC("Nestopia: region configuration failed.");
 
     Nes::Api::Video::RenderState renderState;
     renderState.width = 256;
@@ -390,6 +480,8 @@ void nes_nestopia_main(void)
 
     if (machine.Power(true) < Nes::RESULT_OK)
         RG_PANIC("Nestopia: machine power-on failed.");
+    if (machine.Is(Nes::Api::Machine::DISK) && fds.InsertDisk(0, 0) < Nes::RESULT_OK)
+        RG_PANIC("Nestopia: disk insertion failed.");
 
     nsfPlayer = machine.Is(Nes::Api::Machine::SOUND);
     Nes::Api::Nsf nsf(*activeEmulator);
@@ -439,7 +531,8 @@ void nes_nestopia_main(void)
         if (drawFrame)
             videoOutput = Nes::Core::Video::Output(currentUpdate->data, currentUpdate->stride);
 
-        const unsigned requestedSamples = (app->sampleRate / refreshRate) + 1;
+        // Drain every sample generated by a frame, including fractional carry.
+        const unsigned requestedSamples = AUDIO_BUFFER_LENGTH;
         Nes::Core::Sound::Output audioOutput(audioMono, requestedSamples);
         result = activeEmulator->Execute(drawFrame ? &videoOutput : NULL, &audioOutput, &input);
         if (result < Nes::RESULT_OK)

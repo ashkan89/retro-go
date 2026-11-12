@@ -60,6 +60,12 @@ static void step(uint32_t keys, rg_surface_t *surface)
     event.set(Event::JoystickZeroLeft, !!(keys & RG_KEY_LEFT));
     event.set(Event::JoystickZeroRight, !!(keys & RG_KEY_RIGHT));
     event.set(Event::JoystickZeroFire, !!(keys & (RG_KEY_A | RG_KEY_B)));
+    uint32_t keys2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    event.set(Event::JoystickOneUp, !!(keys2 & RG_KEY_UP));
+    event.set(Event::JoystickOneDown, !!(keys2 & RG_KEY_DOWN));
+    event.set(Event::JoystickOneLeft, !!(keys2 & RG_KEY_LEFT));
+    event.set(Event::JoystickOneRight, !!(keys2 & RG_KEY_RIGHT));
+    event.set(Event::JoystickOneFire, !!(keys2 & (RG_KEY_A | RG_KEY_B)));
     event.set(Event::ConsoleSelect, !!(keys & RG_KEY_SELECT));
     event.set(Event::ConsoleReset, !!(keys & RG_KEY_START));
     console->controller(Controller::Left).update();

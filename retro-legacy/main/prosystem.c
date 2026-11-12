@@ -64,6 +64,10 @@ static void step(uint32_t keys, rg_surface_t *surface)
     input[0] = !!(keys & RG_KEY_RIGHT); input[1] = !!(keys & RG_KEY_LEFT);
     input[2] = !!(keys & RG_KEY_DOWN); input[3] = !!(keys & RG_KEY_UP);
     input[4] = !!(keys & RG_KEY_B); input[5] = !!(keys & RG_KEY_A);
+    uint32_t keys2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    input[6] = !!(keys2 & RG_KEY_RIGHT); input[7] = !!(keys2 & RG_KEY_LEFT);
+    input[8] = !!(keys2 & RG_KEY_DOWN); input[9] = !!(keys2 & RG_KEY_UP);
+    input[10] = !!(keys2 & RG_KEY_B); input[11] = !!(keys2 & RG_KEY_A);
     input[12] = !!((keys & RG_KEY_START) && (keys & RG_KEY_SELECT));
     input[13] = !!(keys & RG_KEY_SELECT); input[14] = !!(keys & RG_KEY_START);
     // Carry the fractional sample across NTSC frames: 533, 533, 534 at

@@ -33,7 +33,16 @@ There are generally two active git branches on retro-go:
 - `master` contains the code form the most recent release and is usually tested and known to be working
 - `dev` contains code in development that will be merged to master upon the next release and is often untested
 
-`git clone -b <branch> https://github.com/ashkan89/retro-go/`
+`git clone --recurse-submodules -b <branch> https://github.com/ashkan89/retro-go/`
+
+For an existing checkout, run `git submodule update --init --recursive`.
+The experimental Nestopia backend uses the pinned revision of
+[ashkan89/nestopia-liberto](https://github.com/ashkan89/nestopia-liberto).
+Select the NES backend under **Retro-Go > NES emulator** in menuconfig.
+Only the selected NES core is compiled. Nestopia states are incompatible with
+Nofrendo states; use separate state slots when switching backends. Battery RAM,
+EEPROM and FDS patches use separate `.nestopia.*` files alongside SRAM saves and
+are written on normal exit. Abrupt power loss cannot flush these files.
 
 
 ## rg_tool.py

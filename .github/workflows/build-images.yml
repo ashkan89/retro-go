@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          submodules: recursive
       - name: Apply ESP-IDF 5.5.5 P4 clock patch
         if: startsWith(matrix.target, 'esp32-p4-')
         shell: bash

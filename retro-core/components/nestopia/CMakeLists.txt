@@ -1,3 +1,12 @@
+if(NOT CONFIG_RG_NES_EMULATOR_NESTOPIA)
+    register_component()
+    return()
+endif()
+
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/upstream/source/core/api/NstApiEmulator.hpp")
+    message(FATAL_ERROR "Nestopia sources missing. Run: git submodule update --init --recursive")
+endif()
+
 file(GLOB_RECURSE COMPONENT_SRCS
     "${CMAKE_CURRENT_LIST_DIR}/upstream/source/core/*.cpp"
 )

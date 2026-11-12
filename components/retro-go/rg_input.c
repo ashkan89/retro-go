@@ -324,10 +324,17 @@ static void update_source_resolution(void)
         source_was_connected[s] = connected[s];
     }
 
+    // An explicit P2 assignment reserves that port. Otherwise an unrelated
+    // Auto source would silently merge its buttons into the same player.
+    bool player2_reserved = false;
+    for (int s = 0; s < RG_INPUT_SOURCE_COUNT; ++s)
+        if (connected[s] && source_assignment[s] == RG_PLAYER_2)
+            player2_reserved = true;
+
     int auto_p2 = -1;
     for (int s = 1; s < RG_INPUT_SOURCE_COUNT; ++s) // Skip RG_INPUT_SOURCE_BUILTIN
     {
-        if (connected[s] && source_assignment[s] == RG_INPUT_PLAYER_AUTO)
+        if (!player2_reserved && connected[s] && source_assignment[s] == RG_INPUT_PLAYER_AUTO)
         {
             if (auto_p2 < 0 || source_connect_seq[s] < source_connect_seq[auto_p2])
                 auto_p2 = s;
