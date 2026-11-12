@@ -192,7 +192,7 @@ static void options_handler(rg_gui_option_t *dest)
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
-void nes_main(void)
+void nes_nofrendo_main(void)
 {
     const rg_handlers_t handlers = {
         .loadState = &load_state_handler,

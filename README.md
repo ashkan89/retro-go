@@ -437,9 +437,15 @@ If you wish to build or modify Retro-Go, you can find help in the following docu
 - Porting instructions in [PORTING.md](PORTING.md)
 - Translating instructions in [LOCALIZATION.md](LOCALIZATION.md)
 
+The NES core is selected per hardware target through its `sdkconfig`. Nestopia is the
+default on ESP32-S3 and ESP32-P4 targets; Nofrendo remains the default on other targets
+and is still available as a fallback. The Nestopia integration is experimental and needs
+build and device validation.
+
 
 # Acknowledgements
 - The NES/GBC/SMS emulators and base library were originally from the "Triforce" fork of the [official Go-Play firmware](https://github.com/othercrashoverride/go-play) by crashoverride, Nemo1984, and many others.
+- Nestopia is used as the experimental alternative NES core: [Nestopia Libretro](https://github.com/ashkan89/nestopia-liberto).
 - The design of the launcher was originally inspired/copied from [pelle7's go-emu](https://github.com/pelle7/odroid-go-emu-launcher).
 - PCE-GO is a fork of [HuExpress](https://github.com/kallisti5/huexpress) and [pelle7's port](https://github.com/pelle7/odroid-go-pcengine-huexpress/) was used as reference.
 - The Lynx emulator is a port of [libretro-handy](https://github.com/libretro/libretro-handy).

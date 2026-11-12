@@ -1,4 +1,11 @@
 #
+# Retro-Go
+#
+CONFIG_RG_NES_EMULATOR_NESTOPIA=y
+# CONFIG_RG_NES_EMULATOR_NOFRENDO is not set
+# end of Retro-Go
+
+#
 # Serial flasher config
 #
 CONFIG_ESPTOOLPY_FLASHMODE="dio"

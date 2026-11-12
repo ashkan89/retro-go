@@ -11,7 +11,8 @@ extern uint8_t shared_memory_block_64K[0x10000];
 
 void launcher_main();
 void gbc_main();
-void nes_main();
+void nes_nestopia_main();
+void nes_nofrendo_main();
 void pce_main();
 void sms_main();
 void gw_main();

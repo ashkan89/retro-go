@@ -1,0 +1,15 @@
+menu "Retro-Go"
+
+choice RG_NES_EMULATOR
+    prompt "NES emulator"
+    default RG_NES_EMULATOR_NOFRENDO
+
+config RG_NES_EMULATOR_NESTOPIA
+    bool "Nestopia"
+
+config RG_NES_EMULATOR_NOFRENDO
+    bool "Nofrendo fallback"
+
+endchoice
+
+endmenu
