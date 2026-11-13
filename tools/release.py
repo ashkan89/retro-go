@@ -96,10 +96,12 @@ def create_sdcard_structure(path, version):
                          f"Retro-Go {version} SD card structure\n"
                          "Copy your games into roms/<system> and BIOS files into retro-go/bios.\n"
                          "No games or copyrighted BIOS files are included.\n")
-        theme = ROOT / "themes" / "default"
-        for asset in sorted(theme.iterdir()):
-            if asset.is_file() and asset.suffix in (".png", ".json"):
-                archive.write(asset, "retro-go/themes/default/" + asset.name)
+        for theme in sorted((ROOT / "themes").iterdir()):
+            if not theme.is_dir() or not (theme / "theme.json").is_file():
+                continue
+            for asset in sorted(theme.iterdir()):
+                if asset.is_file() and asset.suffix in (".png", ".json"):
+                    archive.write(asset, f"retro-go/themes/{theme.name}/{asset.name}")
 
 
 def package_release(directory, tag):

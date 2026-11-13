@@ -20,7 +20,7 @@
         "surface": "0x372D2F",
         "surface_alt": "0x2A1217",
         "divider": "0x414143",
-        "text_dim": "0x8E8486"
+        "text_dim": "0x9D9496"
     },
     "launcher_1": {
         "__comment": "Launcher variant 1: white selection over the accent pill",
@@ -63,7 +63,7 @@
         "background": "0x080809",
         "surface": "0x372D2F",
         "text": "0xFCEBED",
-        "text_dim": "0x8E8486",
+        "text_dim": "0x9D9496",
         "divider": "0x414143",
         "accent": "0xE5384D",
         "accent_dim": "0x7D232F",

@@ -84,6 +84,7 @@ int main(int argc, char **argv) {
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cc", default="cc")
+    parser.add_argument("--release-only", action="store_true", help="Check streaming and real release extraction without platform-specific unsafe-path fixtures")
     args = parser.parse_args()
     source = (ROOT / "launcher/main/sdcard_manager.c").read_text()
     installer = source[source.index("static bool archive_path("):source.index("static void sdcard_manager_run(")]
@@ -185,6 +186,14 @@ int main(int argc, char **argv) {
         subprocess.run([str(executable), str(archive), str(card)], check=True)
         assert (card / "retro-go/themes/default/theme.json").read_bytes() == (ROOT / "themes/default/theme.json").read_bytes()
         assert (card / "retro-go/bios/msx").is_dir()
+        for theme in (ROOT / "themes").iterdir():
+            if theme.is_dir() and (theme / "theme.json").is_file():
+                for asset in theme.iterdir():
+                    if asset.is_file() and asset.suffix in (".png", ".json"):
+                        assert (card / "retro-go/themes" / theme.name / asset.name).read_bytes() == asset.read_bytes()
+        if args.release_only:
+            print("PASS: firmware ZIP installer extracted every theme asset byte-for-byte from the complete release archive")
+            return
         for i, unsafe in enumerate(("../escape", "/absolute", "nested/../../escape", "a\\escape", "C:/escape",
                                     "./file", "a//file", "x" * 300, ".sdcard_structure.zip", ".SDCARD_STRUCTURE.ZIP",
                                     "trailing./file", "trailing /file", "bad?/file", "control\nfile", ".sdcard_install.tmp", ".SDCARD_INSTALL.TMP")):

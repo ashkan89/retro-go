@@ -4,6 +4,18 @@ This document should document what are themes, how they're structured, and how t
 
 Example themes can be found in the [themes](/themes/) folder of this project.
 
+Open [the theme gallery](themes/PREVIEW.html) to compare the 15 included themes.
+Every bundle contains media for all 23 supported/fallback tab names, including
+GBA, Atari 2600/7800, Spectrum, Media Player and File Manager, plus a default
+background and a 160×120 representative preview. The SD-card release archive
+includes all theme bundles.
+
+Run `python tools/theme_assets.py --check` to detect missing/blank media,
+invalid PNGs, incomplete palettes, or insufficient text contrast. To reproduce
+missing vector assets and previews, install `requirements-tools.txt` and run
+`python tools/theme_assets.py --complete`. Existing nonblank tab artwork is
+preserved. See [artwork sources and generation prompt](assets/theme-art/README.md).
+
 
 ## Theme Structure
 

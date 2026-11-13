@@ -13,14 +13,14 @@
         "item_standard": "0xF1DFE6",
         "item_disabled": "0x786C76",
         "item_message": "0xC7B7BF",
-        "item_value": "0xA698A1",
+        "item_value": "0xA89AA3",
         "accent": "0xFF3D8A",
         "accent_dim": "0x6F2146",
         "highlight": "0xFFB5D3",
         "surface": "0x40303F",
         "surface_alt": "0x37162B",
         "divider": "0x49454E",
-        "text_dim": "0x948790"
+        "text_dim": "0xA79DA4"
     },
     "launcher_1": {
         "__comment": "Launcher variant 1: white selection over the accent pill",
@@ -63,7 +63,7 @@
         "background": "0x0E0A12",
         "surface": "0x40303F",
         "text": "0xFFECF3",
-        "text_dim": "0x948790",
+        "text_dim": "0xA79DA4",
         "divider": "0x49454E",
         "accent": "0xFF3D8A",
         "accent_dim": "0x8F2755",

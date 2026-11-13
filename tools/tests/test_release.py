@@ -152,6 +152,11 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn("retro-go/bios/msx/", archive.namelist())
                 self.assertIn("retro-go/firmware/", archive.namelist())
                 self.assertIn("retro-go/themes/default/theme.json", archive.namelist())
+                for theme in (release.ROOT / "themes").iterdir():
+                    if theme.is_dir() and (theme / "theme.json").is_file():
+                        for name in ("theme.json", "preview.png", "logo_gba.png", "banner_gba.png", "background_gba.png"):
+                            self.assertEqual(archive.read(f"retro-go/themes/{theme.name}/{name}"),
+                                             (theme / name).read_bytes())
                 self.assertIn("4.5", archive.read("SDCARD_README.txt").decode())
                 for name in archive.namelist():
                     self.assertFalse(name.startswith("/"))

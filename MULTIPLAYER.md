@@ -53,7 +53,8 @@ for host/hub power and board connector details.
 | Atari 2600 — Stella | Left joystick | Right joystick | Directions and fire; P1 Select/Start operate console Select/Reset. Paddle/keypad peripherals need their own mappings. |
 | Atari 7800 — ProSystem | Input entries 0–5 | Input entries 6–11 | Independent directions and two fire buttons. Console switches remain P1. |
 | ZX Spectrum | Selected Kempston / Sinclair 2 / QAOP controls | Sinclair 1 keys 1–5 | Configure the game's second player for Sinclair 1. P2 left/right/down/up/fire = 1/2/3/4/5. |
-| GB / GBC / GBA | Local handheld controls | Not exposed | A second controller does not implement a second handheld or link cable. |
+| GB / GBC | Local handheld controls | Not exposed | A second controller does not implement a second handheld or link cable. |
+| GBA — gpSP | Libretro joypad port 0, index 0 | Not exposed | A/B, Start/Select, directions, L/R and X/Y turbo inputs are mapped. The frontend disables serial link mode; a controller assigned to P2 cannot act as another GBA. Assign an external controller to P1 to use it for this handheld. |
 | Game Gear / Lynx | Local handheld controls | No second machine | Multiplayer link emulation is not implemented by these frontends. |
 | Game & Watch | Game-specific buttons | No separate controller port | Only the P1 logical controller is read. |
 | Doom — PrBoom | Local player | No second local player | A second controller does not create another Doom player. |

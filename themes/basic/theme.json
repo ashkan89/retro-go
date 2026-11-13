@@ -20,7 +20,7 @@
         "surface": "0x273B44",
         "surface_alt": "0x0B2E3A",
         "divider": "0x3E454C",
-        "text_dim": "0x829096"
+        "text_dim": "0x94A0A5"
     },
     "launcher_1": {
         "__comment": "Launcher variant 1: white selection over the accent pill",
@@ -38,7 +38,7 @@
         "list_standard_bg": "transparent",
         "list_standard_fg": "0x86959A",
         "list_selected_bg": "transparent",
-        "list_selected_fg": "0xFF4FD8"
+        "list_selected_fg": "0xFFBCF0"
     },
     "launcher_3": {
         "__comment": "Launcher variant 3: solid accent pill with dark text",
@@ -63,7 +63,7 @@
         "background": "0x050B11",
         "surface": "0x273B44",
         "text": "0xE9FCFF",
-        "text_dim": "0x829096",
+        "text_dim": "0x94A0A5",
         "divider": "0x3E454C",
         "accent": "0x1FE0FF",
         "accent_dim": "0x147D91",
