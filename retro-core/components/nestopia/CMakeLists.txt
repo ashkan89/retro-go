@@ -18,4 +18,7 @@ set(COMPONENT_ADD_INCLUDEDIRS
 )
 
 register_component()
-rg_setup_compile_options(-O3 -fno-rtti -fexceptions -DNST_NO_ZLIB -Wno-error)
+# Xtensa uses 16-bit wchar_t: upstream's ASCII case-folding initializer
+# promotes to int before storing back to wchar_t. Match the native core build
+# and allow this safe conversion without changing the pinned submodule.
+rg_setup_compile_options(-O3 -fno-rtti -fexceptions -DNST_NO_ZLIB -Wno-error -Wno-narrowing)

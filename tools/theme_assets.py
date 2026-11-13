@@ -246,9 +246,13 @@ def validate():
         if len(content) != int(size):
             problems.append(f"Incorrect embedded image size: {name}")
         embedded[name] = content
+    active = runtime | {"favorite", "recent", "mediaplayer", "browser"}
+    required_embedded = {"background.png"} | {f"{kind}_{tab}.png" for tab in active for kind in SIZES}
     for path in (THEMES / "default").glob("*.png"):
-        if embedded.get(path.name) != path.read_bytes():
+        if path.name in required_embedded and embedded.get(path.name) != path.read_bytes():
             problems.append(f"Stale/missing embedded {path.name}: run python tools/gen_images.py")
+    if embedded.keys() - required_embedded:
+        problems.append(f"Unused artwork embedded in flash: {embedded.keys() - required_embedded}")
     for folder in sorted(THEMES.iterdir()):
         if not folder.is_dir():
             continue

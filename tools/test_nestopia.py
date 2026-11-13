@@ -6,6 +6,7 @@ Uses generated mapper-0 ROMs; no copyrighted game data or hardware required.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -109,7 +110,10 @@ int main() {
     }
     // Read both hardware NES ports into battery RAM using a generated ROM.
     for (int active=0; active<2; ++active) {
-        std::remove("test.sram.nestopia.battery");
+        // A known baseline reproduces Linux's original checksum/save failure
+        // on Windows too, rather than depending on power-on RAM contents.
+        const std::string initialRam(8192, '\0');
+        std::ofstream("test.sram.nestopia.battery",std::ios::binary).write(initialRam.data(),initialRam.size());
         zipped=rom(false);
         const unsigned char program[] = {
             0x78,0xa9,1,0x8d,0x16,0x40,0xa9,0,0x8d,0x16,0x40,
@@ -127,6 +131,13 @@ int main() {
         assert(machine.Power(false)>=0);
         std::ifstream saved("test.sram.nestopia.battery",std::ios::binary);
         assert(saved.get()==(active==0) && saved.get()==(active==1));
+        saved.close();
+        // Reload the cartridge so the saved pressed-state becomes its battery
+        // checksum baseline. A power toggle alone keeps the original baseline;
+        // returning RAM to that original value may intentionally skip saving.
+        assert(machine.Unload()>=0);
+        assert(load_image(machine,"test.zip")>=0);
+        assert(Nes::Api::Input(emulator).AutoSelectControllers()>=0);
         assert(machine.Power(true)>=0);
         pads.pad[0].buttons=pads.pad[1].buttons=0;
         assert(emulator.Execute(nullptr,nullptr,&pads)>=0);
@@ -153,6 +164,25 @@ def main():
         compiler = str(Path(args.cxx).resolve()) if Path(args.cxx).exists() else args.cxx
         command = [compiler] + (["c++"] if Path(args.cxx).stem == "zig" else [])
         prefix = len(command)
+        # Exercise the exact production options with the Xtensa 16-bit wchar_t
+        # ABI. The normal Linux host compiler uses 32-bit wchar_t and otherwise
+        # misses the firmware's NstCore.hpp narrowing failure.
+        component = (CORE.parents[2] / "CMakeLists.txt").read_text()
+        production_options = re.search(r"rg_setup_compile_options\((.*?)\)", component, re.S).group(1).split()
+        wide_test = temp / "wide.cpp"
+        wide_test.write_text('''#include "NstCore.hpp"
+static_assert(sizeof(wchar_t)==2, "Test the Xtensa wchar_t ABI");
+int main() {
+    if (Nes::Core::StringCompare(L"mMc3", L"MMC3") != 0) return 1;
+    if (Nes::Core::StringCompare(L"a", L"B") >= 0) return 2;
+    if (Nes::Core::StringCompare(L"z", L"Y") <= 0) return 3;
+    return 0;
+}
+''')
+        wide_executable = temp / "wide.exe"
+        subprocess.run(command + ["-std=c++11", "-fshort-wchar", "-Werror=narrowing"] + production_options +
+                       ["-I" + str(CORE), str(wide_test), "-o", str(wide_executable)], check=True)
+        subprocess.run([str(wide_executable)], check=True)
         command += ["-std=c++11", "-O1", "-DNST_NO_ZLIB", "-fno-rtti", "-Wno-narrowing", "-I" + str(CORE),
                     "-I" + str(CORE / "api"), "-I" + str(ROOT / "components/retro-go")]
         sources = [source] + list(CORE.rglob("*.cpp"))
@@ -170,7 +200,7 @@ def main():
         response.write_text("\n".join('"' + arg.replace('\\', '/') + '"' for arg in command[prefix:]))
         subprocess.run(command[:prefix] + ["@" + str(response)], check=True)
         subprocess.run([str(executable)], cwd=temp, check=True)
-    print("PASS: ZIP/PAL/NTSC ROMs, 2400 audio frames, states/battery IO, independent NES $4016/$4017 controller ports and release")
+    print("PASS: production 16-bit wchar_t options, ZIP/PAL/NTSC ROMs, 2400 audio frames, states/battery IO, independent NES $4016/$4017 ports and deterministic release/save")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,12 @@ Initialize sources with `git submodule update --init --recursive`.
 Select **Retro-Go > NES emulator** in menuconfig. Only the selected core and
 its adapter compile; Nofrendo builds do not require the Nestopia checkout.
 Nestopia uses C++ exceptions and disables its optional zlib dependency.
+Its component also disables the narrowing diagnostic for upstream's ASCII
+case-folding initializer, which promotes to `int` before assigning to 16-bit
+`wchar_t` on Xtensa. The native regression test compiles and runs this path
+with the production options and a 16-bit wide-character type even on Linux.
+The 8 MB S3 release targets use Nofrendo to keep all applications within flash;
+16 MB S3 and P4 targets retain the experimental Nestopia backend.
 
 ## Review of the P4 integration
 

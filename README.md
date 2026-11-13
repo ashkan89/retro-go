@@ -441,8 +441,9 @@ If you wish to build or modify Retro-Go, you can find help in the following docu
 - Translating instructions in [LOCALIZATION.md](LOCALIZATION.md)
 
 The NES core is selected per hardware target through its `sdkconfig`. Nestopia is the
-default on ESP32-S3 and ESP32-P4 targets; Nofrendo remains the default on other targets
-and is still available as a fallback. The Nestopia integration is experimental and needs
+default on 16 MB ESP32-S3 and ESP32-P4 targets. The 8 MB ESP32-S3 targets use
+Nofrendo so the complete set of apps fits in flash; other targets also default to
+Nofrendo. The Nestopia integration is experimental and needs
 build and device validation.
 
 

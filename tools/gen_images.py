@@ -1,4 +1,4 @@
-import os, sys, glob, textwrap
+import os, sys, glob, textwrap, re
 
 # This scripts should be run to update images.c when you edit images
 
@@ -7,7 +7,16 @@ import os, sys, glob, textwrap
 output = '#include "gui.h"\n\n'
 refs = ""
 
+# Theme previews, historical aliases and disabled systems belong on SD, not
+# in flash. Keep a complete fallback for every tab the launcher actually adds.
+with open("launcher/main/applications.c") as f:
+    tabs = set(re.findall(r'^\s*application\("[^"]+", "([^"]+)"', f.read(), re.M))
+tabs.update(("favorite", "recent", "mediaplayer", "browser"))
+required = {"background.png"} | {f"{kind}_{tab}.png" for tab in tabs for kind in ("background", "banner", "logo")}
+
 for file in sorted(glob.glob("themes/default/*.png")):
+    if os.path.basename(file) not in required:
+        continue
     with open(file, "rb") as f:
         data = f.read()
         size = len(data)

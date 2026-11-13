@@ -39,6 +39,9 @@ For an existing checkout, run `git submodule update --init --recursive`.
 The experimental Nestopia backend uses the pinned revision of
 [ashkan89/nestopia-liberto](https://github.com/ashkan89/nestopia-liberto).
 Select the NES backend under **Retro-Go > NES emulator** in menuconfig.
+The 8 MB S3 release targets select Nofrendo to fit all apps. Nestopia remains
+the default for 16 MB S3 and P4 targets; enabling it on an 8 MB target requires
+reducing the set of apps or changing the flash layout.
 Only the selected NES core is compiled. Nestopia states are incompatible with
 Nofrendo states; use separate state slots when switching backends. Battery RAM,
 EEPROM and FDS patches use separate `.nestopia.*` files alongside SRAM saves and
