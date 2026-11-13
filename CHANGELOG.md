@@ -1,3 +1,23 @@
+# Retro-Go 5.8.5 (Released)
+
+### Nestopia performance
+- Optimized P4/S3 execution with internal SRAM for hot state, IRAM PPU paths,
+  direct opcode dispatch and batched sprite/OAM work. Cartridge PPU callbacks
+  retain scalar execution to preserve observable timing and output.
+- Removed unnecessary automatic presentation skipping and deferred RGB conversion
+  until the display is available. Borrowed framebuffers avoid an extra RGB copy;
+  manual frameskip and other emulators' adaptive policies remain available.
+- Measured Contra on P4: median emulation increased from 46.34 to 58.92 FPS,
+  and display submissions increased from 7.72 to 58.92 FPS. Every steady window
+  submitted every frame; heavier scenes still dipped to 55.60 FPS.
+- Verified identical upstream video, audio and save states across 7,680 PAL/NTSC
+  NROM/UxROM/CNROM/MMC3 stress frames, plus 131,072 sprite-span comparisons and
+  256 RGB conversion checks.
+- Added optional FPS/core profiling, disabled in release firmware. Removed the
+  test ROM auto-start hook and restored launcher startup after performance testing.
+  Verified P4 flashing/serial boot and the S3 release build; S3 hardware
+  FPS remains untested.
+
 # Retro-Go 5.8.0 (Released)
 
 ### SD assets and flash space

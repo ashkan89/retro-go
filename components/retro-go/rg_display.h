@@ -108,6 +108,9 @@ void rg_display_clear(uint16_t color_le);
 bool rg_display_sync(bool block);
 bool rg_display_uses_frame_copy(void);
 void rg_display_force_redraw(void);
+// Borrowed submissions retain the source until rg_display_sync() releases it.
+// The caller must not change/free its pixels, palette or metadata before then.
+enum { RG_DISPLAY_SUBMIT_BORROW = (1 << 0) };
 void rg_display_submit(const rg_surface_t *update, uint32_t flags);
 
 rg_display_counters_t rg_display_get_counters(void);

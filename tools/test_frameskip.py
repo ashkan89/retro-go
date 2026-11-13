@@ -25,7 +25,7 @@ typedef _Bool bool;
 #define RG_EVENT_SPEEDUP 0
 typedef struct {
     int frameskip, frameskipValue, tickRate, frameTime;
-    bool frameskipManual;
+    bool frameskipManual, frameskipDisplayOnly;
     float speed;
 } rg_app_t;
 static rg_app_t app;
@@ -95,6 +95,14 @@ int check_frameskip(void) {
     if (rg_system_get_frameskip() != 0) return 9;
     rg_system_set_frameskip(true, 6);
     if (rg_system_get_frameskip() != 5) return 10;
+    app.frameskipDisplayOnly = true;
+    // Manual choices still apply to display-paced frontends.
+    if (rg_system_get_next_frameskip(true) != 5) return 12;
+    rg_system_set_frameskip(false, 5);
+    rg_system_set_app_speed(2.0f);
+    if (rg_system_get_frameskip() != 0 || rg_system_get_next_frameskip(true) != 0) return 13;
+    rg_system_set_frameskip(true, 2);
+    if (rg_system_get_next_frameskip(false) != 2) return 14;
     return 0;
 }
 '''

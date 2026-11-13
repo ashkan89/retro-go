@@ -191,6 +191,9 @@ typedef struct
     int frameTime;
     int frameskip;
     bool frameskipManual;
+    // Auto presentation follows display availability for cores whose PPU still
+    // runs on skipped frames. Manual frameskip remains available.
+    bool frameskipDisplayOnly;
     int frameskipValue;
     int overclock;
     int tickTimeout;

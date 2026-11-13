@@ -630,7 +630,7 @@ void rg_display_submit(const rg_surface_t *update, uint32_t flags)
     if (!update || !update->data)
         return;
 
-    const bool copy_frame = rg_display_uses_frame_copy();
+    const bool copy_frame = rg_display_uses_frame_copy() && !(flags & RG_DISPLAY_SUBMIT_BORROW);
     // The queue retains its entry until write_update has consumed the source.
     // Serialize producers without waiting, then reuse the owned snapshot only
     // when the queue is empty. Slow SPI drops presentations, not game time.

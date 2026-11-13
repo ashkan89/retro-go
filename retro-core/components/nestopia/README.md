@@ -17,6 +17,61 @@ with the production options and a 16-bit wide-character type even on Linux.
 The 8 MB S3 release targets use Nofrendo to keep all applications within flash;
 16 MB S3 and P4 targets retain the experimental Nestopia backend.
 
+## Embedded execution path
+
+`prepare_core.py` prepares a build-local copy of the pinned sources. It checks
+every changed source anchor and fails on an unexpected upstream layout; the
+submodule itself remains unchanged. `RG_NESTOPIA_PORT=OFF` builds the original
+core for comparisons. The normal build enables the port on both P4 and S3.
+
+- Separate ownership of the CPU callback map and PPU screen reduces the hot
+  machine object to approximately 13 KiB. The machine and working screen request
+  internal SRAM, with normal-heap fallback when it is unavailable. The large
+  callback table and cartridge data can remain in PSRAM.
+- Direct opcode dispatch uses the existing instruction implementations. The
+  common no-DMA check is inline; DMA transfers, interrupt timing and bus effects
+  keep their original implementation.
+- Sprite X counters use a shared visible-dot clock and per-sprite deadlines.
+  This avoids decrementing every pending sprite on every pixel. Rendering-off
+  advances X timing while preserving frozen sprite shifters, including partial
+  fetches. The audio mixer, resampler and filters retain their original math.
+- Complete tile spans batch private sprite shifters while preserving the
+  original background fetch, active OAM evaluation, status and pixel-write order.
+  Cartridge address/scanline hooks and custom PPU accessors retain scalar
+  execution. Verified standard fetches read the same mapped memory directly.
+  Batches stop at CPU access boundaries, the dot-64 OAM reset and the final
+  special sprite-zero tile. Secondary-OAM clearing and completed evaluation
+  combine private writes inside these spans, preserving every observable latch
+  and address value. Active evaluation retains its original dot sequence.
+- Aligned unfiltered RGB conversion groups four palette lookups and output
+  writes, reducing narrow PSRAM stores without changing pixel values.
+- Asynchronous display targets use one source framebuffer and convert only
+  when the display releases the previous frame. The display borrows that buffer
+  until consumption completes, avoiding an additional RGB copy. Conversion uses
+  `Video::Blit` after emulation and audio submission. Auto frameskip follows display
+  availability, since skipping RGB output does not skip Nestopia's PPU work.
+  Manual frameskip still works. Other emulators retain their adaptive policy.
+
+P4 continues to use the shared PPA scaler and PIE pixel conversion. Emulation
+stays on the main core and display/I2S tasks use the target's existing task
+affinities. The CPU, PPU and APU retain their emulated-cycle synchronization.
+S3 and P4 place the PPU execution loop and tile path in IRAM to reduce
+instruction-cache contention, together with the sprite evaluation phases.
+On P4, the cold FDS BIOS uses external BSS to
+leave executable SRAM for these paths.
+
+Enable `-D RG_NESTOPIA_PROFILE=ON` with `idf.py` for `NES-MEM`, `NES-ROM`,
+`NES-PERF` and `NES-CORE` serial records. The latter reports CPU cycles spent
+inside PPU execution, APU transition integration and audio sample processing.
+These counters have overhead and are disabled in normal builds. A 300-frame
+window reports emulated, converted and submitted frame rates separately;
+physical SPI panel updates can have a lower rate than emulation.
+Add `-D RG_NESTOPIA_PROFILE_CORE=OFF` to measure frontend FPS without per-core
+cycle-counter overhead; the `NES-CORE` totals are then zero. Release builds
+disable profiling entirely.
+Profiling keeps normal launcher and ROM selection; it does not select a test
+ROM or change saved startup settings.
+
 ## Review of the P4 integration
 
 The review covers `87e6f384` and `45f4f33a` (the two experimental P4 commits)
@@ -55,7 +110,7 @@ abrupt power loss does not run the shutdown callback.
 Run `python tools/test_nestopia.py --cxx c++` with GCC or Clang, or pass the
 absolute path to `zig.exe`. This compiles the pinned core and extracts the
 adapter's actual stream, image-loading and persistence functions. Generated
-mapper-0 ROMs exercise plain/ZIP loading, PAL/NTSC selection, 2,400 frames of
+ROMs exercise plain/ZIP loading, PAL/NTSC selection, 2,400 frames of
 audio with buffer guards, state round trips and battery write/reload. The ZIP
 container extraction is mocked; its returned ROM bytes pass through the real
 adapter and core. No commercial ROMs are needed.
@@ -64,3 +119,24 @@ These checks do not establish hardware frame rate, I2S behavior, compatibility
 across all mappers, or FDS/EEPROM gameplay persistence. Those require device and
 game-specific testing. An ESP-IDF build verifies firmware linking and partition
 fit separately from the host test.
+
+For a differential comparison of the prepared and original cores:
+
+```sh
+python tools/test_nestopia.py --cxx c++ --upstream --artifacts .cache/nes-reference
+python tools/test_nestopia.py --cxx c++ --artifacts .cache/nes-port --reference .cache/nes-reference
+```
+
+The additional 7,680 generated-ROM frames exercise PAL/NTSC backgrounds, sprites,
+emphasis, NMI, OAM/DMC DMA, both controllers, save-state reloads, all base audio
+channels, rapid rendering toggles during visible pixels and sprite fetches,
+OAM latch-read checksums, all five decoder presets, and crowded sprites with
+both the eight-sprite limit and unlimited sprites.
+NROM/UxROM/CNROM/MMC3 cases also exercise PRG/CHR bank changes and MMC3 IRQ
+state, covering both the batched path and cartridge-callback scalar fallback.
+Frame/audio fingerprints and final state bytes must match the original core.
+The runner explicitly enables assertions even when Zig defines `NDEBUG`.
+`tools/test_nestopia_tiles.py` additionally compares the actual scalar and
+batched sprite implementations across 131,072 randomized 8-184-dot cases.
+`tools/test_nestopia_video.py` compares 256 RGB conversions against upstream,
+covering both output depths, buffer alignment, padded rows and buffer guards.

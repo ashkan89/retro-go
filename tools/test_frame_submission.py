@@ -17,6 +17,7 @@ code = r'''
 #include <stdlib.h>
 #include <string.h>
 #define RG_DISPLAY_ASYNC_FRAMES 1
+#define RG_DISPLAY_SUBMIT_BORROW 1
 #define RG_PIXEL_PAL888 0x83
 #define RG_PIXEL_PALETTE 0x80
 #define MEM_SLOW 0
@@ -86,6 +87,17 @@ int main(void) {
     busy=false; app.isLauncher=true;
     rg_display_submit(&input,0);
     assert(sends==4 && queued==&input);
+    busy=false; app.isLauncher=false;
+    const int borrowed_frees=frees;
+    rg_display_submit(&input,RG_DISPLAY_SUBMIT_BORROW);
+    assert(sends==5 && queued==&input && frees==borrowed_frees);
+    // A borrowed source is reusable only after the consumer has released it.
+    assert(!rg_display_sync(false));
+    busy=false;
+    assert(rg_display_sync(false));
+    pixels[2]=73;
+    rg_display_submit(&input,RG_DISPLAY_SUBMIT_BORROW);
+    assert(sends==6 && ((uint8_t *)queued->data)[2]==73 && frees==borrowed_frees);
     rg_surface_free(frame_copy);
     return 0;
 }

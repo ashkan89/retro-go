@@ -1,5 +1,84 @@
 # ESP32-S3 performance audit
 
+## Nestopia execution and presentation (November 13, 2026)
+
+The COM3 device is an ESP32-P4 revision 1.3, built for
+`esp32-p4-n16r32-st7796` at 400 MHz with 200 MHz HEX PSRAM. A Contra serial
+capture with the original core recorded 27 steady 300-frame windows: median
+46.34 emulated FPS and 7.72 submitted FPS, with 21,266 microseconds median
+execution time. Observed emulation ranged from 39.33 to 52.52 FPS across game
+scenes. These are live-game observations, not a deterministic input replay.
+
+The retained implementation was measured again with per-core cycle scopes
+disabled: 31 steady 300-frame Contra windows had a median of **58.92 emulated
+FPS and 58.92 submitted FPS**, versus 46.34/7.72 originally. Median execution
+time fell from 21,266 to 15,308 microseconds. Every steady window converted and
+submitted all 300 frames. The measured range was 55.60-60.42 FPS: this is a
+substantial improvement, but **a locked 60 FPS in every scene is not established**.
+The current viewport is 240x224 on the 80 MHz SPI ST7796; larger scaled viewports
+have different display bandwidth costs. Normal firmware disables all profiling.
+The 2,177,680-byte P4 release was written only to the installed `retro-core`
+partition at `0x2d0000` (capacity `0x219000`). Esptool verified the flash contents;
+a 70-second release serial capture reached NES rendering without a panic.
+Profiling/replay strings are absent from the release image. The device's
+bootloader and partition table were preserved.
+After benchmarking, the saved test ROM boot selection was cleared and startup
+was set to Launcher. The diagnostic replay hook was removed from the source;
+two subsequent resets loaded the launcher with the optimized emulator restored.
+
+An independent RGB worker, a CPU callback cache, deferred pixel composition and
+a paired RGB lookup were tested and discarded after slower or unchanged hardware
+results. The ESP32-S3 N16R8 ILI9341 release also links successfully (1,871,808-byte
+application), with its PPU loop/tile path in IRAM. Only the P4 is connected, so
+there is no S3 hardware FPS claim.
+
+The embedded port separates the large CPU callback map from hot state, requests
+internal SRAM for the machine and PPU working screen, uses direct opcode
+dispatch, and inlines the no-DMA path. Sprite X counters use dot deadlines to
+avoid per-sprite counter writes at every pixel. Uninterrupted complete tile spans
+batch sprite shifters, OAM clearing and completed evaluation. Standard PPU fetches
+avoid indirect dispatch; cartridge callbacks retain scalar execution. The PPU
+loop, tile path and sprite evaluation phases use IRAM on S3/P4; the cold P4 FDS
+BIOS uses external BSS to leave executable SRAM for these paths. Aligned RGB
+conversion groups output stores. The original mixer, resampler,
+filters, CPU instructions, PPU sprite shifters and bus timing remain in use.
+The first memory/dispatch iteration alone did not materially improve Contra;
+the complete port also includes the sprite and presentation changes.
+
+Nestopia's automatic presentation policy now follows the asynchronous display
+queue. Unlike Nofrendo's scanline renderer, skipping RGB output in Nestopia
+does not avoid its PPU simulation. Adaptive skip increasing to five therefore
+removed five of every six presentations while leaving most of the work.
+Manual frameskip and other emulators' adaptive policies remain available.
+The frontend uses one source surface on asynchronous display targets and
+converts the completed screen after audio submission when the display is free.
+The display borrows this surface until consumption completes, eliminating an
+extra RGB frame copy. P4 PPA/PIE rendering and
+the existing display/audio task affinities are retained.
+
+Native differential validation compares the original pinned core with the
+prepared port: 7,680 PAL/NTSC stress frames have identical complete video/audio
+fingerprints and identical final state bytes. The generated ROMs exercise
+backgrounds, sprites, emphasis, NMI, OAM/DMC DMA, controllers, state reloads,
+all base audio channels, rendering toggles during pixels and sprite fetches,
+and crowded limited/unlimited sprites. Another 131,072 randomized cases compare
+the actual scalar and batched sprite code over 8-184 dots, including clock wrap,
+changing clipping and priority. OAM latch-read checksums and all five decoder
+presets also match upstream.
+Generated NROM, UxROM, CNROM and MMC3 programs cover PRG/CHR bank changes and
+MMC3 IRQ state, including the scalar path used for cartridge PPU callbacks.
+The unfiltered RGB conversion matches upstream in 256 additional checks with
+16/32-bit output, different alignments, row padding and buffer guards.
+Another 2,400 frames check audio counts/buffer guards, ZIP/plain loading and
+persistence. The runner enables assertions explicitly when using Zig.
+
+Additional checks passed for manual/automatic frameskip, saved emulator
+options, display snapshot ownership, 240 renderer cases, 63 audio producer
+schedules, and Nofrendo's timing/sprite regression suite. Build-local core
+preparation leaves the pinned submodule unchanged and fails if source anchors
+change. See `retro-core/components/nestopia/README.md` for profiling and
+differential-test commands.
+
 ## Additional hot-path fixes (November 10, 2026)
 
 - The I2S producer now notifies the writer only when the queue crosses from

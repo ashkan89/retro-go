@@ -215,7 +215,7 @@ int check_display(void) {
 '''
 
 POLICY_STUB = r'''
-typedef struct { int frameskip, frameskipValue; bool frameskipManual; float speed; } test_app_t;
+typedef struct { int frameskip, frameskipValue; bool frameskipManual, frameskipDisplayOnly; float speed; } test_app_t;
 static test_app_t test_app;
 static int policy_elapsed;
 static int rg_system_timer(void) { return policy_elapsed; }
