@@ -186,6 +186,7 @@ int main(int argc, char **argv) {
         subprocess.run([str(executable), str(archive), str(card)], check=True)
         assert (card / "retro-go/themes/default/theme.json").read_bytes() == (ROOT / "themes/default/theme.json").read_bytes()
         assert (card / "retro-go/bios/msx").is_dir()
+        assert (card / "retro-go/webui/index.html").read_bytes() == (ROOT / "assets/webui/index.html").read_bytes()
         for theme in (ROOT / "themes").iterdir():
             if theme.is_dir() and (theme / "theme.json").is_file():
                 for asset in theme.iterdir():

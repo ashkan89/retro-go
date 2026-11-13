@@ -1,5 +1,20 @@
 # Retro-Go 5.8.0 (Released)
 
+### SD assets and flash space
+- Extracted all 64 remaining launcher PNGs (81,480 bytes) from `images.c` and
+  removed embedded launcher artwork. All 15 complete themes ship on SD.
+- Added selected-theme, default-SD-theme and text/color fallback behavior, so
+  missing artwork does not prevent startup or navigation.
+- Moved the full web interface (6,000 bytes) to `/retro-go/webui/index.html`,
+  with a small embedded installer for recovery and streamed SD responses.
+- Replaced the shared 4,608-byte hourglass bitmap with procedural drawing that
+  works without SD access or heap allocation.
+- Converted `tools/gen_images.py` into an SD asset exporter with legacy PNG
+  extraction support. Release SD archives include both themes and the web UI.
+- Added host regression checks for artwork fallback, missing SD cards, busy-icon
+  drawing, web streaming, interrupted uploads and recovery installation.
+- Retained fonts and essential boot/status data for operation without SD.
+
 ### Experimental Nestopia integration
 - Added the pinned Nestopia fork as an alternative NES/Famicom/FDS core using its
   native C++ API, with a selectable Nofrendo fallback.

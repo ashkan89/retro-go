@@ -140,14 +140,14 @@ rg_image_t *gui_get_image(const char *type, const char *subtype)
     if (img)
         return img;
 
-    // Then fallback to built-in images
-    for (const binfile_t **img = builtin_images; *img; img++)
-    {
-        if (strcmp((*img)->name, name) == 0)
-            return rg_surface_load_image((*img)->data, (*img)->size, 0);
-    }
-
-    return NULL;
+    // Default artwork lives on SD as well. Missing media falls back to the
+    // existing text header and procedural background, including with no card.
+    const char *theme = rg_gui_get_theme_name();
+    if (theme && strcmp(theme, "default") == 0)
+        return NULL; // The selected-theme lookup already tried this file.
+    char path[RG_PATH_MAX];
+    snprintf(path, sizeof(path), RG_BASE_PATH_THEMES "/default/%s", name);
+    return rg_surface_load_image_file(path, 0);
 }
 
 tab_t *gui_get_current_tab(void)

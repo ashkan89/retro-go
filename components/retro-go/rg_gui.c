@@ -13,7 +13,6 @@
 
 #include "rg_text.h"
 
-#include "bitmaps/image_hourglass.h"
 #include "bitmaps/image_update.h"
 #include "fonts/fonts.h"
 
@@ -1359,9 +1358,28 @@ void rg_gui_draw_icons(void)
 
 void rg_gui_draw_hourglass(void)
 {
-    rg_display_write_rect(get_horizontal_position(RG_GUI_CENTER, image_hourglass.width),
-                          get_vertical_position(RG_GUI_CENTER, image_hourglass.height), image_hourglass.width,
-                          image_hourglass.height, image_hourglass.width * 2, (uint16_t *)image_hourglass.pixel_data, 0);
+    // This is used during boot, shutdown and storage failure. Draw directly,
+    // without SD, heap allocation or an initialized GUI surface. One row keeps
+    // stack use bounded instead of embedding a 4.6 KB bitmap in every app.
+    const int size = 48;
+    const int left = get_horizontal_position(RG_GUI_CENTER, size);
+    const int top = get_vertical_position(RG_GUI_CENTER, size);
+    uint16_t row[48];
+    for (int y = 0; y < size; ++y)
+    {
+        int half = y < 24 ? 23 - y : y - 24;
+        for (int x = 0; x < size; ++x)
+        {
+            int dx = abs(x - 23);
+            bool base = x >= 8 && x <= 39 && ((y >= 5 && y <= 8) || (y >= 39 && y <= 42));
+            bool frame = y >= 9 && y <= 38 && dx >= half - 1 && dx <= half + 1;
+            bool sand = (y >= 12 && y <= 18 && dx <= 19 - y) ||
+                        (y >= 31 && y <= 37 && dx <= y - 30);
+            row[x] = base || frame || sand ? C_BLACK : C_WHITE;
+        }
+        // write_rect copies the row and synchronizes before returning.
+        rg_display_write_rect(left, top + y, size, 1, sizeof(row), row, 0);
+    }
 }
 
 void rg_gui_draw_status_bars(void)

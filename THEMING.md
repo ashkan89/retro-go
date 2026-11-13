@@ -10,6 +10,19 @@ GBA, Atari 2600/7800, Spectrum, Media Player and File Manager, plus a default
 background and a 160×120 representative preview. The SD-card release archive
 includes all theme bundles.
 
+Launcher PNGs are stored only on SD. Copy `retro-go/themes/` from the release's
+`sdcard_structure.zip` to the SD root before updating firmware. When an image
+is missing from the selected theme, the launcher tries `retro-go/themes/default/`.
+Without either image it uses text labels and the configured background colors.
+Boot and recovery dialogs remain available without artwork or an SD card.
+
+For a local SD bundle, run `python tools/gen_images.py --output build/sdcard-assets`
+and copy the resulting `retro-go/` folder to the SD root. This also installs
+`retro-go/webui/index.html`, which the web server loads directly from SD.
+The exporter no longer creates `launcher/main/images.c`. To recover PNGs from
+an older copy of that file, use `python tools/gen_images.py --extract old-images.c
+--output build/recovered-artwork` and copy its `retro-go/` folder to SD.
+
 Run `python tools/theme_assets.py --check` to detect missing/blank media,
 invalid PNGs, incomplete palettes, or insufficient text contrast. To reproduce
 missing vector assets and previews, install `requirements-tools.txt` and run

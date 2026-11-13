@@ -97,12 +97,6 @@ typedef struct {
     int sort_mode;
 } listbox_t;
 
-typedef struct {
-    const char *name;
-    size_t size;
-    uint8_t data[];
-} binfile_t;
-
 typedef void (*gui_event_handler_t)(gui_event_t event, void *arg);
 
 // typedef struct {
@@ -156,7 +150,6 @@ typedef struct {
 } retro_gui_t;
 
 extern retro_gui_t gui;
-extern const binfile_t *builtin_images[];
 
 tab_t *gui_add_tab(const char *name, const char *desc, void *arg, void *event_handler);
 tab_t *gui_get_tab(int index);

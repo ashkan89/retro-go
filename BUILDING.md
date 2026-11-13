@@ -169,7 +169,12 @@ or even do nothing at all. In such cases you should use `python rg_tool.py ...` 
 
 
 ## Changing the launcher's images
-All images used by the launcher (headers, logos) are located in `themes/default`. If you edit them you must run the `tools/gen_images.py` script to regenerate `launcher/main/images.c`. Refer to [THEMING.md](THEMING.md) for details about the image format.
+Launcher artwork is loaded from the SD card. Edit the files in `themes/default`
+or another theme, then run `python tools/gen_images.py --output build/sdcard-assets`.
+Copy the exported `retro-go/` folder to the SD root before flashing the firmware.
+The export includes all themes and the web interface; rebuilding firmware is
+not required for artwork or web-page changes. Refer to [THEMING.md](THEMING.md)
+for image formats and [the embedded asset audit](assets/SD_ASSETS.md) for details.
 
 
 ## Updating translations

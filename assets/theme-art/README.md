@@ -29,6 +29,11 @@ installing `requirements-tools.txt`. Existing nonblank tab art is not overwritte
 Previews and palette readability fixes are refreshed. Validation alone uses
 `python tools/theme_assets.py --check` and does not modify any files.
 
+Artwork is installed on SD rather than compiled into firmware. After editing or
+completing themes, run `python tools/gen_images.py` and copy the exported
+`build/sdcard-assets/retro-go/` folder to the SD root. Release SD archives include
+the same files automatically; a firmware rebuild is unnecessary for theme edits.
+
 The completeness pass added 497 missing tab assets and replaced 124 blank
 banner/logo placeholders across 15 themes. Each bundle includes 23 tab sets,
 `background.png`, `preview.png`, and a full `theme.json`. Secondary text meets

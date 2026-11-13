@@ -12,11 +12,7 @@ if(RG_P4_SELFTEST)
     target_link_libraries(${COMPONENT_LIB} PRIVATE idf::esp_driver_jpeg idf::esp_driver_ppa)
 endif()
 
-# add_custom_command(OUTPUT images.c
-#                    COMMAND python ${COMPONENT_DIR}/gen_images.py
-#                    VERBATIM)
-# add_custom_target(images DEPENDS images.c)
-# add_dependencies(${COMPONENT_LIB} images)
+# Theme artwork and the full web UI are installed from the SD-card asset bundle.
 
 # Limit the SD manager and streaming ZIP reader code size on small-flash targets.
 set_source_files_properties(sdcard_zip.c sdcard_manager.c PROPERTIES COMPILE_FLAGS -Os)

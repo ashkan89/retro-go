@@ -8,8 +8,22 @@
 #include <cJSON.h>
 #include <ctype.h>
 
-// static const char webui_html[];
-#include "webui.html.h"
+// Keep only a small installer available when the full SD-hosted interface is
+// missing, so the user can restore it without pulling the card.
+static const char webui_bootstrap[] =
+    "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
+    "<title>Retro-Go</title><h1>Retro-Go</h1><p>The web interface is stored on SD. "
+    "Install the SD-card asset bundle, or select index.html from its retro-go/webui folder below.</p>"
+    "<input id='file' type='file' accept='.html'><button onclick='install()'>Install interface</button>"
+    "<p id='status'></p><script>async function install(){let s=document.getElementById('status');"
+    "try{let f=document.getElementById('file').files[0];if(!f||!f.size)throw Error('Select index.html');"
+    "s.textContent='Installing...';for(let d of ['" RG_BASE_PATH "','" RG_BASE_PATH "/webui'])"
+    "{let r=await fetch('/api',{method:'POST',headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({cmd:'mkdir',arg1:d})});if(!r.ok||!(await r.json()).success)"
+    "throw Error('Cannot access SD card');}"
+    "let r=await fetch('" RG_BASE_PATH "/webui/index.html',{method:'PUT',body:f});"
+    "if(!r.ok||(await r.text())!=='OK')throw Error('Upload failed; check the SD card');location.reload();"
+    "}catch(e){s.textContent=e.message;}}</script>";
 
 static httpd_handle_t server;
 static char *http_buffer;
@@ -119,6 +133,7 @@ static esp_err_t http_upload_handler(httpd_req_t *req)
 {
     char *filename = urldecode(req->uri);
     bool success = false;
+    size_t received = 0;
     RG_LOGI("Receiving file: %s", filename);
 
     gui.http_lock = true;
@@ -127,8 +142,6 @@ static esp_err_t http_upload_handler(httpd_req_t *req)
     FILE *fp = fopen(filename, "wb");
     if (!fp)
         goto _done;
-
-    size_t received = 0;
 
     while (received < req->content_len)
     {
@@ -149,10 +162,9 @@ static esp_err_t http_upload_handler(httpd_req_t *req)
     RG_LOGI("Received %d/%d bytes", received, req->content_len);
     success = received == req->content_len;
 
+_done:
     gui.http_lock = false;
     gui_invalidate();
-
-_done:
     if (!success)
     {
         RG_LOGE("File receive error!");
@@ -217,8 +229,34 @@ static esp_err_t http_download_handler(httpd_req_t *req)
 
 static esp_err_t http_get_handler(httpd_req_t *req)
 {
-    httpd_resp_sendstr(req, webui_html);
-    return ESP_OK;
+    httpd_resp_set_type(req, "text/html; charset=utf-8");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    FILE *fp = fopen(RG_BASE_PATH "/webui/index.html", "rb");
+    if (fp)
+    {
+        gui.http_lock = true;
+        size_t length = fread(http_buffer, 1, 0x8000, fp);
+        if (length)
+        {
+            esp_err_t result = ESP_OK;
+            do
+            {
+                result = httpd_resp_send_chunk(req, http_buffer, length);
+                if (result != ESP_OK)
+                    break;
+                rg_task_yield();
+                length = fread(http_buffer, 1, 0x8000, fp);
+            } while (length);
+            if (ferror(fp))
+                result = ESP_FAIL;
+            fclose(fp);
+            gui.http_lock = false;
+            return result == ESP_OK ? httpd_resp_send_chunk(req, NULL, 0) : result;
+        }
+        fclose(fp);
+        gui.http_lock = false;
+    }
+    return httpd_resp_sendstr(req, webui_bootstrap);
 }
 
 void webui_stop(void)
@@ -249,6 +287,13 @@ void webui_start(void)
     }
 
     http_buffer = malloc(0x10000);
+    if (!http_buffer)
+    {
+        RG_LOGE("Unable to allocate webserver buffer");
+        httpd_stop(server);
+        server = NULL;
+        return;
+    }
 
     httpd_register_uri_handler(server, &(httpd_uri_t){
         .uri       = "/",

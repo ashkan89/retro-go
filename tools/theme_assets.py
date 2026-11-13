@@ -12,8 +12,6 @@ import json
 from pathlib import Path
 import re
 import shutil
-import subprocess
-import sys
 
 from PIL import Image
 
@@ -228,7 +226,6 @@ def complete():
                 repaired += 1
         preview(folder, config)
     print(f"Completed {created} missing assets, repaired {repaired} blank placeholders; refreshed configs and selector previews")
-    subprocess.run([sys.executable, str(ROOT / "tools/gen_images.py")], cwd=ROOT, check=True)
 
 
 def validate():
@@ -237,22 +234,8 @@ def validate():
     runtime = set(re.findall(r'^\s*application\("[^"]+", "([^"]+)"', (ROOT / "launcher/main/applications.c").read_text(), re.M))
     if runtime - LABELS.keys():
         problems.append(f"Missing tab definitions: {runtime - LABELS.keys()}")
-    # The firmware fallback is generated C, so validate its bytes as well as
-    # the SD-card assets; otherwise missing artwork can survive in a fresh flash.
-    embedded = {}
-    for name, size, data in re.findall(r'static const binfile_t \w+ = \{"([^"]+)", (\d+), \{(.*?)\}\s*\};',
-                                      (ROOT / "launcher/main/images.c").read_text(), re.S):
-        content = bytes(int(value, 16) for value in re.findall(r"\\x([0-9A-Fa-f]{2})", data))
-        if len(content) != int(size):
-            problems.append(f"Incorrect embedded image size: {name}")
-        embedded[name] = content
-    active = runtime | {"favorite", "recent", "mediaplayer", "browser"}
-    required_embedded = {"background.png"} | {f"{kind}_{tab}.png" for tab in active for kind in SIZES}
-    for path in (THEMES / "default").glob("*.png"):
-        if path.name in required_embedded and embedded.get(path.name) != path.read_bytes():
-            problems.append(f"Stale/missing embedded {path.name}: run python tools/gen_images.py")
-    if embedded.keys() - required_embedded:
-        problems.append(f"Unused artwork embedded in flash: {embedded.keys() - required_embedded}")
+    if (ROOT / "launcher/main/images.c").exists():
+        problems.append("Launcher artwork must be installed on SD, not regenerated into images.c")
     for folder in sorted(THEMES.iterdir()):
         if not folder.is_dir():
             continue
