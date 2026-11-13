@@ -12,7 +12,16 @@ if(RG_P4_SELFTEST)
     target_link_libraries(${COMPONENT_LIB} PRIVATE idf::esp_driver_jpeg idf::esp_driver_ppa)
 endif()
 
-# Theme artwork and the full web UI are installed from the SD-card asset bundle.
+# Keep the management interface in firmware, available even without an SD card.
+# Generate deterministically and rebuild when either the page or packer changes.
+set(WEBUI_ASSET "${CMAKE_CURRENT_BINARY_DIR}/webui_asset.c")
+add_custom_command(OUTPUT "${WEBUI_ASSET}"
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/pack_webui.py"
+        "${CMAKE_CURRENT_SOURCE_DIR}/webui/index.html" "${WEBUI_ASSET}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/webui/index.html"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/pack_webui.py"
+    VERBATIM)
+target_sources(${COMPONENT_LIB} PRIVATE "${WEBUI_ASSET}")
 
 # Limit the SD manager and streaming ZIP reader code size on small-flash targets.
 set_source_files_properties(sdcard_zip.c sdcard_manager.c PROPERTIES COMPILE_FLAGS -Os)

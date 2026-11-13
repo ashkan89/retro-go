@@ -1,2 +1,2 @@
-git tag -a v5.7.0 -m "Retro-Go v5.7.0"
-git push origin v5.7.0
+git tag -a v5.8.6 -m "Retro-Go v5.8.6"
+git push origin v5.8.6

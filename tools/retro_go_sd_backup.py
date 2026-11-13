@@ -2,7 +2,7 @@
 """
 Retro-Go SD card backup, restore, and settings utility.
 
-Enable the Retro-Go launcher's file server first, then run:
+Enable the Retro-Go launcher's web manager first, then run:
 
     python tools/retro_go_sd_backup.py
 """
@@ -80,13 +80,13 @@ class RetroGoClient:
         self.server_url = normalize_server_url(server_url)
         self.timeout = timeout
 
-    def api(self, cmd: str, arg1: str = "", arg2: str = "") -> dict:
-        payload = json.dumps({"cmd": cmd, "arg1": arg1, "arg2": arg2}).encode("utf-8")
+    def api(self, cmd: str, arg1: str = "", arg2: str = "", **extra) -> dict:
+        payload = json.dumps({"cmd": cmd, "arg1": arg1, "arg2": arg2, **extra}).encode("utf-8")
         request = urllib.request.Request(
             self.server_url + "/api",
             data=payload,
             method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT, "X-RetroGo": "1"},
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -100,8 +100,20 @@ class RetroGoClient:
         if not data.get("success"):
             raise BackupError(f"Retro-Go rejected directory listing for {path}.")
 
+        # Older firmware returns the whole directory; newer firmware pages it.
+        items = list(data.get("files", []))
+        offset = 0
+        while data.get("truncated"):
+            next_offset = data.get("next_offset")
+            if not isinstance(next_offset, int) or next_offset <= offset:
+                raise BackupError(f"Invalid pagination response for {path}.")
+            offset = next_offset
+            data = self.api("list", path, offset=offset)
+            if not data.get("success"):
+                raise BackupError(f"Retro-Go rejected directory page for {path}.")
+            items.extend(data.get("files", []))
         entries: list[RemoteEntry] = []
-        for item in data.get("files", []):
+        for item in items:
             name = str(item.get("name", ""))
             if not name or "/" in name:
                 continue
@@ -119,8 +131,8 @@ class RetroGoClient:
 
     def stat(self, path: str) -> RemoteEntry:
         path = normalize_remote_path(path)
-        if path == "/":
-            return RemoteEntry(path="/", name="/", is_dir=True)
+        if path in ("/", DEFAULT_ROOT):
+            return RemoteEntry(path=path, name=path, is_dir=True)
         parent = remote_dirname(path)
         name = remote_basename(path)
         for entry in self.list_dir(parent):
@@ -189,6 +201,8 @@ class RetroGoClient:
                 "Content-Type": "application/octet-stream",
                 "Content-Length": str(total_size),
                 "User-Agent": USER_AGENT,
+                "X-RetroGo": "1",
+                "X-RetroGo-Overwrite": "1",
             },
         )
         try:

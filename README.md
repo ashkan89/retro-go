@@ -38,7 +38,7 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 - Customizable launcher
 - Cover art and save state previews
 - Multiple save slots per game
-- Wifi file manager
+- Wi-Fi control room: device dashboard, games, saves, transfers and diagnostics
 - And more!
 
 ### Screenshots
@@ -49,11 +49,13 @@ optimized to reduce their cpu, memory, and flash needs without reducing compatib
 
 Before updating firmware, extract `sdcard_structure.zip` from the release to the
 SD root, merging its folders with your existing files. Launcher artwork now lives
-in `/retro-go/themes/` and the web interface in `/retro-go/webui/index.html`.
+in `/retro-go/themes/`. The complete web manager is embedded in firmware flash
+and works without installing any HTML on the SD card.
 For a local checkout, run `python tools/gen_images.py` and copy
 `build/sdcard-assets/retro-go/` to the SD root. Missing artwork falls back to text
-and plain backgrounds; the web server provides a small interface installer when
-its SD page is missing. See [the SD asset details](assets/SD_ASSETS.md).
+and plain backgrounds. Enable **Web manager** in the launcher and open the
+device's IP address in your browser. See [the web manager guide](WEBUI.md)
+and [the SD asset details](assets/SD_ASSETS.md).
 
 ### ODROID-GO
   1. Download `retro-go_1.x_odroid-go.fw` from the [release page](https://github.com/ashkan89/retro-go/releases/) and copy it to `/odroid/firmware` on your sdcard.

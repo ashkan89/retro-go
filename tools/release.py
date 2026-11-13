@@ -84,7 +84,7 @@ def create_sdcard_structure(path, version):
     """Root-relative archive consumed by the Prepare SD card menu."""
     systems = ("nes", "snes", "gb", "gbc", "gba", "gw", "sms", "gg", "md",
                "col", "pce", "lnx", "spectrum", "a26", "a78", "doom", "msx")
-    folders = {"roms", "romart", "music", "retro-go/firmware", "retro-go/bios/msx", "retro-go/webui"}
+    folders = {"roms", "romart", "music", "retro-go/firmware", "retro-go/bios/msx"}
     folders.update("retro-go/" + name for name in
                    ("cache", "config", "saves", "themes", "borders"))
     for system in systems:
@@ -95,9 +95,8 @@ def create_sdcard_structure(path, version):
         archive.writestr("SDCARD_README.txt",
                          f"Retro-Go {version} SD card structure\n"
                          "Copy your games into roms/<system> and BIOS files into retro-go/bios.\n"
-                         "Install retro-go/themes and retro-go/webui before updating firmware; launcher artwork and the full web UI load from SD.\n"
+                         "Install retro-go/themes for launcher artwork. The web manager is built into firmware.\n"
                          "No games or copyrighted BIOS files are included.\n")
-        archive.write(ROOT / "assets/webui/index.html", "retro-go/webui/index.html")
         for theme in sorted((ROOT / "themes").iterdir()):
             if not theme.is_dir() or not (theme / "theme.json").is_file():
                 continue

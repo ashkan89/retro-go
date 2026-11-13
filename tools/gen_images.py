@@ -1,4 +1,4 @@
-"""Export launcher artwork and the web interface to an SD-card folder.
+"""Export launcher artwork to an SD-card folder.
 
 python tools/gen_images.py --output build/sdcard-assets
 python tools/gen_images.py --extract old-images.c --output build/sdcard-assets
@@ -45,10 +45,7 @@ def export(output):
             if asset.is_file() and asset.suffix in (".png", ".json"):
                 shutil.copy2(asset, destination / asset.name)
                 count += 1
-    webui = output / "retro-go/webui/index.html"
-    webui.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / "assets/webui/index.html", webui)
-    print(f"Exported {count} theme files and web UI to {output}; copy retro-go/ to the SD root")
+    print(f"Exported {count} theme files to {output}; copy retro-go/ to the SD root")
 
 
 if __name__ == "__main__":

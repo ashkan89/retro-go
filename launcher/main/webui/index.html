@@ -1,0 +1,3159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#17231e" />
+    <meta
+      name="description"
+      content="Your Retro-Go control room. Manage games, storage, transfers and device settings on your local network."
+    />
+    <title>Retro-Go · Control room</title>
+    <style>
+      :root {
+        --bg: #f5f6f2;
+        --panel: #fff;
+        --ink: #1d2b24;
+        --muted: #5d6a61;
+        --line: #dde3da;
+        --accent: #b64a28;
+        --accent-bg: #f9eee7;
+        --green: #246b4e;
+        --green-bg: #e9f3ed;
+        --danger: #b63535;
+        --shadow: 0 12px 44px #17231e0d;
+        --radius: 16px;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        color: var(--ink);
+        background: var(--bg);
+        font-synthesis: none;
+      }
+      :root[data-theme="dark"] {
+        --bg: #111a16;
+        --panel: #1b2720;
+        --ink: #edf2e9;
+        --muted: #a8b6ac;
+        --line: #35443a;
+        --accent: #f5a07d;
+        --accent-bg: #3b2b22;
+        --green: #8ad4ad;
+        --green-bg: #253c2f;
+        --danger: #ff9d99;
+        --shadow: none;
+        color-scheme: dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+      }
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+      button,
+      a,
+      input,
+      select {
+        -webkit-tap-highlight-color: transparent;
+      }
+      button,
+      a {
+        touch-action: manipulation;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+      }
+      a {
+        color: inherit;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 4px;
+      }
+      button {
+        border: 0;
+      }
+      svg {
+        width: 20px;
+        height: 20px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.7;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        flex-shrink: 0;
+      }
+      .sprite {
+        display: none;
+      }
+      .skip {
+        position: fixed;
+        top: -90px;
+        left: 16px;
+        z-index: 50;
+        background: var(--panel);
+        padding: 12px;
+      }
+      .skip:focus {
+        top: 12px;
+      }
+      .shell {
+        display: grid;
+        grid-template-columns: 228px minmax(0, 1fr);
+        min-height: 100dvh;
+      }
+      .sidebar {
+        background: #17231e;
+        color: #b7c4bb;
+        padding: 32px 18px;
+        position: sticky;
+        top: 0;
+        height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        gap: 32px;
+      }
+      .brand {
+        color: #f3f5ec;
+        display: flex;
+        gap: 11px;
+        align-items: center;
+        padding: 0 12px;
+        font-size: 21px;
+        font-weight: 750;
+        letter-spacing: -0.7px;
+      }
+      .brand small {
+        display: block;
+        color: #97aa9b;
+        font-size: 10px;
+        letter-spacing: 2px;
+        margin-top: 3px;
+      }
+      .brandmark {
+        display: grid;
+        place-items: center;
+        background: #df8968;
+        color: #17231e;
+        width: 37px;
+        height: 37px;
+        border-radius: 11px;
+      }
+      .brandmark svg {
+        width: 25px;
+        height: 25px;
+      }
+      .nav-label,
+      .eyebrow {
+        font-size: 10px;
+        letter-spacing: 1.8px;
+        text-transform: uppercase;
+        font-weight: 750;
+      }
+      .nav-label {
+        padding: 0 14px;
+        margin: 0 0 12px;
+        color: #7f9687;
+      }
+      .nav-group {
+        display: grid;
+        gap: 5px;
+      }
+      .nav-group button {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        color: inherit;
+        background: transparent;
+        border-radius: 9px;
+        text-align: left;
+        font-size: 13px;
+        font-weight: 550;
+      }
+      .nav-group button:hover {
+        background: #ffffff0a;
+        color: #fff;
+      }
+      .nav-group button.active {
+        color: #fff;
+        background: #304036;
+      }
+      .nav-group .count {
+        margin-left: auto;
+        background: #dc8a68;
+        color: #17231e;
+        border-radius: 5px;
+        padding: 1px 6px;
+        font-size: 11px;
+      }
+      .sidebar-foot {
+        margin-top: auto;
+        padding: 18px 12px 0;
+        border-top: 1px solid #354339;
+        font-size: 11px;
+        line-height: 1.7;
+      }
+      .sidebar-foot strong {
+        color: #d7e3d5;
+        display: block;
+      }
+      .online-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        background: #71bc8e;
+        border-radius: 50%;
+        margin-right: 7px;
+      }
+      .main {
+        min-width: 0;
+        padding: 0 44px 32px;
+        max-width: 1600px;
+        width: 100%;
+        margin: auto;
+      }
+      .topbar {
+        height: 88px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        gap: 16px;
+      }
+      .topbar p {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0;
+      }
+      .topbar p strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+      .top-actions {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .connection,
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 6px;
+        background: var(--green-bg);
+        color: var(--green);
+        font-size: 11px;
+        font-weight: 650;
+        white-space: nowrap;
+      }
+      .connection.off {
+        color: var(--danger);
+        background: var(--accent-bg);
+      }
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        min-width: 36px;
+        height: 36px;
+      }
+      .icon-btn:hover {
+        background: var(--panel);
+        color: var(--ink);
+      }
+      .page-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        margin: 34px 0 27px;
+      }
+      .eyebrow {
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 30px;
+        letter-spacing: -1.1px;
+        line-height: 1.2;
+        margin: 0 0 9px;
+        font-weight: 680;
+      }
+      h2 {
+        font-size: 17px;
+        letter-spacing: -0.35px;
+        margin: 0;
+        font-weight: 650;
+      }
+      h3 {
+        font-size: 14px;
+        margin: 0 0 8px;
+      }
+      .subtext {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.65;
+        margin: 0;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 39px;
+        padding: 9px 14px;
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid var(--line);
+        font-size: 12px;
+        font-weight: 650;
+        text-decoration: none;
+        white-space: nowrap;
+      }
+      .btn:hover {
+        filter: brightness(0.96);
+      }
+      .btn.primary {
+        background: var(--ink);
+        color: var(--bg);
+        border-color: var(--ink);
+      }
+      .btn.accent {
+        background: var(--accent);
+        color: var(--panel);
+        border-color: var(--accent);
+      }
+      .btn.danger {
+        color: var(--danger);
+      }
+      .btn svg {
+        width: 16px;
+        height: 16px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .hero {
+        position: relative;
+        overflow: hidden;
+        background: #e6ecdf;
+        border: 1px solid #d4dfca;
+        border-radius: var(--radius);
+        padding: 30px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        min-height: 225px;
+        margin-bottom: 22px;
+        color: #21372a;
+      }
+      .hero .eyebrow {
+        color: #526b58;
+      }
+      .hero h2 {
+        font-size: 29px;
+        max-width: 380px;
+        line-height: 1.22;
+        letter-spacing: -1px;
+        margin-bottom: 13px;
+      }
+      .hero .subtext {
+        color: #516655;
+        max-width: 355px;
+      }
+      .hero .actions {
+        margin-top: 23px;
+      }
+      .console-art {
+        width: 210px;
+        height: 160px;
+        position: relative;
+        transform: rotate(-9deg);
+        margin-right: 40px;
+        flex-shrink: 0;
+        background: #d3d9be;
+        border: 2px solid #a6b699;
+        box-shadow: 10px 12px 0 #c6d1ba;
+        border-radius: 18px 18px 36px 18px;
+      }
+      .console-screen {
+        position: absolute;
+        top: 17px;
+        left: 20px;
+        right: 20px;
+        height: 76px;
+        background: #253e2e;
+        border: 7px solid #7e9478;
+        border-radius: 7px;
+        color: #c5d4a3;
+        display: grid;
+        place-items: center;
+        font:
+          700 15px ui-monospace,
+          monospace;
+        letter-spacing: 3px;
+      }
+      .console-screen span {
+        font-size: 9px;
+        letter-spacing: 1px;
+        margin-top: -14px;
+      }
+      .console-cross {
+        position: absolute;
+        bottom: 25px;
+        left: 30px;
+        width: 37px;
+        height: 13px;
+        background: #43583f;
+        border-radius: 3px;
+      }
+      .console-cross:after {
+        content: "";
+        position: absolute;
+        left: 12px;
+        top: -12px;
+        width: 13px;
+        height: 37px;
+        background: #43583f;
+        border-radius: 3px;
+      }
+      .console-button {
+        position: absolute;
+        right: 30px;
+        bottom: 25px;
+        width: 17px;
+        height: 17px;
+        background: #b96c50;
+        border-radius: 50%;
+        box-shadow: -25px 8px 0 #b96c50;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+        margin-bottom: 28px;
+      }
+      .stat,
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+      .stat {
+        padding: 19px 20px;
+      }
+      .stat-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 550;
+      }
+      .stat-top svg {
+        width: 17px;
+        height: 17px;
+      }
+      .stat-value {
+        font-size: 24px;
+        font-weight: 650;
+        letter-spacing: -0.7px;
+        margin: 12px 0 6px;
+      }
+      .stat-note {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .two-col {
+        display: grid;
+        grid-template-columns: minmax(0, 1.6fr) minmax(270px, 1fr);
+        gap: 22px;
+      }
+      .panel {
+        overflow: hidden;
+        margin-bottom: 22px;
+      }
+      .panel-head {
+        padding: 21px 23px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .panel-head .subtext {
+        font-size: 11px;
+        margin-top: 5px;
+      }
+      .panel-body {
+        padding: 23px;
+      }
+      .link-btn {
+        background: none;
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 650;
+        padding: 6px;
+      }
+      .resource {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px 23px;
+        border-bottom: 1px solid var(--line);
+        width: 100%;
+        background: transparent;
+        color: var(--ink);
+        text-align: left;
+      }
+      .resource:last-child {
+        border: 0;
+      }
+      .resource:hover {
+        background: var(--bg);
+      }
+      .resource-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: var(--green-bg);
+        display: grid;
+        place-items: center;
+        color: var(--green);
+        flex-shrink: 0;
+      }
+      .resource-text {
+        flex: 1;
+        min-width: 0;
+      }
+      .resource-text strong {
+        display: block;
+        font-size: 12px;
+        font-weight: 650;
+      }
+      .resource-text small {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 5px;
+      }
+      .resource > .arrow {
+        width: 16px;
+        color: var(--muted);
+      }
+      .detail-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        padding: 12px 0;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .detail-row:last-child {
+        border: 0;
+      }
+      .detail-row > span:first-child {
+        color: var(--muted);
+      }
+      .detail-row > span:last-child {
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+      .meter {
+        width: 100%;
+        height: 6px;
+        border-radius: 9px;
+        background: var(--line);
+        overflow: hidden;
+        margin: 10px 0 7px;
+      }
+      .meter > i {
+        height: 100%;
+        display: block;
+        width: 0;
+        background: var(--green);
+        border-radius: 9px;
+        transition: width 0.3s;
+      }
+      .note,
+      .banner {
+        background: var(--accent-bg);
+        color: var(--accent);
+        border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+        padding: 13px 16px;
+        border-radius: 9px;
+        font-size: 12px;
+        line-height: 1.65;
+        margin-bottom: 18px;
+      }
+      .banner {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-top: 18px;
+      }
+      .banner button {
+        margin-left: auto;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+      }
+      .system {
+        padding: 22px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        color: var(--ink);
+        text-align: left;
+        min-height: 124px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+      }
+      .system:hover {
+        border-color: var(--green);
+        transform: translateY(-2px);
+      }
+      .system .resource-icon {
+        font:
+          700 11px ui-monospace,
+          monospace;
+        letter-spacing: 0.3px;
+      }
+      .system strong {
+        font-size: 13px;
+      }
+      .system small {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 5px;
+        display: block;
+      }
+      .toolbar {
+        padding: 17px 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        border-bottom: 1px solid var(--line);
+      }
+      .breadcrumbs {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        flex: 1;
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .breadcrumbs button {
+        background: transparent;
+        color: var(--ink);
+        padding: 5px;
+        font-size: 12px;
+      }
+      .breadcrumbs button:last-child {
+        font-weight: 700;
+      }
+      .input {
+        min-height: 38px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px 11px;
+        background: var(--panel);
+        color: var(--ink);
+        font-size: 12px;
+        max-width: 100%;
+      }
+      .search {
+        width: 205px;
+      }
+      .table-wrap {
+        overflow: auto;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        text-align: left;
+        font-size: 12px;
+      }
+      th {
+        font-size: 10px;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-weight: 650;
+        background: var(--bg);
+        padding: 12px 16px;
+        white-space: nowrap;
+      }
+      td {
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--line);
+        height: 58px;
+      }
+      tr:last-child td {
+        border: 0;
+      }
+      tbody tr:hover {
+        background: var(--bg);
+      }
+      td:first-child,
+      th:first-child {
+        width: 40px;
+        padding-right: 0;
+      }
+      td:nth-child(2) {
+        min-width: 210px;
+      }
+      td:last-child {
+        text-align: right;
+        white-space: nowrap;
+      }
+      .file-name {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        background: none;
+        color: var(--ink);
+        padding: 4px 0;
+        font-size: 12px;
+        text-align: left;
+        overflow-wrap: anywhere;
+      }
+      .file-name svg {
+        width: 19px;
+        color: var(--green);
+      }
+      input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--green);
+      }
+      .file-meta {
+        color: var(--muted);
+        white-space: nowrap;
+        font-size: 11px;
+      }
+      .small-btn {
+        background: transparent;
+        color: var(--muted);
+        padding: 8px;
+        border-radius: 6px;
+      }
+      .small-btn:hover {
+        background: var(--line);
+        color: var(--ink);
+      }
+      .small-btn svg {
+        width: 16px;
+        height: 16px;
+      }
+      .table-footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 15px;
+        padding: 13px 20px;
+        border-top: 1px solid var(--line);
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .empty {
+        padding: 44px 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .empty svg {
+        width: 32px;
+        height: 32px;
+        margin-bottom: 14px;
+      }
+      .empty h3 {
+        color: var(--ink);
+      }
+      .empty .actions {
+        justify-content: center;
+        margin-top: 18px;
+      }
+      .dropzone {
+        margin: 18px 20px;
+        padding: 22px;
+        border: 1px dashed var(--line);
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        gap: 13px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .dropzone.drag {
+        border-color: var(--accent);
+        background: var(--accent-bg);
+      }
+      .dropzone strong {
+        color: var(--ink);
+      }
+      .dropzone .btn {
+        margin-left: auto;
+      }
+      .transfer {
+        padding: 20px 23px;
+        border-bottom: 1px solid var(--line);
+      }
+      .transfer:last-child {
+        border: 0;
+      }
+      .transfer-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+      }
+      .transfer strong {
+        font-size: 12px;
+        overflow-wrap: anywhere;
+      }
+      .transfer small {
+        font-size: 11px;
+        color: var(--muted);
+        display: block;
+        margin-top: 5px;
+        overflow-wrap: anywhere;
+      }
+      .transfer.error .meter > i {
+        background: var(--danger);
+      }
+      .transfer .pill {
+        font-size: 10px;
+      }
+      .settings-row {
+        display: grid;
+        grid-template-columns: 1fr minmax(100px, 200px) 72px 65px;
+        align-items: center;
+        gap: 18px;
+        padding: 22px;
+        border-bottom: 1px solid var(--line);
+      }
+      .settings-row:last-child {
+        border: 0;
+      }
+      .settings-row p {
+        margin: 4px 0 0;
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+      .settings-row input[type="range"] {
+        width: 100%;
+        accent-color: var(--green);
+      }
+      .settings-row output {
+        font-size: 13px;
+        text-align: right;
+      }
+      .settings-row label {
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .log-line {
+        font-size: 11px;
+        line-height: 1.7;
+        padding: 11px 0;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 14px;
+        overflow-wrap: anywhere;
+      }
+      .log-line time {
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        border-top: 1px solid var(--line);
+        padding-top: 20px;
+        margin-top: 32px;
+        font-size: 10px;
+        color: var(--muted);
+        gap: 12px;
+      }
+      .footer span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .footer svg {
+        width: 13px;
+        height: 13px;
+      }
+      .toast-stack {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        display: grid;
+        gap: 10px;
+        z-index: 40;
+        max-width: min(400px, calc(100vw - 32px));
+      }
+      .toast {
+        display: flex;
+        align-items: flex-start;
+        gap: 12px;
+        box-shadow: 0 8px 40px #0003;
+        background: var(--ink);
+        color: var(--bg);
+        padding: 15px 18px;
+        border-radius: 11px;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+      .toast button {
+        background: none;
+        color: inherit;
+        padding: 0;
+        margin-left: auto;
+      }
+      .toast.error {
+        background: var(--danger);
+        color: #fff;
+      }
+      dialog {
+        width: min(460px, calc(100vw - 32px));
+        padding: 27px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--panel);
+        color: var(--ink);
+        box-shadow: 0 24px 90px #0004;
+      }
+      dialog::backdrop {
+        background: #0f201b80;
+        backdrop-filter: blur(3px);
+      }
+      dialog h2 {
+        margin-bottom: 12px;
+      }
+      dialog p {
+        font-size: 13px;
+        color: var(--muted);
+        line-height: 1.7;
+        overflow-wrap: anywhere;
+      }
+      dialog .input {
+        width: 100%;
+        margin: 6px 0 15px;
+      }
+      dialog .actions {
+        justify-content: flex-end;
+        margin-top: 20px;
+      }
+      .hide,
+      [hidden] {
+        display: none !important;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      @media (min-width: 1500px) {
+        .main {
+          padding-left: 60px;
+          padding-right: 60px;
+        }
+        .hero {
+          min-height: 250px;
+        }
+        .console-art {
+          margin-right: 90px;
+        }
+      }
+      @media (max-width: 1150px) {
+        .main {
+          padding-left: 26px;
+          padding-right: 26px;
+        }
+        .shell {
+          grid-template-columns: 200px minmax(0, 1fr);
+        }
+        .hero {
+          padding: 25px;
+        }
+        .console-art {
+          margin-right: 10px;
+          transform: rotate(-9deg) scale(0.85);
+          width: 180px;
+        }
+        .hero h2 {
+          font-size: 25px;
+        }
+        .two-col {
+          grid-template-columns: 1fr;
+        }
+        .grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+        .stats {
+          gap: 10px;
+        }
+        .stat {
+          padding: 17px 14px;
+        }
+        .stat-value {
+          font-size: 21px;
+        }
+      }
+      @media (max-width: 760px) {
+        .shell {
+          display: block;
+        }
+        .sidebar {
+          position: relative;
+          height: auto;
+          padding: 18px 18px 12px;
+          gap: 18px;
+        }
+        .brand {
+          font-size: 19px;
+          padding: 0;
+        }
+        .brand small {
+          font-size: 9px;
+        }
+        .brandmark {
+          width: 32px;
+          height: 32px;
+        }
+        .nav-label,
+        .sidebar-foot {
+          display: none;
+        }
+        .sidebar > div:has(.nav-group) {
+          display: contents;
+        }
+        .nav-group {
+          display: flex;
+          gap: 5px;
+          overflow-x: auto;
+          padding-bottom: 4px;
+        }
+        .nav-group button {
+          padding: 10px 11px;
+          font-size: 11px;
+          white-space: nowrap;
+          gap: 7px;
+        }
+        .nav-group button svg {
+          width: 16px;
+          height: 16px;
+        }
+        .main {
+          padding: 0 18px 24px;
+        }
+        .topbar {
+          height: 64px;
+        }
+        .topbar p {
+          font-size: 10px;
+        }
+        .connection {
+          font-size: 10px;
+          padding: 6px 8px;
+        }
+        .top-actions {
+          gap: 8px;
+        }
+        .page-head {
+          margin: 25px 0 22px;
+          align-items: flex-start;
+        }
+        h1 {
+          font-size: 26px;
+        }
+        .page-head .actions .btn {
+          font-size: 11px;
+          padding: 9px 11px;
+        }
+        .page-head .actions .btn svg {
+          display: none;
+        }
+        .hero {
+          padding: 24px;
+          min-height: 220px;
+        }
+        .hero h2 {
+          font-size: 25px;
+        }
+        .hero .subtext {
+          font-size: 12px;
+          max-width: 300px;
+        }
+        .console-art {
+          display: none;
+        }
+        .stats {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          margin-bottom: 22px;
+        }
+        .stat-value {
+          font-size: 23px;
+        }
+        .grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .system {
+          padding: 18px;
+        }
+        .panel-head,
+        .panel-body {
+          padding: 19px;
+        }
+        .toolbar {
+          padding: 13px;
+        }
+        .search {
+          width: 100%;
+        }
+        .toolbar .actions {
+          width: 100%;
+        }
+        .toolbar .search {
+          flex: 1;
+        }
+        .dropzone {
+          margin: 14px;
+          padding: 17px;
+          flex-wrap: wrap;
+        }
+        .dropzone .btn {
+          margin-left: 0;
+        }
+        .settings-row {
+          grid-template-columns: 1fr 55px;
+          gap: 14px;
+          padding: 20px;
+        }
+        .settings-row label {
+          grid-column: 1/-1;
+        }
+        .settings-row input {
+          grid-column: 1;
+          grid-row: 2;
+        }
+        .settings-row output {
+          grid-column: 2;
+          grid-row: 2;
+        }
+        .settings-row .btn {
+          grid-column: 2;
+          grid-row: 3;
+        }
+        .settings-row select {
+          grid-row: 2;
+        }
+        .footer {
+          font-size: 9px;
+          flex-wrap: wrap;
+        }
+        .toast-stack {
+          bottom: 16px;
+          right: 16px;
+        }
+        .file-meta.date {
+          display: none;
+        }
+        th.date {
+          display: none;
+        }
+        .two-col {
+          gap: 0;
+        }
+        .hero .actions .btn {
+          font-size: 11px;
+        }
+        .topbar p span {
+          display: none;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *:before,
+        *:after {
+          transition: none !important;
+          animation: none !important;
+          scroll-behavior: auto !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#content">Skip to content</a>
+    <svg class="sprite" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <symbol id="i-game" viewBox="0 0 24 24">
+          <path d="M7 7h10c3 0 5 10 3 11s-4-3-5-3H9c-1 0-3 4-5 3S4 7 7 7Z" />
+          <path d="M8 9v5m-2.5-2.5h5M16 10h.01M18 13h.01" />
+        </symbol>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="1.5" />
+          <rect x="14" y="3" width="7" height="7" rx="1.5" />
+          <rect x="3" y="14" width="7" height="7" rx="1.5" />
+          <rect x="14" y="14" width="7" height="7" rx="1.5" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9H3Z" />
+        </symbol>
+        <symbol id="i-file" viewBox="0 0 24 24">
+          <path d="M14 3H5v18h14V8Zm0 0v6h5M8 13h8M8 17h5" />
+        </symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24">
+          <path d="M12 16V3m-5 5 5-5 5 5M3 16v5h18v-5" />
+        </symbol>
+        <symbol id="i-download" viewBox="0 0 24 24">
+          <path d="M12 3v13m-5-5 5 5 5-5M3 16v5h18v-5" />
+        </symbol>
+        <symbol id="i-transfer" viewBox="0 0 24 24">
+          <path d="M3 7h17m-4-4 4 4-4 4M21 17H4m4-4-4 4 4 4" />
+        </symbol>
+        <symbol id="i-settings" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h16" />
+          <circle cx="8" cy="6" r="2" fill="var(--panel)" />
+          <circle cx="16" cy="12" r="2" fill="var(--panel)" />
+          <circle cx="10" cy="18" r="2" fill="var(--panel)" />
+        </symbol>
+        <symbol id="i-wifi" viewBox="0 0 24 24">
+          <path
+            d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"
+          />
+          <circle cx="12" cy="20" r=".5" />
+        </symbol>
+        <symbol id="i-chip" viewBox="0 0 24 24">
+          <rect x="6" y="6" width="12" height="12" rx="2" />
+          <path
+            d="M9 1v5m6-5v5M9 18v5m6-5v5M1 9h5m-5 6h5m12-6h5m-5 6h5M10 10h4v4h-4Z"
+          />
+        </symbol>
+        <symbol id="i-drive" viewBox="0 0 24 24">
+          <path d="m3 14 3-9h12l3 9v6H3Z M3 14h18M6 17h.01M9 17h.01" />
+        </symbol>
+        <symbol id="i-clock" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 7v5l3 2" />
+        </symbol>
+        <symbol id="i-battery" viewBox="0 0 24 24">
+          <rect x="2" y="6" width="18" height="12" rx="2" />
+          <path d="M23 10v4M5 9h9v6H5Z" />
+        </symbol>
+        <symbol id="i-arrow" viewBox="0 0 24 24">
+          <path d="M5 12h14m-5-5 5 5-5 5" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path d="M20 10a8 8 0 1 0-1 8M20 4v6h-6" />
+        </symbol>
+        <symbol id="i-moon" viewBox="0 0 24 24">
+          <path d="M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z" />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
+        </symbol>
+        <symbol id="i-edit" viewBox="0 0 24 24">
+          <path d="m15 4 5 5M3 21l5-1L21 7l-5-5L3 15Z" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L20 5" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-plus" viewBox="0 0 24 24">
+          <path d="M12 4v16M4 12h16" />
+        </symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="m12 2 8 4v7c0 5-8 9-8 9s-8-4-8-9V6Z" />
+          <path d="m8 12 3 3 5-6" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Device management">
+        <div class="brand">
+          <span class="brandmark"
+            ><svg aria-hidden="true"><use href="#i-game" /></svg
+          ></span>
+          <div>retro-go<small>CONTROL ROOM</small></div>
+        </div>
+        <div>
+          <p class="nav-label">Workspace</p>
+          <nav class="nav-group" id="nav" aria-label="Main navigation"></nav>
+        </div>
+        <div class="sidebar-foot">
+          <strong
+            ><span class="online-dot"></span>Your console, connected.</strong
+          >Runs on your device.<br />No cloud. No external assets.
+        </div>
+      </aside>
+      <main class="main" id="content" tabindex="-1">
+        <header class="topbar">
+          <p>
+            <strong>Device workspace</strong> <span>/ Local connection</span>
+          </p>
+          <div class="top-actions">
+            <span id="connection" class="connection off" role="status"
+              >Connecting…</span
+            ><button
+              class="icon-btn"
+              id="theme"
+              aria-label="Toggle light and dark appearance"
+              title="Toggle appearance"
+            >
+              <svg aria-hidden="true"><use href="#i-moon" /></svg>
+            </button>
+          </div>
+        </header>
+        <div id="offline" class="banner" hidden>
+          <svg aria-hidden="true"><use href="#i-wifi" /></svg
+          ><span id="offline-message"
+            >Device unavailable. Reconnect to its Wi-Fi network. Shown values
+            may be out of date.</span
+          ><button class="btn" id="reconnect">Retry</button>
+        </div>
+        <div id="storage-banner" class="banner" hidden>
+          <svg aria-hidden="true"><use href="#i-drive" /></svg
+          ><span
+            >SD card is not mounted. Device controls still work. Insert the card
+            and restart the console to manage files.</span
+          >
+        </div>
+        <div class="page-head">
+          <div>
+            <div class="eyebrow" id="page-kicker">YOUR DEVICE AT A GLANCE</div>
+            <h1 id="page-title">Overview</h1>
+            <p class="subtext" id="page-subtitle">
+              A little less managing. A lot more playing.
+            </p>
+          </div>
+          <div class="actions" id="page-actions"></div>
+        </div>
+        <div id="view"></div>
+        <footer class="footer">
+          <span
+            ><svg aria-hidden="true"><use href="#i-shield" /></svg>Served from
+            device flash · Works without Internet</span
+          ><span id="last-sync">Waiting for your console</span>
+        </footer>
+      </main>
+    </div>
+    <input type="file" id="upload-input" multiple hidden />
+    <div
+      class="toast-stack"
+      id="toasts"
+      aria-live="polite"
+      aria-atomic="false"
+    ></div>
+    <dialog
+      id="dialog"
+      aria-labelledby="dialog-title"
+      aria-describedby="dialog-copy"
+    >
+      <form method="dialog" id="dialog-form">
+        <h2 id="dialog-title"></h2>
+        <p id="dialog-copy"></p>
+        <label id="dialog-label" for="dialog-input" class="sr-only">Name</label
+        ><input
+          class="input"
+          id="dialog-input"
+          maxlength="220"
+          autocomplete="off"
+        />
+        <p id="dialog-error" role="alert" hidden></p>
+        <div class="actions">
+          <button class="btn" value="cancel" formnovalidate>Cancel</button
+          ><button class="btn primary" id="dialog-confirm" value="confirm">
+            Continue
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <script>
+      "use strict";
+      const $ = (s) => document.querySelector(s);
+      const state = {
+        status: null,
+        online: false,
+        route: "overview",
+        path: "",
+        files: [],
+        selected: new Set(),
+        queue: [],
+        running: false,
+        active: null,
+        listing: false,
+        request: 0,
+        events: [],
+        dirty: new Set(),
+        lastSync: 0,
+      };
+      const navItems = [
+        ["overview", "grid", "Overview"],
+        ["library", "game", "Game library"],
+        ["files", "folder", "Files & saves"],
+        ["transfers", "transfer", "Transfers"],
+        ["device", "settings", "Device"],
+        ["network", "wifi", "Network"],
+        ["firmware", "chip", "Firmware"],
+      ];
+      const pages = {
+        overview: [
+          "YOUR DEVICE AT A GLANCE",
+          "Overview",
+          "A little less managing. A lot more playing.",
+        ],
+        library: [
+          "MAKE ROOM FOR YOUR FAVORITES",
+          "Game library",
+          "Organize your collection by system. Your next session starts here.",
+        ],
+        files: [
+          "EVERYTHING IN ITS PLACE",
+          "Files & saves",
+          "Manage your SD card, keep your progress, and bring your own games.",
+        ],
+        transfers: [
+          "FROM YOUR COMPUTER TO YOUR CONSOLE",
+          "Transfers",
+          "Track your uploads from start to finish, one file at a time.",
+        ],
+        device: [
+          "MAKE IT YOURS",
+          "Device settings",
+          "Adjust your console and keep an eye on its health.",
+        ],
+        network: ["STAY CONNECTED", "Network", "Your connection, at a glance."],
+        firmware: [
+          "READY FOR WHAT’S NEXT",
+          "Firmware & diagnostics",
+          "Know what’s installed. Prepare your next update.",
+        ],
+      };
+      const systems = {
+        nes: ["NES", "Nintendo Entertainment System"],
+        snes: ["SNES", "Super Nintendo"],
+        gb: ["GB", "Game Boy"],
+        gbc: ["GBC", "Game Boy Color"],
+        gba: ["GBA", "Game Boy Advance"],
+        sms: ["SMS", "Master System"],
+        gg: ["GG", "Game Gear"],
+        md: ["MD", "Mega Drive / Genesis"],
+        pce: ["PCE", "PC Engine"],
+        gw: ["G&W", "Game & Watch"],
+        col: ["COL", "ColecoVision"],
+        lnx: ["LYNX", "Atari Lynx"],
+        msx: ["MSX", "MSX"],
+        spectrum: ["ZX", "ZX Spectrum"],
+        a26: ["2600", "Atari 2600"],
+        a78: ["7800", "Atari 7800"],
+        doom: ["DOOM", "DOOM"],
+      };
+      function el(tag, cls, text) {
+        const e = document.createElement(tag);
+        if (cls) e.className = cls;
+        if (text !== undefined) e.textContent = text;
+        return e;
+      }
+      function icon(name, cls = "") {
+        const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        s.setAttribute("aria-hidden", "true");
+        if (cls) s.setAttribute("class", cls);
+        const u = document.createElementNS(s.namespaceURI, "use");
+        u.setAttribute("href", "#i-" + name);
+        s.append(u);
+        return s;
+      }
+      function button(text, fn, cls = "btn", ico) {
+        const b = el("button", cls);
+        b.type = "button";
+        if (ico) b.append(icon(ico));
+        if (text) b.append(document.createTextNode(text));
+        b.onclick = () => guard(fn, b);
+        return b;
+      }
+      function tool(label, ico, fn) {
+        const b = button("", fn, "small-btn", ico);
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        return b;
+      }
+      async function guard(fn, b) {
+        if (b) b.disabled = true;
+        try {
+          await fn();
+        } catch (e) {
+          toast(e.message || "Operation failed", true);
+        } finally {
+          if (b) b.disabled = false;
+        }
+      }
+      function bytes(n) {
+        if (!Number.isFinite(n) || n < 0) return "Unavailable";
+        if (n < 1024) return n + " B";
+        const u = ["KB", "MB", "GB", "TB"];
+        let i = -1;
+        do {
+          n /= 1024;
+          i++;
+        } while (n >= 1024 && i < u.length - 1);
+        return n.toFixed(n < 10 ? 1 : 0) + " " + u[i];
+      }
+      function uptime(n) {
+        if (!Number.isFinite(n)) return "—";
+        const h = Math.floor(n / 3600),
+          m = Math.floor((n % 3600) / 60);
+        return h >= 24
+          ? Math.floor(h / 24) + "d " + (h % 24) + "h"
+          : h + "h " + m + "m";
+      }
+      function url(path) {
+        return path.split("/").map(encodeURIComponent).join("/");
+      }
+      function root() {
+        return state.status?.root || "/sd";
+      }
+      function ready() {
+        if (!state.online) throw Error("Reconnect to your console first.");
+        if (!state.status?.storage_ready)
+          throw Error("SD card is not mounted.");
+      }
+      function safeName(name) {
+        return (
+          !!name &&
+          name.trim() === name &&
+          !/^[.]|[. ]$|[\\/:*?"<>|\x00-\x1f]|\.rg-upload$/i.test(name) &&
+          new TextEncoder().encode(name).length <= 180
+        );
+      }
+      function log(message) {
+        state.events.unshift({ time: new Date().toISOString(), message });
+        state.events = state.events.slice(0, 40);
+      }
+      function toast(message, error = false) {
+        const t = el("div", "toast" + (error ? " error" : ""));
+        t.append(icon(error ? "close" : "check"), el("span", "", message));
+        const close = tool("Dismiss", "close", () => t.remove());
+        t.append(close);
+        $("#toasts").append(t);
+        while ($("#toasts").children.length > 3)
+          $("#toasts").firstChild.remove();
+        setTimeout(() => t.remove(), error ? 12000 : 5000);
+        if (error) log(message);
+      }
+      async function request(path, options = {}) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        try {
+          const r = await fetch(path, {
+            ...options,
+            signal: controller.signal,
+            cache: "no-store",
+          });
+          if (!r.ok)
+            throw Error(
+              (await r.text()).slice(0, 250) || "Device returned " + r.status,
+            );
+          const data = await r.json();
+          if (!data.success)
+            throw Error(
+              data.error || "The device could not complete this operation.",
+            );
+          return data;
+        } catch (e) {
+          if (e.name === "AbortError")
+            throw Error(
+              "The device took too long to respond. Retry when its current task finishes.",
+            );
+          throw e;
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+      const api = (cmd, arg1 = "", arg2 = "", extra = {}) =>
+        request("/api", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-RetroGo": "1" },
+          body: JSON.stringify({ cmd, arg1, arg2, ...extra }),
+        });
+      let polling = false;
+      async function refreshStatus() {
+        if (polling || state.running || state.listing || document.hidden)
+          return;
+        polling = true;
+        try {
+          const data = await request("/api/status");
+          const first = !state.status;
+          const wasOnline = state.online;
+          state.status = data;
+          state.online = true;
+          state.lastSync = Date.now();
+          if (!wasOnline) log("Connected to " + data.target);
+          updateChrome();
+          if (first) render();
+          else updateLive();
+        } catch (e) {
+          state.online = false;
+          updateChrome();
+        } finally {
+          polling = false;
+        }
+      }
+      function updateChrome() {
+        $("#connection").textContent = state.online
+          ? "● Connected"
+          : "○ Disconnected";
+        $("#connection").classList.toggle("off", !state.online);
+        $("#offline").hidden = state.online || (!state.lastSync && polling);
+        $("#storage-banner").hidden =
+          !state.online || !!state.status?.storage_ready;
+        $("#last-sync").textContent = state.lastSync
+          ? "Last synced " + new Date(state.lastSync).toLocaleTimeString()
+          : "Waiting for your console";
+        document
+          .querySelectorAll("[data-storage]")
+          .forEach(
+            (b) => (b.disabled = !state.online || !state.status?.storage_ready),
+          );
+        document
+          .querySelectorAll("[data-device]")
+          .forEach((b) => (b.disabled = !state.online || state.running));
+        document
+          .querySelectorAll("[data-install]")
+          .forEach(
+            (b) =>
+              (b.disabled =
+                !state.online ||
+                state.running ||
+                !state.status?.storage_ready ||
+                !state.status?.can_install),
+          );
+      }
+      function storageButton(text, fn, cls = "btn", ico) {
+        const b = button(text, fn, cls, ico);
+        b.dataset.storage = "1";
+        return b;
+      }
+      function navigate(route, path) {
+        if (!pages[route]) route = "overview";
+        state.route = route;
+        state.listing = false;
+        if (path !== undefined) state.path = path;
+        state.selected.clear();
+        history.replaceState(null, "", "#" + route);
+        render();
+      }
+      function render() {
+        const p = pages[state.route];
+        $("#page-kicker").textContent = p[0];
+        $("#page-title").textContent = p[1];
+        $("#page-subtitle").textContent = p[2];
+        $("#page-actions").replaceChildren();
+        $("#nav").replaceChildren(
+          ...navItems.map(([key, ico, label]) => {
+            const b = button(label, () => navigate(key), "", ico);
+            b.classList.toggle("active", state.route === key);
+            if (state.route === key) b.setAttribute("aria-current", "page");
+            if (key === "transfers") {
+              const c = el(
+                "span",
+                "count",
+                state.queue.filter((t) =>
+                  ["queued", "uploading"].includes(t.status),
+                ).length,
+              );
+              if (c.textContent !== "0") b.append(c);
+            }
+            return b;
+          }),
+        );
+        $("#view").replaceChildren();
+        ({
+          overview: overview,
+          library: library,
+          files: files,
+          transfers: transfers,
+          device: device,
+          network: network,
+          firmware: firmware,
+        })[state.route]();
+        updateChrome();
+      }
+      function mount(node) {
+        $("#view").append(node);
+        return node;
+      }
+      function panel(title, subtitle) {
+        const p = el("section", "panel"),
+          h = el("div", "panel-head"),
+          t = el("div");
+        t.append(el("h2", "", title));
+        if (subtitle) t.append(el("p", "subtext", subtitle));
+        h.append(t);
+        p.append(h);
+        return p;
+      }
+      function detail(box, label, value, key) {
+        const row = el("div", "detail-row"),
+          v = el("span", "", value ?? "—");
+        if (key) v.dataset.live = key;
+        row.append(el("span", "", label), v);
+        box.append(row);
+      }
+      function metric(label, value, note, ico, key) {
+        const s = el("div", "stat"),
+          top = el("div", "stat-top");
+        top.append(el("span", "", label), icon(ico));
+        const v = el("div", "stat-value", value);
+        v.dataset.live = key;
+        s.append(top, v, el("div", "stat-note", note));
+        return s;
+      }
+      function overview() {
+        const hero = mount(el("section", "hero"));
+        const copy = el("div");
+        copy.append(
+          el("div", "eyebrow", "GOOD GAMES. GREAT COMPANY."),
+          el("h2", "", "Your console. A bigger playground."),
+          el(
+            "p",
+            "subtext",
+            "Bring your collection together, look after your saves, and keep your handheld ready to go.",
+          ),
+        );
+        const a = el("div", "actions");
+        a.append(
+          button(
+            "Explore your library",
+            () => navigate("library"),
+            "btn primary",
+            "game",
+          ),
+          storageButton(
+            "Upload files",
+            () => pickUpload(root() + "/roms"),
+            "btn",
+            "upload",
+          ),
+        );
+        copy.append(a);
+        const art = el("div", "console-art");
+        art.setAttribute("aria-hidden", "true");
+        const screen = el("div", "console-screen", "RETRO-GO");
+        screen.append(el("span", "", "PRESS START"));
+        art.append(
+          screen,
+          el("div", "console-cross"),
+          el("div", "console-button"),
+        );
+        hero.append(copy, art);
+        const stats = mount(el("section", "stats"));
+        stats.setAttribute("aria-label", "Live device statistics");
+        stats.append(
+          metric(
+            "SD card free",
+            "—",
+            "Available for your collection",
+            "drive",
+            "storage",
+          ),
+          metric(
+            "Memory available",
+            "—",
+            "Internal RAM · live",
+            "chip",
+            "memory",
+          ),
+          metric(
+            "Session uptime",
+            "—",
+            "Since the last restart",
+            "clock",
+            "uptime",
+          ),
+          metric("Battery", "—", "Live power status", "battery", "battery"),
+        );
+        const cols = mount(el("div", "two-col"));
+        const resources = panel(
+          "Your collection",
+          "Everything you need for your next session",
+        );
+        for (const [name, desc, path, ico] of [
+          ["Games", "Browse ROM folders by system", "/roms", "game"],
+          [
+            "Save data",
+            "Keep your progress close",
+            "/retro-go/saves",
+            "folder",
+          ],
+          [
+            "Artwork & themes",
+            "Give your library a little personality",
+            "/retro-go/themes",
+            "grid",
+          ],
+          ["Music", "Your portable soundtrack", "/music", "file"],
+        ]) {
+          const b = button(
+            "",
+            () => navigate("files", root() + path),
+            "resource",
+          );
+          b.append(Object.assign(el("span", "resource-icon"), {}));
+          b.firstChild.append(icon(ico));
+          const t = el("span", "resource-text");
+          t.append(el("strong", "", name), el("small", "", desc));
+          b.append(t, icon("arrow", "arrow"));
+          resources.append(b);
+        }
+        cols.append(resources);
+        const right = el("div"),
+          p = panel("Console status");
+        const body = el("div", "panel-body");
+        detail(body, "Firmware", "—", "version");
+        detail(body, "Connection", "—", "connection");
+        detail(body, "Address", "—", "ip");
+        detail(body, "Active theme", "—", "theme");
+        p.append(body);
+        right.append(p);
+        const note = el(
+          "p",
+          "subtext",
+          "Everything stays on your local network. The control room is built into your firmware and loads even without an SD card.",
+        );
+        right.append(note);
+        cols.append(right);
+        updateLive();
+      }
+      async function library() {
+        const box = mount(el("div"));
+        if (!state.status) {
+          empty(
+            box,
+            "Connecting to your console",
+            "The game library will appear when the device responds.",
+            "wifi",
+          );
+          return;
+        }
+        if (!state.status.storage_ready) {
+          empty(
+            box,
+            "Insert an SD card",
+            "Your games live on the SD card. Device settings are available without it.",
+            "drive",
+          );
+          return;
+        }
+        box.append(el("p", "subtext", "Loading system folders…"));
+        const id = ++state.request;
+        try {
+          const data = await api("list", root() + "/roms");
+          if (state.route !== "library" || id !== state.request) return;
+          box.replaceChildren();
+          if (data.truncated)
+            box.append(
+              el(
+                "p",
+                "note",
+                "This directory is large. Only the first " +
+                  data.limit +
+                  " entries are shown.",
+              ),
+            );
+          const grid = el("div", "grid");
+          for (const f of data.files
+            .filter((f) => f.is_dir)
+            .sort((a, b) => a.name.localeCompare(b.name))) {
+            const info = systems[f.name] || [f.name.toUpperCase(), f.name];
+            const b = button(
+              "",
+              () => navigate("files", root() + "/roms/" + f.name),
+              "system",
+            );
+            b.append(el("span", "resource-icon", info[0]));
+            const t = el("div");
+            t.append(
+              el("strong", "", info[1]),
+              el("small", "", "Open game folder →"),
+            );
+            b.append(t);
+            grid.append(b);
+          }
+          box.append(grid);
+          if (!grid.children.length)
+            empty(
+              box,
+              "Your collection starts here",
+              "Create system folders on the SD card, then upload games you own.",
+              "game",
+            );
+        } catch (e) {
+          if (state.route === "library") {
+            box.replaceChildren();
+            empty(box, "Game folders are not ready", e.message, "folder");
+            box.append(
+              storageButton(
+                "Create ROM folder",
+                async () => {
+                  await api("mkdir", root() + "/roms");
+                  render();
+                },
+                "btn",
+                "plus",
+              ),
+            );
+          }
+        }
+        $("#page-actions").append(
+          storageButton(
+            "Manage ROM folders",
+            () => navigate("files", root() + "/roms"),
+            "btn",
+            "folder",
+          ),
+        );
+        updateChrome();
+      }
+      function empty(box, title, copy, ico = "folder") {
+        const e = el("div", "empty");
+        e.append(icon(ico), el("h3", "", title), el("p", "subtext", copy));
+        box.append(e);
+        return e;
+      }
+      function files() {
+        if (!state.path || !state.path.startsWith(root())) state.path = root();
+        const shortcuts = mount(el("div", "actions"));
+        shortcuts.style.marginBottom = "18px";
+        for (const [label, p] of [
+          ["SD card", ""],
+          ["Games", "/roms"],
+          ["Saves", "/retro-go/saves"],
+          ["BIOS", "/retro-go/bios"],
+          ["Artwork", "/romart"],
+          ["Themes", "/retro-go/themes"],
+          ["Music", "/music"],
+        ])
+          shortcuts.append(button(label, () => loadFiles(root() + p), "btn"));
+        const p = mount(panel("SD card workspace")),
+          toolbar = el("div", "toolbar"),
+          crumbs = el("nav", "breadcrumbs");
+        crumbs.id = "crumbs";
+        crumbs.setAttribute("aria-label", "Folder path");
+        toolbar.append(crumbs);
+        const a = el("div", "actions"),
+          search = el("input", "input search");
+        search.id = "file-search";
+        search.type = "search";
+        search.placeholder = "Filter this page…";
+        search.setAttribute("aria-label", "Filter files on this page");
+        search.oninput = renderRows;
+        const sort = el("select", "input");
+        sort.id = "sort";
+        sort.setAttribute("aria-label", "Sort files");
+        for (const [value, label] of [
+          ["name", "Name A–Z"],
+          ["size", "Largest first"],
+          ["date", "Newest first"],
+        ]) {
+          const o = el("option", "", label);
+          o.value = value;
+          sort.append(o);
+        }
+        sort.onchange = renderRows;
+        a.append(
+          search,
+          sort,
+          storageButton(
+            "New folder",
+            () => createEntry("mkdir"),
+            "btn",
+            "plus",
+          ),
+          storageButton("New file", () => createEntry("touch"), "btn", "file"),
+          storageButton(
+            "Upload",
+            () => pickUpload(state.path),
+            "btn primary",
+            "upload",
+          ),
+        );
+        toolbar.append(a);
+        p.append(toolbar);
+        const bulk = el("div", "toolbar");
+        bulk.id = "bulk";
+        bulk.hidden = true;
+        bulk.append(el("span", "subtext"));
+        bulk.append(
+          storageButton("Delete selected", bulkDelete, "btn danger", "trash"),
+        );
+        p.append(bulk);
+        const wrap = el("div", "table-wrap"),
+          table = el("table");
+        table.setAttribute("aria-label", "Files in current folder");
+        const thead = el("thead"),
+          tr = el("tr");
+        const first = el("th"),
+          all = el("input");
+        all.type = "checkbox";
+        all.id = "select-all";
+        all.setAttribute("aria-label", "Select all visible entries");
+        all.onchange = () => {
+          const list = visibleFiles();
+          for (const f of list)
+            all.checked
+              ? state.selected.add(f.name)
+              : state.selected.delete(f.name);
+          renderRows();
+        };
+        first.append(all);
+        tr.append(first);
+        for (const [label, cls] of [
+          ["Name", ""],
+          ["Modified", "date"],
+          ["Size", ""],
+          ["Actions", ""],
+        ])
+          tr.append(el("th", cls, label));
+        thead.append(tr);
+        table.append(thead);
+        const tbody = el("tbody");
+        tbody.id = "file-rows";
+        table.append(tbody);
+        wrap.append(table);
+        p.append(wrap);
+        const msg = el("div");
+        msg.id = "file-message";
+        p.append(msg);
+        const foot = el("div", "table-footer");
+        foot.id = "file-count";
+        p.append(foot);
+        const drop = el("div", "dropzone");
+        drop.id = "dropzone";
+        drop.append(icon("upload"));
+        const text = el("div");
+        text.append(
+          el("strong", "", "Drop files into this folder"),
+          el(
+            "div",
+            "",
+            "Keep this tab open until transfers finish. Existing files require confirmation to replace.",
+          ),
+        );
+        drop.append(
+          text,
+          storageButton("Choose files", () => pickUpload(state.path), "btn"),
+        );
+        drop.ondragover = (e) => {
+          e.preventDefault();
+          drop.classList.add("drag");
+        };
+        drop.ondragleave = () => drop.classList.remove("drag");
+        drop.ondrop = (e) => {
+          e.preventDefault();
+          drop.classList.remove("drag");
+          guard(() => enqueue(e.dataTransfer.files, state.path));
+        };
+        p.append(drop);
+        $("#page-actions").append(
+          storageButton(
+            "Refresh",
+            () => loadFiles(state.path),
+            "btn",
+            "refresh",
+          ),
+        );
+        loadFiles(state.path);
+      }
+      async function loadFiles(path, offset = 0) {
+        if (state.route !== "files") return;
+        const id = ++state.request;
+        state.listing = true;
+        state.path = path;
+        state.fileOffset = offset;
+        state.files = [];
+        state.selected.clear();
+        renderCrumbs();
+        $("#file-message").replaceChildren();
+        empty(
+          $("#file-message"),
+          "Opening folder…",
+          "Reading your SD card.",
+          "folder",
+        );
+        renderRows();
+        try {
+          ready();
+          const data = await api("list", path, "", { offset });
+          if (state.route !== "files" || id !== state.request) return;
+          state.files = data.files;
+          state.truncated = data.truncated;
+          state.listLimit = data.limit;
+          state.nextOffset = data.next_offset;
+          $("#file-message").replaceChildren();
+          if (!data.files.length)
+            empty(
+              $("#file-message"),
+              "A fresh start",
+              "Upload files or create a folder to make this space your own.",
+            );
+          if (data.truncated)
+            $("#file-message").append(
+              el(
+                "p",
+                "note",
+                "More entries are available. Use Next page below. Sorting and filtering apply to the current page.",
+              ),
+            );
+          renderRows();
+        } catch (e) {
+          if (state.route !== "files" || id !== state.request) return;
+          $("#file-message").replaceChildren();
+          const box = empty(
+            $("#file-message"),
+            "Could not open this folder",
+            e.message,
+            "drive",
+          );
+          const a = el("div", "actions");
+          a.append(button("Retry", () => loadFiles(path), "btn", "refresh"));
+          if (path !== root())
+            a.append(
+              storageButton(
+                "Create this folder",
+                async () => {
+                  ready();
+                  await api("mkdir", path);
+                  await loadFiles(path);
+                },
+                "btn",
+                "plus",
+              ),
+            );
+          box.append(a);
+        } finally {
+          if (id === state.request) {
+            state.listing = false;
+            updateChrome();
+          }
+        }
+      }
+      function renderCrumbs() {
+        const nav = $("#crumbs");
+        if (!nav) return;
+        nav.replaceChildren();
+        const parts = state.path
+          .slice(root().length)
+          .split("/")
+          .filter(Boolean);
+        nav.append(button("SD card", () => loadFiles(root()), ""));
+        let path = root();
+        for (const part of parts) {
+          path += "/" + part;
+          const target = path;
+          nav.append(
+            el("span", "", "/"),
+            button(part, () => loadFiles(target), ""),
+          );
+        }
+      }
+      function visibleFiles() {
+        const q = ($("#file-search")?.value || "").toLocaleLowerCase(),
+          sort = $("#sort")?.value;
+        return state.files
+          .filter((f) => f.name.toLocaleLowerCase().includes(q))
+          .sort(
+            (a, b) =>
+              Number(b.is_dir) - Number(a.is_dir) ||
+              (sort === "size"
+                ? b.size - a.size
+                : sort === "date"
+                  ? b.mtime - a.mtime
+                  : 0) ||
+              a.name.localeCompare(b.name),
+          );
+      }
+      function renderRows() {
+        const body = $("#file-rows");
+        if (!body) return;
+        body.replaceChildren();
+        const visible = visibleFiles();
+        for (const f of visible) {
+          const row = el("tr"),
+            pick = el("td"),
+            check = el("input");
+          check.type = "checkbox";
+          check.checked = state.selected.has(f.name);
+          check.setAttribute("aria-label", "Select " + f.name);
+          check.onchange = () => {
+            check.checked
+              ? state.selected.add(f.name)
+              : state.selected.delete(f.name);
+            renderRows();
+          };
+          pick.append(check);
+          const name = el("td"),
+            path = state.path + "/" + f.name;
+          const b = button(
+            f.name,
+            () => (f.is_dir ? loadFiles(path) : download(path)),
+            "file-name",
+            f.is_dir ? "folder" : "file",
+          );
+          name.append(b);
+          const time = f.mtime
+            ? new Date(f.mtime * 1000).toLocaleDateString(undefined, {
+                year: "numeric",
+                month: "short",
+                day: "numeric",
+              })
+            : "—";
+          const actions = el("td");
+          if (!f.is_dir)
+            actions.append(
+              tool("Download " + f.name, "download", () => download(path)),
+            );
+          actions.append(
+            tool("Rename or move " + f.name, "edit", () => renameEntry(f)),
+            tool("Delete " + f.name, "trash", () => deleteEntry(f)),
+          );
+          row.append(
+            pick,
+            name,
+            el("td", "file-meta date", time),
+            el("td", "file-meta", f.is_dir ? "Folder" : bytes(f.size)),
+            actions,
+          );
+          body.append(row);
+        }
+        const bulk = $("#bulk");
+        bulk.hidden = !state.selected.size;
+        bulk.firstChild.textContent = state.selected.size + " selected";
+        const all = $("#select-all");
+        all.checked =
+          visible.length > 0 &&
+          visible.every((f) => state.selected.has(f.name));
+        all.indeterminate =
+          visible.some((f) => state.selected.has(f.name)) && !all.checked;
+        $("#file-count").replaceChildren(
+          el(
+            "span",
+            "",
+            visible.length +
+              " entries shown · " +
+              bytes(
+                state.files
+                  .filter((f) => !f.is_dir)
+                  .reduce((sum, f) => sum + f.size, 0),
+              ) +
+              " on page",
+          ),
+        );
+        const paging = el("div", "actions");
+        if (state.fileOffset)
+          paging.append(
+            button(
+              "Previous page",
+              () =>
+                loadFiles(
+                  state.path,
+                  Math.max(0, state.fileOffset - state.listLimit),
+                ),
+              "btn",
+            ),
+          );
+        if (state.truncated)
+          paging.append(
+            button(
+              "Next page",
+              () => loadFiles(state.path, state.nextOffset),
+              "btn",
+            ),
+          );
+        $("#file-count").append(paging);
+      }
+      function download(path) {
+        ready();
+        const a = el("a");
+        a.href = url(path);
+        a.download = path.split("/").pop();
+        document.body.append(a);
+        a.click();
+        a.remove();
+        log("Download requested: " + path);
+      }
+      let resolveDialog = null,
+        validateDialog = null;
+      function ask({
+        title,
+        copy,
+        value = null,
+        confirm = "Continue",
+        danger = false,
+        validate = null,
+      }) {
+        return new Promise((resolve) => {
+          resolveDialog = resolve;
+          validateDialog = validate;
+          $("#dialog-title").textContent = title;
+          $("#dialog-copy").textContent = copy;
+          const input = $("#dialog-input");
+          input.hidden = value === null;
+          input.value = value ?? "";
+          input.required = value !== null;
+          $("#dialog-error").hidden = true;
+          $("#dialog-confirm").textContent = confirm;
+          $("#dialog-confirm").className =
+            "btn " + (danger ? "danger" : "primary");
+          $("#dialog").returnValue = "cancel";
+          $("#dialog").showModal();
+          if (value !== null) {
+            input.focus();
+            input.select();
+          }
+        });
+      }
+      $("#dialog-form").addEventListener("submit", (e) => {
+        if (e.submitter?.value !== "confirm") return;
+        const error = validateDialog?.($("#dialog-input").value);
+        if (error) {
+          e.preventDefault();
+          $("#dialog-error").textContent = error;
+          $("#dialog-error").hidden = false;
+        }
+      });
+      $("#dialog").addEventListener("close", () => {
+        const value =
+          $("#dialog").returnValue === "confirm"
+            ? $("#dialog-input").hidden
+              ? true
+              : $("#dialog-input").value
+            : null;
+        resolveDialog?.(value);
+        resolveDialog = null;
+      });
+      async function createEntry(cmd) {
+        ready();
+        const path = state.path;
+        const name = await ask({
+          title: cmd === "mkdir" ? "Create a folder" : "Create a file",
+          copy: "Choose a name for the new item in " + path + ".",
+          value: "",
+          confirm: "Create",
+          validate: (v) =>
+            safeName(v)
+              ? ""
+              : "Use a name without slashes, reserved symbols, or leading dots.",
+        });
+        if (!name) return;
+        await api(cmd, path + "/" + name);
+        log("Created " + path + "/" + name);
+        toast("Created " + name);
+        await loadFiles(path);
+      }
+      async function renameEntry(file) {
+        ready();
+        const parent = state.path;
+        const dest = await ask({
+          title: "Rename or move",
+          copy: "Enter a new name, or a full SD path to move this item. Existing destinations are preserved.",
+          value: file.name,
+          confirm: "Save",
+          validate: (v) =>
+            v.startsWith(root() + "/")
+              ? null
+              : safeName(v)
+                ? null
+                : "Use a valid name or a full SD path.",
+        });
+        if (!dest || dest === file.name) return;
+        await api(
+          "rename",
+          parent + "/" + file.name,
+          dest.startsWith(root() + "/") ? dest : parent + "/" + dest,
+        );
+        log("Renamed " + file.name + " to " + dest);
+        toast("Item moved successfully");
+        await loadFiles(parent);
+      }
+      async function deleteEntry(file) {
+        ready();
+        const parent = state.path;
+        if (
+          !(await ask({
+            title: "Delete " + (file.is_dir ? "folder" : "file") + "?",
+            copy:
+              file.name +
+              (file.is_dir
+                ? " and everything inside it will be permanently removed."
+                : " will be permanently removed.") +
+              " Download a copy first if you need a backup.",
+            confirm: "Delete permanently",
+            danger: true,
+          }))
+        )
+          return;
+        await api("delete", parent + "/" + file.name);
+        log("Deleted " + parent + "/" + file.name);
+        toast("Deleted " + file.name);
+        await loadFiles(parent);
+      }
+      async function bulkDelete() {
+        ready();
+        const parent = state.path,
+          names = [...state.selected];
+        if (
+          !(await ask({
+            title: "Delete " + names.length + " selected items?",
+            copy: "Folders and their contents will be permanently removed. Download any files you want to keep first.",
+            confirm: "Delete permanently",
+            danger: true,
+          }))
+        )
+          return;
+        let count = 0;
+        try {
+          for (const name of names) {
+            await api("delete", parent + "/" + name);
+            count++;
+          }
+        } finally {
+          toast(count + " of " + names.length + " items deleted");
+          await loadFiles(parent);
+        }
+      }
+      let uploadDestination = "";
+      function pickUpload(path) {
+        ready();
+        uploadDestination = path;
+        $("#upload-input").value = "";
+        $("#upload-input").click();
+      }
+      $("#upload-input").onchange = () =>
+        guard(() => enqueue($("#upload-input").files, uploadDestination));
+      function enqueue(files, path) {
+        ready();
+        if (!files.length) return;
+        let added = 0;
+        for (const file of files) {
+          if (!safeName(file.name)) {
+            toast("Unsupported filename: " + file.name, true);
+            continue;
+          }
+          if (
+            state.queue.some(
+              (t) =>
+                t.path === path &&
+                t.file.name.toLocaleLowerCase() ===
+                  file.name.toLocaleLowerCase() &&
+                ["queued", "uploading"].includes(t.status),
+            )
+          ) {
+            toast(file.name + " is already queued", true);
+            continue;
+          }
+          state.queue.push({
+            id: Date.now() + "-" + Math.random(),
+            file,
+            path,
+            status: "queued",
+            progress: 0,
+            message: "Waiting to upload",
+          });
+          added++;
+        }
+        if (added) {
+          log("Queued " + added + " file(s) for " + path);
+          toast(added + " file(s) added to transfers");
+          navigate("transfers");
+          runQueue();
+        }
+      }
+      async function runQueue() {
+        if (state.running) return;
+        state.running = true;
+        updateChrome();
+        while (true) {
+          const item = state.queue.find((t) => t.status === "queued");
+          if (!item) break;
+          item.status = "uploading";
+          item.message = "Connecting…";
+          item.started = Date.now();
+          if (state.route === "transfers") renderTransfers();
+          try {
+            await new Promise((resolve, reject) => {
+              const x = new XMLHttpRequest();
+              state.active = { xhr: x, item };
+              x.open("PUT", url(item.path + "/" + item.file.name));
+              x.setRequestHeader("X-RetroGo", "1");
+              if (item.overwrite)
+                x.setRequestHeader("X-RetroGo-Overwrite", "1");
+              x.timeout = 30 * 60 * 1000;
+              x.upload.onprogress = (e) => {
+                item.progress = e.lengthComputable
+                  ? Math.round((e.loaded / e.total) * 100)
+                  : 0;
+                const elapsed = (Date.now() - item.started) / 1000;
+                item.message =
+                  bytes(e.loaded) +
+                  " / " +
+                  bytes(item.file.size) +
+                  (elapsed > 1 ? " · " + bytes(e.loaded / elapsed) + "/s" : "");
+                updateTransfer(item);
+              };
+              x.onload = () => {
+                item.conflict = x.status === 409;
+                if (x.status === 200 && x.responseText === "OK") resolve();
+                else
+                  reject(
+                    Error(
+                      x.responseText.slice(0, 250) ||
+                        "Upload failed (" + x.status + ")",
+                    ),
+                  );
+              };
+              x.onerror = () =>
+                reject(Error("Connection lost. Check Wi-Fi and retry."));
+              x.ontimeout = () =>
+                reject(Error("Transfer timed out. Retry when connected."));
+              x.onabort = () => reject(Error("Transfer cancelled"));
+              x.send(item.file);
+            });
+            item.status = "done";
+            item.progress = 100;
+            item.message = "Uploaded successfully";
+            log("Uploaded " + item.path + "/" + item.file.name);
+          } catch (e) {
+            item.status = "error";
+            item.message = e.message;
+            log("Upload " + item.file.name + ": " + e.message);
+          } finally {
+            state.active = null;
+            if (state.route === "transfers") renderTransfers();
+          }
+        }
+        state.running = false;
+        updateChrome();
+        if (state.route === "files") loadFiles(state.path);
+        refreshStatus();
+        if (state.route === "transfers") render();
+      }
+      function transfers() {
+        const p = mount(
+          panel(
+            "Transfer queue",
+            "Uploads run one at a time. Keep this tab open until they finish.",
+          ),
+        );
+        const body = el("div");
+        body.id = "transfer-list";
+        p.append(body);
+        const h = p.firstChild;
+        h.append(
+          button(
+            "Clear finished",
+            () => {
+              state.queue = state.queue.filter(
+                (t) => !["done", "cancelled"].includes(t.status),
+              );
+              renderTransfers();
+            },
+            "btn",
+          ),
+        );
+        renderTransfers();
+        mount(
+          el(
+            "p",
+            "note",
+            "Files are staged before they appear in their destination. Replacing an existing file requires confirmation. Its original is kept until the new upload finishes and is published. A cancelled transfer can be retried.",
+          ),
+        );
+      }
+      function renderTransfers() {
+        const box = $("#transfer-list");
+        if (!box) return;
+        box.replaceChildren();
+        if (!state.queue.length) {
+          empty(
+            box,
+            "Nothing in transit",
+            "Choose a folder in Files & saves, then upload or drop in your files.",
+            "transfer",
+          );
+          return;
+        }
+        for (const t of state.queue) {
+          const row = el(
+            "div",
+            "transfer" + (t.status === "error" ? " error" : ""),
+          );
+          row.dataset.transfer = t.id;
+          const head = el("div", "transfer-head"),
+            text = el("div");
+          text.append(
+            el("strong", "", t.file.name),
+            el("small", "", t.path + " · " + bytes(t.file.size)),
+          );
+          const a = el("div", "actions"),
+            pill = el("span", "pill", t.status);
+          pill.dataset.transferStatus = "1";
+          a.append(pill);
+          if (t.status === "uploading")
+            a.append(
+              tool("Cancel upload", "close", () => state.active?.xhr.abort()),
+            );
+          if (t.status === "queued")
+            a.append(
+              tool("Remove from queue", "close", () => {
+                t.status = "cancelled";
+                t.message = "Removed from queue";
+                renderTransfers();
+              }),
+            );
+          if (t.status === "error") {
+            a.append(
+              button(
+                "Retry",
+                () => {
+                  ready();
+                  t.status = "queued";
+                  t.progress = 0;
+                  runQueue();
+                },
+                "btn",
+              ),
+            );
+            if (t.conflict)
+              a.append(
+                button(
+                  "Replace…",
+                  async () => {
+                    ready();
+                    if (
+                      !(await ask({
+                        title: "Replace existing file?",
+                        copy:
+                          t.file.name +
+                          " will be replaced in " +
+                          t.path +
+                          ". The current file is kept until the new upload is complete. Keep power connected during publication.",
+                        confirm: "Replace file",
+                        danger: true,
+                      }))
+                    )
+                      return;
+                    t.overwrite = true;
+                    t.status = "queued";
+                    t.progress = 0;
+                    runQueue();
+                  },
+                  "btn danger",
+                ),
+              );
+          }
+          head.append(text, a);
+          const m = el("div", "meter"),
+            bar = el("i");
+          m.setAttribute("role", "progressbar");
+          m.setAttribute("aria-label", "Upload " + t.file.name);
+          m.setAttribute("aria-valuemin", "0");
+          m.setAttribute("aria-valuemax", "100");
+          m.append(bar);
+          const message = el("small");
+          message.dataset.transferMessage = "1";
+          row.append(head, m, message);
+          box.append(row);
+          updateTransfer(t);
+        }
+      }
+      function updateTransfer(t) {
+        const row = [...document.querySelectorAll("[data-transfer]")].find(
+          (r) => r.dataset.transfer === t.id,
+        );
+        if (!row) return;
+        row.querySelector(".meter>i").style.width = t.progress + "%";
+        row.querySelector(".meter").setAttribute("aria-valuenow", t.progress);
+        row.querySelector("[data-transfer-message]").textContent = t.message;
+        row.querySelector("[data-transfer-status]").textContent =
+          t.status === "uploading" ? t.progress + "%" : t.status;
+      }
+      function device() {
+        state.dirty.clear();
+        const p = mount(
+          panel(
+            "Console controls",
+            "Changes apply on the console. Saving across restarts requires a writable SD card.",
+          ),
+        );
+        for (const [key, label, copy, min] of [
+          [
+            "volume",
+            "Audio volume",
+            "Applies to the currently selected audio output.",
+            0,
+          ],
+          [
+            "brightness",
+            "Display brightness",
+            "Keep the screen comfortable for your surroundings.",
+            1,
+          ],
+        ]) {
+          const row = el("div", "settings-row"),
+            labelEl = el("label", "", label);
+          labelEl.htmlFor = "setting-" + key;
+          labelEl.append(el("p", "", copy));
+          const input = el("input");
+          input.type = "range";
+          input.min = min;
+          input.max = 100;
+          input.id = "setting-" + key;
+          input.value = state.status?.[key] ?? 50;
+          const output = el("output", "", input.value + "%");
+          output.htmlFor = input.id;
+          input.oninput = () => {
+            output.textContent = input.value + "%";
+            state.dirty.add(key);
+          };
+          const b = button(
+            "Apply",
+            async () => {
+              await api("settings", key, "", { value: Number(input.value) });
+              state.dirty.delete(key);
+              toast(label + " change requested");
+              log(label + " changed");
+            },
+            "btn",
+          );
+          b.dataset.device = "1";
+          row.append(labelEl, input, output, b);
+          p.append(row);
+        }
+        const health = mount(panel("Device health"));
+        const body = el("div", "panel-body");
+        detail(body, "Hardware target", "—", "target");
+        detail(body, "CPU frequency", "—", "cpu");
+        detail(body, "Internal RAM available", "—", "heap");
+        detail(body, "PSRAM available", "—", "psram");
+        detail(body, "Power", "—", "power");
+        detail(body, "Active device theme", "—", "theme");
+        health.append(body);
+        const restart = mount(
+          panel(
+            "Restart console",
+            "Commits saved settings, then reboots into the launcher.",
+          ),
+        );
+        const b = el("div", "panel-body");
+        const restartButton = button(
+          "Restart device",
+          restartDevice,
+          "btn danger",
+          "refresh",
+        );
+        restartButton.dataset.device = "1";
+        b.append(restartButton);
+        restart.append(b);
+        updateLive();
+      }
+      async function restartDevice() {
+        if (state.running)
+          throw Error("Wait for active transfers before restarting.");
+        if (
+          !(await ask({
+            title: "Restart your console?",
+            copy: "The web connection will briefly disconnect. Wait for the launcher to finish starting, then reconnect here.",
+            confirm: "Restart",
+            danger: true,
+          }))
+        )
+          return;
+        await api("restart");
+        toast("Restart requested. Reconnecting automatically…");
+        log("Restart requested");
+      }
+      function network() {
+        const cols = mount(el("div", "two-col")),
+          p = panel("Current connection"),
+          body = el("div", "panel-body");
+        for (const [label, key] of [
+          ["Network name", "ssid"],
+          ["Mode", "mode"],
+          ["Device address", "ip"],
+          ["Wi-Fi signal", "signal"],
+          ["Channel", "channel"],
+          ["Connection state", "connection"],
+        ])
+          detail(body, label, "—", key);
+        p.append(body);
+        cols.append(p);
+        const aside = panel("A local workspace"),
+          copy = el("div", "panel-body");
+        copy.append(
+          el(
+            "p",
+            "subtext",
+            "This interface is served directly by your console. Use a trusted private network: anyone with access to this address can manage the device. No cloud account is required.",
+          ),
+        );
+        copy.append(el("hr"));
+        copy.lastChild.style.cssText =
+          "border:0;border-top:1px solid var(--line);margin:20px 0";
+        copy.append(
+          el("h3", "", "Changing Wi-Fi"),
+          el(
+            "p",
+            "subtext",
+            "Open the network settings on your console to choose a network or enable access point mode. After changing networks, open the new address shown on the device.",
+          ),
+        );
+        aside.append(copy);
+        cols.append(aside);
+        const tips = mount(panel("If the connection drops"));
+        const b = el("div", "panel-body");
+        b.append(
+          el(
+            "p",
+            "subtext",
+            "Keep the launcher open and the web manager enabled. Connect your computer to the same network as the console. File transfers pause live status updates until the queue finishes. If you enabled USB storage, exit it before using SD files here.",
+          ),
+        );
+        tips.append(b);
+        updateLive();
+      }
+      function firmware() {
+        const p = mount(panel("Installed firmware", "Built for this console"));
+        const b = el("div", "panel-body");
+        detail(b, "Release", "—", "version");
+        detail(b, "Target", "—", "target");
+        detail(b, "Build date", "—", "build");
+        detail(b, "Installed applications", "—", "apps");
+        p.append(b);
+        const update = mount(panel("Prepare a firmware update"));
+        const body = el("div", "panel-body");
+        body.append(
+          el(
+            "p",
+            "subtext",
+            "Upload a compatible full .img, select it below, then confirm installation on your console. The device validates the target and image integrity before installation. Keep external power connected throughout the update.",
+          ),
+        );
+        const a = el("div", "actions");
+        a.style.marginTop = "18px";
+        a.append(
+          storageButton(
+            "Upload firmware image",
+            async () => {
+              ready();
+              await api("mkdir", root() + "/retro-go/firmware");
+              pickUpload(root() + "/retro-go/firmware");
+            },
+            "btn primary",
+            "upload",
+          ),
+          storageButton(
+            "Open firmware folder",
+            () => navigate("files", root() + "/retro-go/firmware"),
+            "btn",
+            "folder",
+          ),
+        );
+        body.append(a);
+        const staged = el("div", "actions");
+        staged.style.marginTop = "18px";
+        const images = el("select", "input");
+        images.setAttribute("aria-label", "Staged firmware image");
+        images.append(el("option", "", "Loading staged images…"));
+        const install = button(
+          "Request installation",
+          async () => {
+            ready();
+            if (state.running)
+              throw Error(
+                "Wait for transfers to finish before installing firmware.",
+              );
+            if (!images.value || !state.status?.can_install)
+              throw Error(
+                "Select an image; the factory updater must be installed.",
+              );
+            if (
+              !(await ask({
+                title: "Request firmware installation?",
+                copy:
+                  images.value +
+                  " will be validated after you confirm on the console. Keep external power connected. The web connection pauses during confirmation and installation.",
+                confirm: "Request installation",
+                danger: true,
+              }))
+            )
+              return;
+            await api("install", root() + "/retro-go/firmware/" + images.value);
+            log("Firmware installation requested: " + images.value);
+            toast(
+              "Confirm on the console to validate and install. Cancel there to return to the web manager.",
+            );
+          },
+          "btn danger",
+          "chip",
+        );
+        install.dataset.install = "1";
+        const loadImages = async () => {
+          images.replaceChildren(
+            el("option", "", "Select a staged .img image"),
+          );
+          images.firstChild.value = "";
+          if (!state.online || !state.status?.storage_ready) return;
+          try {
+            const data = await api("list", root() + "/retro-go/firmware");
+            for (const file of data.files.filter(
+              (f) => !f.is_dir && /\.img$/i.test(f.name),
+            )) {
+              const option = el("option", "", file.name);
+              option.value = file.name;
+              images.append(option);
+            }
+          } catch {
+            images.firstChild.textContent = "Upload an image to get started";
+          }
+        };
+        staged.append(
+          images,
+          install,
+          storageButton("Refresh images", loadImages, "btn", "refresh"),
+        );
+        body.append(staged);
+        if (state.status && !state.status.can_install)
+          body.append(
+            el(
+              "p",
+              "note",
+              "This installation has no supported factory updater. Build and flash a complete image over USB first.",
+            ),
+          );
+        loadImages();
+        update.append(body);
+        const diagnostics = mount(
+          panel(
+            "Diagnostics",
+            "Useful details for troubleshooting. Export only when you choose.",
+          ),
+        );
+        const d = el("div", "panel-body");
+        const select = el("select", "input");
+        select.id = "setting-log_level";
+        select.setAttribute("aria-label", "Device log detail");
+        for (const [v, l] of [
+          [0, "Console output only"],
+          [1, "Errors"],
+          [2, "Warnings"],
+          [3, "Information"],
+          [4, "Debug"],
+          [5, "Verbose"],
+        ]) {
+          const o = el("option", "", l);
+          o.value = v;
+          select.append(o);
+        }
+        select.value = state.status?.log_level ?? 3;
+        const actions = el("div", "actions");
+        const apply = button(
+          "Apply log level",
+          async () => {
+            await api("settings", "log_level", "", {
+              value: Number(select.value),
+            });
+            toast("Log level change requested");
+          },
+          "btn",
+        );
+        apply.dataset.device = "1";
+        actions.append(
+          select,
+          apply,
+          button("Export diagnostic report", exportReport, "btn", "download"),
+        );
+        d.append(actions);
+        const logs = el("div");
+        logs.style.marginTop = "18px";
+        if (!state.events.length)
+          logs.append(el("p", "subtext", "Session activity will appear here."));
+        for (const event of state.events.slice(0, 12)) {
+          const l = el("div", "log-line");
+          l.append(
+            el("time", "", new Date(event.time).toLocaleTimeString()),
+            el("span", "", event.message),
+          );
+          logs.append(l);
+        }
+        d.append(logs);
+        diagnostics.append(d);
+        updateLive();
+      }
+      function exportReport() {
+        if (!state.status)
+          throw Error("Connect to a device to export its diagnostics.");
+        const blob = new Blob(
+          [
+            JSON.stringify(
+              {
+                exported_at: new Date().toISOString(),
+                device: state.status,
+                session_activity: state.events,
+              },
+              null,
+              2,
+            ),
+          ],
+          { type: "application/json" },
+        );
+        const link = el("a"),
+          objectUrl = URL.createObjectURL(blob);
+        link.href = objectUrl;
+        link.download =
+          "retro-go-diagnostics-" +
+          new Date().toISOString().slice(0, 10) +
+          ".json";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      }
+      function updateLive() {
+        const s = state.status;
+        if (!s) return;
+        const values = {
+          storage: s.storage_ready ? bytes(s.storage_free) : "No SD card",
+          memory: bytes(s.heap_free),
+          uptime: uptime(s.uptime),
+          battery: s.battery_present
+            ? Math.round(s.battery) + "%" + (s.charging ? " ↗" : "")
+            : "External power",
+          version: s.version,
+          target: s.target,
+          build: s.build,
+          ip: s.ip || "No address",
+          ssid: s.ssid || "—",
+          mode: s.ap_mode ? "Access point" : "Wi-Fi station",
+          signal: s.ap_mode
+            ? "Not reported in AP mode"
+            : s.rssi
+              ? s.rssi + " dBm"
+              : "Unavailable",
+          channel: s.channel || "—",
+          connection:
+            ["Disabled", "Disconnected", "Connecting", "Connected"][
+              s.network_state
+            ] || "Unknown",
+          theme: s.theme,
+          cpu: s.cpu_mhz + " MHz",
+          heap: bytes(s.heap_free) + " / " + bytes(s.heap_total),
+          psram: s.psram_total
+            ? bytes(s.psram_free) + " / " + bytes(s.psram_total)
+            : "Not available",
+          power: s.battery_present
+            ? Math.round(s.battery) +
+              "% · " +
+              Number(s.battery_volts).toFixed(2) +
+              " V" +
+              (s.charging ? " · Charging" : "")
+            : "External / not monitored",
+          apps: (s.apps || []).join(", "),
+        };
+        document
+          .querySelectorAll("[data-live]")
+          .forEach((e) => (e.textContent = values[e.dataset.live] ?? "—"));
+        for (const key of ["volume", "brightness"]) {
+          const input = $("#setting-" + key);
+          if (
+            input &&
+            !state.dirty.has(key) &&
+            document.activeElement !== input
+          ) {
+            input.value = s[key];
+            input.nextElementSibling.textContent = s[key] + "%";
+          }
+        }
+      }
+      $("#theme").onclick = () => {
+        const dark = document.documentElement.dataset.theme !== "dark";
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        try {
+          localStorage.setItem("retro-go-appearance", dark ? "dark" : "light");
+        } catch {}
+      };
+      try {
+        document.documentElement.dataset.theme =
+          localStorage.getItem("retro-go-appearance") ||
+          (matchMedia("(prefers-color-scheme:dark)").matches
+            ? "dark"
+            : "light");
+      } catch {}
+      $("#reconnect").onclick = refreshStatus;
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) refreshStatus();
+      });
+      window.addEventListener("beforeunload", (e) => {
+        if (state.running || state.queue.some((t) => t.status === "queued")) {
+          e.preventDefault();
+          e.returnValue = "";
+        }
+      });
+      window.addEventListener("hashchange", () =>
+        navigate(location.hash.slice(1)),
+      );
+      state.route = pages[location.hash.slice(1)]
+        ? location.hash.slice(1)
+        : "overview";
+      render();
+      refreshStatus();
+      setInterval(refreshStatus, 5000);
+    </script>
+  </body>
+</html>

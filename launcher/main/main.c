@@ -342,6 +342,9 @@ static void retro_loop(void)
     {
         updater_poll();
         media_tick();
+#ifdef RG_ENABLE_NETWORKING
+        webui_poll();
+#endif
         // At the moment the HTTP server has absolute priority because it may change UI elements.
         // It's also risky to let the user do file accesses at the same time (thread safety, SPI, etc)...
         if (gui.http_lock)
@@ -563,7 +566,7 @@ static void options_handler(rg_gui_option_t *dest)
         {0, _("Screen off"),   "-", RG_DIALOG_FLAG_NORMAL, &screen_off_timeout_cb},
         {0, _("Hide tabs"),    "-", RG_DIALOG_FLAG_NORMAL, &toggle_tabs_cb},
         #ifdef RG_ENABLE_NETWORKING
-        {0, _("File server"),  "-", RG_DIALOG_FLAG_NORMAL, &webui_switch_cb},
+        {0, _("Web manager"),  "-", RG_DIALOG_FLAG_NORMAL, &webui_switch_cb},
         #endif
         {0, _("Startup app"),  "-", RG_DIALOG_FLAG_NORMAL, &startup_app_cb},
         RG_DIALOG_END,

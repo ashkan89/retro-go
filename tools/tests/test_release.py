@@ -152,8 +152,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertIn("retro-go/bios/msx/", archive.namelist())
                 self.assertIn("retro-go/firmware/", archive.namelist())
                 self.assertIn("retro-go/themes/default/theme.json", archive.namelist())
-                self.assertEqual(archive.read("retro-go/webui/index.html"),
-                                 (release.ROOT / "assets/webui/index.html").read_bytes())
+                self.assertNotIn("retro-go/webui/index.html", archive.namelist())
                 for theme in (release.ROOT / "themes").iterdir():
                     if theme.is_dir() and (theme / "theme.json").is_file():
                         for name in ("theme.json", "preview.png", "logo_gba.png", "banner_gba.png", "background_gba.png"):

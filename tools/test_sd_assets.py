@@ -1,4 +1,4 @@
-"""Run the real SD artwork lookup, web-UI streaming and SD-independent busy icon."""
+"""Run the real SD artwork lookup, SD-independent busy icon."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -59,44 +59,6 @@ static void rg_display_write_rect(int x,int y,int w,int h,int stride,const uint1
 '''
     source += section("components/retro-go/rg_gui.c", "void rg_gui_draw_hourglass", "void rg_gui_draw_status_bars")
     source += r'''
-typedef int esp_err_t;
-struct httpd_req_t {const char *uri; size_t content_len;};
-#define ESP_OK 0
-#define ESP_FAIL -1
-static char storage_buffer[65536], *http_buffer=storage_buffer;
-static std::string served, content_type;
-static int chunks;
-static bool finished, fail_send;
-static std::string upload;
-static size_t upload_position;
-#define RG_LOGI(...) ((void)0)
-#define RG_LOGE(...) ((void)0)
-static char *urldecode(const char *path) {return strdup(path);}
-static void gui_invalidate() {}
-static void rg_task_delay(int) {}
-static int httpd_req_recv(httpd_req_t *,char *buffer,size_t size) {
-    size_t count=upload.size()-upload_position;
-    if(count>size) count=size;
-    memcpy(buffer,upload.data()+upload_position,count); upload_position+=count;
-    return count;
-}
-static void rg_task_yield() {}
-static int httpd_resp_set_type(httpd_req_t *,const char *type) {content_type=type;return ESP_OK;}
-static int httpd_resp_set_hdr(httpd_req_t *,const char *key,const char *value) {
-    assert(!strcmp(key,"Cache-Control") && !strcmp(value,"no-store")); return ESP_OK;
-}
-static int httpd_resp_sendstr(httpd_req_t *,const char *data) {served=data;return ESP_OK;}
-static int httpd_resp_send_chunk(httpd_req_t *,const char *data,size_t size) {
-    if(fail_send) return ESP_FAIL;
-    if(!data) {finished=true;return ESP_OK;}
-    chunks++; served.append(data,size); return ESP_OK;
-}
-'''
-    source += section("launcher/main/webui.c", "static const char webui_bootstrap", "static httpd_handle_t server")
-    source += section("launcher/main/webui.c", "static esp_err_t http_upload_handler", "static esp_err_t http_download_handler")
-    source += section("launcher/main/webui.c", "static esp_err_t http_get_handler", "void webui_stop")
-    source += r'''
-static void reset_http() {served.clear();chunks=0;finished=fail_send=false;gui.http_lock=false;}
 int main() {
     selected_theme="custom"; selected_exists=default_exists=true;
     assert(gui_get_image("logo","gba")==&selected_image && !default_reads);
@@ -116,47 +78,18 @@ int main() {
     rg_gui_draw_hourglass(); assert(rows_written==48);
     int black=0; for(auto pixel:pixels) black+=pixel==C_BLACK;
     assert(black>200 && black<1500 && pixels[0]==C_WHITE);
-    httpd_req_t request={RG_BASE_PATH "/webui/index.html",0};
-    reset_http(); assert(http_get_handler(&request)==ESP_OK);
-    assert(served.find("Install interface")!=std::string::npos && !gui.http_lock);
-    assert(content_type=="text/html; charset=utf-8");
-    const std::string full(70000,'x');
-    std::ofstream(RG_BASE_PATH "/webui/index.html",std::ios::binary).write(full.data(),full.size());
-    reset_http(); assert(http_get_handler(&request)==ESP_OK);
-    assert(served==full && chunks==3 && finished && !gui.http_lock);
-    reset_http(); fail_send=true; assert(http_get_handler(&request)==ESP_FAIL);
-    assert(!gui.http_lock && !finished);
-    std::ofstream(RG_BASE_PATH "/webui/index.html",std::ios::binary|std::ios::trunc).close();
-    reset_http(); assert(http_get_handler(&request)==ESP_OK);
-    assert(served.find("Install interface")!=std::string::npos && !gui.http_lock);
-    std::remove(RG_BASE_PATH "/webui/index.html");
-    upload="<!doctype html>Installed SD interface"; upload_position=0;
-    request.content_len=upload.size();
-    reset_http(); assert(http_upload_handler(&request)==ESP_OK);
-    assert(served=="OK" && !gui.http_lock);
-    reset_http(); assert(http_get_handler(&request)==ESP_OK && served==upload);
-    upload_position=0; request.content_len=upload.size()+1;
-    reset_http(); assert(http_upload_handler(&request)==ESP_FAIL);
-    assert(served=="ERROR" && !gui.http_lock);
-    assert(std::rename("sd","unmounted-sd")==0);
-    upload_position=0; request.content_len=upload.size();
-    reset_http(); assert(http_upload_handler(&request)==ESP_FAIL);
-    assert(served=="ERROR" && !gui.http_lock);
-    reset_http(); assert(http_get_handler(&request)==ESP_OK);
-    assert(served.find("Install interface")!=std::string::npos && !gui.http_lock);
 }
 '''
     compiler = str(Path(args.cxx).resolve()) if Path(args.cxx).exists() else args.cxx
     command = [compiler] + (["c++"] if Path(compiler).stem == "zig" else [])
     with tempfile.TemporaryDirectory() as directory:
         folder = Path(directory)
-        (folder / "sd/retro-go/webui").mkdir(parents=True)
         cpp = folder / "sd_assets.cpp"
         cpp.write_text(source)
         executable = folder / "sd_assets.exe"
         subprocess.run(command + ["-std=c++11", "-O1", str(cpp), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], cwd=folder, check=True)
-    print("PASS: SD theme/default/missing-card lookups, procedural busy icon, web UI streaming/recovery/disconnect handling")
+    print("PASS: SD theme/default/missing-card lookups, procedural busy icon")
 
 
 if __name__ == "__main__":
