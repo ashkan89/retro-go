@@ -1,3 +1,48 @@
+# Unreleased
+
+### Experimental Nestopia integration
+- Added the pinned Nestopia fork as an alternative NES/Famicom/FDS core using its
+  native C++ API, with a selectable Nofrendo fallback.
+- Enabled Nestopia by default on P4 and 16 MB S3 targets. The 8 MB S3 release
+  targets retain Nofrendo so the complete application set fits in flash.
+- Corrected ZIP ROM seeking, detected PAL region selection, PAL overscan handling
+  and audio output counts, including fractional sample carry.
+- Added native save states, battery RAM, EEPROM and FDS patch persistence, with
+  persistent data flushed during normal shutdown.
+- Made `/retro-go/bios/disksys.rom` the preferred BIOS path for both NES backends, with
+  `fds_bios.bin` accepted as a legacy fallback.
+- Added FDS disk insertion and a disk-side selection option.
+- Nestopia and Nofrendo save states are incompatible; use separate state slots
+  when switching cores. Native persistent data uses separate `.nestopia.*` files.
+
+### Controllers and GBA
+- Verified independent P1/P2 routing through the local multiplayer frontends.
+- Added missing Atari 2600/7800 P2 controls, Spectrum Sinclair 1 controls for P2,
+  and a P1/P2 destination option for the Coleco virtual keypad.
+- Prevented Auto input sources from merging into an explicitly assigned P2.
+- Checked gpSP button mappings, including L/R and turbo, and rejected unsupported
+  input ports and indices. GBA link multiplayer remains unsupported by the frontend.
+- Added a multiplayer support table and P4 controller wiring documentation.
+
+### Themes
+- Completed all 15 theme bundles with artwork for 23 tab names, fallback
+  backgrounds, representative previews and explicit color settings.
+- Added 497 missing assets, replaced 124 blank icon/banner placeholders and
+  improved secondary-text contrast while preserving each theme's palette.
+- Added a Classic background, editable SVG artwork templates and a local preview gallery.
+- Included all theme bundles in the SD-card release archive.
+
+### Builds and regression checks
+- Limited compilation to the selected NES backend and initialized the Nestopia submodule in CI.
+- Corrected Nestopia's wide-character narrowing diagnostic on Xtensa targets.
+- Added native ROM, audio, state, battery and emulated NES controller-port tests,
+  including a production-options check with 16-bit `wchar_t`.
+- Corrected the controller-release test's battery checksum baseline handling.
+- Added multiplayer, theme completeness, PNG decoding, color contrast and
+  embedded-artwork synchronization checks.
+- Removed approximately 17 KB of unused embedded artwork to preserve the 8 MB
+  image budget; all SD-card theme assets remain available.
+
 # Retro-Go 5.7.0 (Released)
 
 ### P4 hardware and performance
