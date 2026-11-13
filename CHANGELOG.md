@@ -1,4 +1,4 @@
-# Unreleased
+# Retro-Go 5.8.0 (Released)
 
 ### Experimental Nestopia integration
 - Added the pinned Nestopia fork as an alternative NES/Famicom/FDS core using its
