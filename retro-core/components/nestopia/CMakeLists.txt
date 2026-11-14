@@ -50,9 +50,10 @@ register_component()
 # and allow this safe conversion without changing the pinned submodule.
 rg_setup_compile_options(-O3 -fno-rtti -fexceptions -DNST_NO_ZLIB -Wno-error -Wno-narrowing)
 if(RG_NESTOPIA_PORT)
-    # Cartridge header parsing runs during loading, outside emulation. Leave
+    # Cartridge parsing and database lookup run during loading, outside emulation. Leave
     # enough room for diagnostics in existing small app partitions as well.
     set_source_files_properties("${NESTOPIA_CORE}/NstCartridgeInes.cpp" "${NESTOPIA_CORE}/NstCartridgeUnif.cpp"
+        "${NESTOPIA_CORE}/NstImageDatabase.cpp"
         PROPERTIES COMPILE_OPTIONS "-Os")
 endif()
 if(RG_NESTOPIA_PORT AND CONFIG_IDF_TARGET_ESP32S3)

@@ -5,7 +5,8 @@
 The previous every-presentation wait also paced emulation from the LCD. This was
 a regression for large viewports: a complete 480x320 RGB565 frame takes at least
 30.72 ms over the configured single-lane 80 MHz SPI link, before command and
-queue overhead. Partial updates can avoid unchanged rows, but scrolling games
+queue overhead ([ESP-IDF SPI driver documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/spi_master.html)).
+Partial updates can avoid unchanged rows, but scrolling games
 cannot rely on that saving. Filter OFF uses the software nearest-neighbor path;
 PPA does not remove the panel's transfer budget.
 
@@ -30,15 +31,31 @@ with dirty rows and display availability. Scaling OFF had no busy-display
 omissions. These are live inputs, not identical-input replay; some unscaled
 windows still exceed the CPU frame budget, so this is not a locked-60 claim.
 
+A vector-copy experiment averaged 301 us for memcpy and 231 us for PIE across
+48 alternating, poisoned copies into the actual RGB destination. Those initial
+frame checks passed, but an expanded synthetic-pattern test over 256 hardware
+alignment/length/guard cases failed. The experiment and diagnostic were removed;
+normal RGB output retains memcpy. The failed benchmark is not a supported copy
+path or a measured whole-frame FPS improvement. The direct-RGB 57,600-frame
+comparison, 2,400 audio guard frames, traces and final states match upstream
+exactly; the existing indexed/RGB paths and their ownership rules are retained.
+
 During diagnostic installation, an earlier saved partition table proved stale:
-the current device has a `0x210000`-byte retro-core partition at `0x2d0000`, not
-`0x214000`. A 2,163,216-byte diagnostic exceeded it by 528 bytes and the launcher
+at that point the device had a `0x210000`-byte retro-core partition at `0x2d0000`,
+not `0x214000`. A 2,163,216-byte diagnostic exceeded it by 528 bytes and the launcher
 correctly rejected app switching. The overlapping write also affected Doom's
 first sector. Doom was rebuilt from current sources and its app-only restoration
 was hash-verified. The helper now reads the live table before every write and
-checks the sector-rounded image extent. The partition table and SD files were
-not changed. Size-optimizing the cold UNIF cartridge parser makes room for the
+checks the sector-rounded image extent. Flashing commands targeted app partitions
+only. Size-optimizing the cold UNIF parser and cartridge database makes room for the
 diagnostics without reducing optimization of emulation hot paths.
+The user subsequently installed release 5.8.9 with a `0x20c000`-byte retro-core
+partition; subsequent app-only diagnostic writes read and honor that new limit.
+The final normal P4 image is 2,136,752 bytes with profiling and the failed RGB
+copy diagnostic absent, leaving 9,552 bytes in that installed partition.
+It was app-only flashed and hash-verified on COM3; the user confirmed the game
+running afterward. The final startup log shows the native 240x224 viewport;
+the scaled measurements above came from the earlier profiling build.
 
 ## Nestopia RGB and sprite follow-up (November 14, 2026)
 

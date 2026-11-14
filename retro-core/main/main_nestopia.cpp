@@ -157,37 +157,6 @@ static bool acquire_video_surface(void)
     return rg_display_sync(app->frameskipManual);
 }
 
-#if defined(RG_NESTOPIA_PROFILE) && CONFIG_IDF_TARGET_ESP32P4
-extern "C" void p4_copy_pixels(void*,const void*,size_t);
-static void benchmark_rgb_copy(void)
-{
-    static bool tested;
-    if (tested) return;
-    tested=true;
-    rg_display_sync(true);
-    const auto &screen=static_cast<Nes::Core::Machine&>(*activeEmulator).ppu.GetScreen();
-    const size_t bytes=256*240*2;
-    void *reference=rg_alloc(bytes,MEM_SLOW);
-    std::memcpy(reference,screen.pixels,bytes);
-    int64_t elapsed[2]={};
-    bool correct=true;
-    for (unsigned i=0; i<48; ++i)
-    {
-        void *dest=currentUpdate->data;
-        std::memset(dest,0xa5,bytes);
-        int64_t begin=rg_system_timer();
-        if (i&1) p4_copy_pixels(dest,screen.pixels,bytes/2);
-        else std::memcpy(dest,screen.pixels,bytes);
-        elapsed[i&1]+=rg_system_timer()-begin;
-        correct=correct && !std::memcmp(reference,dest,bytes);
-    }
-    printf("NES-COPY cpu_us=%lld vector_us=%lld correct=%u\n",
-           (long long)(elapsed[0]/24),(long long)(elapsed[1]/24),unsigned(correct));
-    free(reference);
-    if (!correct) RG_PANIC("RGB copy verification failed");
-}
-#endif
-
 static void event_handler(int event, void *arg)
 {
     (void)arg;
@@ -645,9 +614,6 @@ void nes_nestopia_main(void)
         const bool drawFrame = wantFrame && acquire_video_surface();
         if (drawFrame)
         {
-#if defined(RG_NESTOPIA_PROFILE) && CONFIG_IDF_TARGET_ESP32P4
-            benchmark_rgb_copy();
-#endif
             currentUpdate = updates[currentUpdate == updates[0] ? 1 : 0];
             Nes::Core::Video::Output videoOutput(currentUpdate->data, currentUpdate->stride);
             if (video.Blit(videoOutput) < Nes::RESULT_OK)
