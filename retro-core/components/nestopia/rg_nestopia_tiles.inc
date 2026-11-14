@@ -54,7 +54,7 @@ NST_FORCE_INLINE void Ppu::RenderTilePixel(word sprite)
         if (!(sprite & 0x40) || !(pixel & 3))
             pixel = sprite & 0x1F;
     }
-    *output.target++ = output.palette[pixel];
+    *output.target++ = output.renderPalette[pixel];
 }
 
 NST_FORCE_INLINE void Ppu::RenderTilePixels(const word* sprites, uint clock)
@@ -63,7 +63,7 @@ NST_FORCE_INLINE void Ppu::RenderTilePixels(const word* sprites, uint clock)
     // observe intermediate screen stores or sprite-zero status. Bus operations
     // still execute at each original dot; compose this tile after those reads.
     word* NST_RESTRICT target = output.target;
-    const word* NST_RESTRICT palette = output.palette;
+    const word* NST_RESTRICT palette = output.renderPalette;
     const byte* NST_RESTRICT background = tiles.pixels;
     const uint mask = tiles.mask;
     const uint fine = scroll.xFine;
@@ -102,6 +102,79 @@ RG_NES_PPU_HOT NST_NO_INLINE void Ppu::RenderTile()
 #endif
     word sprites[184];
     PrepareSpriteTile(sprites);
+    // On verified standard-memory paths, neither CHR/nametable reads nor the
+    // IRQ-only A12 observer can inspect secondary OAM. Complete its read/write
+    // pairs together, before the unchanged bus fetches, up to this CPU boundary.
+    // Keep arbitrary cartridge callbacks on the interleaved scalar phases.
+    const bool combinedEvaluation = Direct && cycles.hClock >= 64;
+    if (combinedEvaluation)
+    {
+        uint remaining = dots;
+        if (oam.corrupt != Oam::NO_CORRUPTION)
+        {
+            // The first primary byte is latched before corruption copies the
+            // row. Preserve that byte even when it belongs to the copied row.
+            oam.latch = oam.ram[oam.address];
+            CorruptOam();
+            (*this.*oam.phase)();
+            remaining -= 2;
+        }
+        while (remaining)
+        {
+            if (oam.phase == &Ppu::EvaluateSpritesPhase9)
+            {
+                ReadSecondaryOam();
+                oam.address = (oam.address + 2*remaining) & 0xFF;
+                break;
+            }
+            if (oam.phase == &Ppu::EvaluateSpritesPhase1)
+            {
+                // Misses overwrite the same secondary byte. Keep their
+                // private counters local and commit the last write once.
+                uint address=oam.address, index=oam.index, latch=0;
+                bool hit=false;
+                do
+                {
+                    latch=oam.ram[address];
+                    ++index;
+                    remaining-=2;
+                    if (scanline-latch < oam.height)
+                    {
+                        oam.address=address; oam.index=index-1; oam.latch=latch;
+                        EvaluateSpritesPhase1();
+                        hit=true;
+                        break;
+                    }
+                    if (index==64)
+                    {
+                        address=0;
+                        oam.phase=&Ppu::EvaluateSpritesPhase9;
+                        break;
+                    }
+                    address=(address+4)&0xFC;
+                }
+                while (remaining);
+                if (!hit)
+                {
+                    oam.address=address; oam.index=index; oam.latch=latch;
+                    if (oam.buffered!=oam.limit) oam.buffered[0]=latch;
+                }
+            }
+            else if (oam.phase == &Ppu::EvaluateSpritesPhase2 && remaining>=6)
+            {
+                oam.latch=oam.ram[oam.address]; EvaluateSpritesPhase2();
+                oam.latch=oam.ram[oam.address]; EvaluateSpritesPhase3();
+                oam.latch=oam.ram[oam.address]; EvaluateSpritesPhase4();
+                remaining-=6;
+            }
+            else
+            {
+                oam.latch = oam.ram[oam.address];
+                (*this.*oam.phase)();
+                remaining-=2;
+            }
+        }
+    }
     const auto tile = [&](const word* sprite, bool evaluate) RG_NES_TILE_INNER_HOT {
         const uint clock = cycles.hClock;
         const auto pixel = [&](word color) {
@@ -140,7 +213,12 @@ RG_NES_PPU_HOT NST_NO_INLINE void Ppu::RenderTile()
         oam.mask = oam.show[0];
     };
     uint offset = 0;
-    if (cycles.hClock < 64 && oam.phase == &Ppu::EvaluateSpritesPhase0)
+    if (combinedEvaluation)
+    {
+        for (; offset<dots; offset+=8)
+            tile(sprites + offset, false);
+    }
+    else if (cycles.hClock < 64 && oam.phase == &Ppu::EvaluateSpritesPhase0)
     {
         // No CPU or cartridge callback can observe a partial clear in this
         // span, and phase 0 does not inspect the secondary-OAM bytes.

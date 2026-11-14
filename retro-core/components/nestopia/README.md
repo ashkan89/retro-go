@@ -75,11 +75,35 @@ core for comparisons. The normal build enables the port on both P4 and S3.
   The iNES parser also compiles for size, outside runtime emulation.
 - Aligned unfiltered RGB conversion groups four palette lookups and output
   writes, reducing narrow PSRAM stores without changing pixel values.
+- The prepared core also offers `Video::PrepareRgbFrame()` for unfiltered
+  16-bit output. Call it between frames, before `Execute`, including after a
+  decoder, controller or output-format change. Eligible tested cartridge
+  families with ordinary pads rasterize directly into RGB using a cached
+  32-entry palette; palette RAM and encoded colors retain their original
+  semantics. `Blit` then copies the completed frame into the separate display
+  surface. Light sensors, other controllers and unsupported formats/boards
+  return `RESULT_NOP` and retain indexed rendering. Disabling RGB clears the
+  previous screen until the next frame renders. Indexed mode is the default
+  for clients that do not call this optional API.
+- P4 standard PRG-ROM reads can follow their live bank pointers directly. At
+  board reset, every address in each eligible page must match the original
+  pure reader and component. Changing a reader, component or linked cheat hook
+  revokes that page's permission; writer-only changes preserve it. Bank switches
+  update the existing bank pointers. Custom reads retain their callbacks.
+  S3 retains its smaller original CPU map layout.
+- Verified standard-memory spans combine secondary-OAM read/write pairs before
+  the unchanged background bus operations. Complete sprite-fetch spans retain
+  each pattern address and both nametable opens at their original dots.
+  Arbitrary cartridge callbacks retain the interleaved path, and CPU access
+  boundaries and the last sprite-fetch slot keep their original handling.
+  Consecutive sprite Y misses commit their final private counters/write once;
+  complete in-range copies use the original three phases directly. A corruption
+  event still latches its first primary-OAM byte before copying the row.
 - Asynchronous display targets use one source framebuffer and convert only
   when the display releases the previous frame. The display borrows that buffer
   until consumption completes, avoiding an additional RGB copy. Conversion uses
-  `Video::Blit` after emulation and audio submission. Auto frameskip follows display
-  availability, since skipping RGB output does not skip Nestopia's PPU work.
+  `Video::Blit` after emulation and audio submission. Off/Auto waits for the
+  display to release that surface and presents every completed frame.
   Manual frameskip still works. Other emulators retain their adaptive policy.
 
 P4 continues to use the shared PPA scaler and PIE pixel conversion. Emulation
@@ -91,7 +115,7 @@ On P4, the cold FDS BIOS uses external BSS to
 leave executable SRAM for these paths.
 
 Enable `-D RG_NESTOPIA_PROFILE=ON` with `idf.py` for `NES-MEM`, `NES-ROM`,
-`NES-MAPPER`, `NES-PERF` and `NES-CORE` serial records. The mapper record reports
+`NES-MAPPER`, `NES-CONFIG`, `NES-PERF`, `NES-AUDIO` and `NES-CORE` serial records. The mapper record reports
 the loaded cartridge's mapper/submapper IDs. The latter reports CPU cycles spent
 inside PPU execution, APU transition integration and audio sample processing.
 These counters have overhead and are disabled in normal builds. A 300-frame
@@ -101,7 +125,13 @@ Add `-D RG_NESTOPIA_PROFILE_CORE=OFF` to measure frontend FPS without per-core
 cycle-counter overhead; the `NES-CORE` totals are then zero. Release builds
 disable profiling entirely.
 Profiling keeps normal launcher and ROM selection; it does not select a test
-ROM or change saved startup settings.
+ROM or change saved startup settings. `NES-PRG` reports the number of pages
+using verified direct PRG reads in prepared builds.
+`NES-AUDIO` reports samples generated per wall-clock second and the live sprite
+limit setting. On P4, profiling also enables I2S delivery timing diagnostics;
+late writes indicate a delivery deficit, rather than counting DMA underrun
+interrupts. Sustained emulation below the physical NES frame rate produces
+fewer samples than the hardware consumes, which buffering alone cannot fix.
 
 ## Review of the P4 integration
 
@@ -156,6 +186,8 @@ For a differential comparison of the prepared and original cores:
 ```sh
 python tools/test_nestopia.py --cxx c++ --upstream --artifacts .cache/nes-reference
 python tools/test_nestopia.py --cxx c++ --artifacts .cache/nes-port --reference .cache/nes-reference
+python tools/test_nestopia.py --cxx c++ --direct-rgb --artifacts .cache/nes-port --reference .cache/nes-reference
+python tools/test_nestopia_oam.py --cxx c++
 ```
 
 The additional 57,600 generated-ROM frames exercise PAL/NTSC backgrounds, sprites,

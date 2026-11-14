@@ -18,8 +18,15 @@ if(RG_NESTOPIA_PORT)
         "${CMAKE_CURRENT_LIST_DIR}/rg_nestopia_profile.cpp")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/rg_nestopia_tiles.inc")
     set(NESTOPIA_PREPARED "${CMAKE_BINARY_DIR}/nestopia-core")
+    set(NESTOPIA_PREPARE_OPTIONS)
+    if(NOT CONFIG_IDF_TARGET_ESP32P4)
+        # Per-port invalidation metadata costs additional PSRAM. Keep the
+        # smaller CPU map on S3; native tests exercise the P4 transformation.
+        list(APPEND NESTOPIA_PREPARE_OPTIONS --no-direct-prg)
+    endif()
     execute_process(COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/prepare_core.py"
-        "${NESTOPIA_CORE}" "${NESTOPIA_PREPARED}" RESULT_VARIABLE NESTOPIA_PREPARE_RESULT)
+        "${NESTOPIA_CORE}" "${NESTOPIA_PREPARED}" ${NESTOPIA_PREPARE_OPTIONS}
+        RESULT_VARIABLE NESTOPIA_PREPARE_RESULT)
     if(NOT NESTOPIA_PREPARE_RESULT EQUAL 0)
         message(FATAL_ERROR "Could not prepare the pinned Nestopia core")
     endif()

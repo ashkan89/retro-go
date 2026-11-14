@@ -148,7 +148,9 @@ static void performance_regression() {
         if(scene>=2) {
             imm(0xa2,0); size_t objects=code.size();
             imm(0xa9,40); absolute(0x9d,0x0200);
-            emit({0x8a}); absolute(0x9d,0x0201);
+            // Alternate the 8x16 pattern-table bit between adjacent slots.
+            // MMC3 can observe several A12 transitions during sprite fetches.
+            emit({0x8a,0x4a,0x4a}); absolute(0x9d,0x0201);
             emit({0x8a}); imm(0x49,0xa3); absolute(0x9d,0x0202);
             imm(0xa9,12); absolute(0x9d,0x0203);
             emit({0xe8,0xe8,0xe8,0xe8}); branch(0xd0,objects);
@@ -216,6 +218,10 @@ static void performance_regression() {
         assert(Nes::Api::Input(emulator).AutoSelectControllers()>=0);
         assert(Nes::Api::Sound(emulator).SetSampleRate(32000)>=0);
         assert(machine.Power(true)>=0);
+#ifdef RG_NESTOPIA_READ_BANK_SUPPORTED
+        if(mapper==0 || mapper==4)
+            assert(static_cast<Nes::Core::Machine&>(emulator).cpu.GetDirectReadPageCount()==128);
+#endif
         PpuProbe probe(static_cast<Nes::Core::Machine&>(emulator).ppu);
         probe.install(hooks);
         std::vector<uint16_t> pixels(256*240); int16_t pcm[641];
@@ -226,6 +232,12 @@ static void performance_regression() {
         // frames, with the same callbacks and audio active in both cores.
         pads.pad[0].buttons=pads.pad[1].buttons=0;
         for(unsigned warmup=0;warmup<2;warmup++) {
+#ifdef RG_TEST_DIRECT_RGB
+            const auto rgbResult=video.PrepareRgbFrame();
+            assert(rgbResult>=0);
+            if(mapper==4 || mapper==0) assert(rgbResult==Nes::RESULT_OK);
+            assert(static_cast<Nes::Core::Machine&>(emulator).ppu.GetScreen().rgbPixels == (rgbResult==Nes::RESULT_OK));
+#endif
             Nes::Core::Sound::Output audio(pcm,641);
             assert(emulator.Execute(nullptr,&audio,&pads)>=0);
         }
@@ -233,6 +245,12 @@ static void performance_regression() {
         for(unsigned frame=0;frame<240;frame++) {
             assert(video.SetDecoder(Nes::Api::Video::Decoder(
                 static_cast<Nes::Api::Video::DecoderPreset>((frame/48)%5)))>=0);
+#ifdef RG_TEST_DIRECT_RGB
+            const auto rgbResult=video.PrepareRgbFrame();
+            assert(rgbResult>=0);
+            if(mapper==4 || mapper==0) assert(rgbResult==Nes::RESULT_OK);
+            assert(static_cast<Nes::Core::Machine&>(emulator).ppu.GetScreen().rgbPixels == (rgbResult==Nes::RESULT_OK));
+#endif
             pads.pad[0].buttons=frame&0xff; pads.pad[1].buttons=(frame^0x55)&0xff;
             Nes::Core::Sound::Output audio(pcm,641);
             Nes::Core::Video::Output output(pixels.data(),512);
@@ -247,7 +265,15 @@ static void performance_regression() {
             uint64_t frameHash=14695981039346656037ULL;
             if(frame%3) hash(frameHash,pixels.data(),pixels.size()*sizeof(pixels[0]));
             frameHashes.push_back(frameHash);
-            if(frame==119) { std::stringstream saved; assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0); assert(machine.LoadState(saved)>=0); probe.install(hooks); }
+            if(frame==119) {
+                std::stringstream saved;
+                assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0);
+                assert(machine.LoadState(saved)>=0); probe.install(hooks);
+#ifdef RG_NESTOPIA_READ_BANK_SUPPORTED
+                if(mapper==0 || mapper==4)
+                    assert(static_cast<Nes::Core::Machine&>(emulator).cpu.GetDirectReadPageCount()==128);
+#endif
+            }
         }
         std::stringstream saved; assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0);
         std::string bytes=saved.str(); hash(stateHash,bytes.data(),bytes.size());
@@ -271,6 +297,56 @@ static void performance_regression() {
 '''
 
 RUNNER = r'''
+#ifdef RG_NESTOPIA_READ_BANK_SUPPORTED
+struct ReadBankProbe {
+    const uint8_t* data=nullptr;
+    const Nes::Core::Io::Port* next=nullptr;
+    static Nes::Core::Data NST_REGCALL pure(void* p,Nes::Core::Address a) {
+        return static_cast<ReadBankProbe*>(p)->data[a&8191];
+    }
+    static Nes::Core::Data NST_REGCALL other(void* p,Nes::Core::Address a) {
+        return pure(p,a)^0x80;
+    }
+    static void NST_REGCALL write(void*,Nes::Core::Address,Nes::Core::Data) {}
+    static Nes::Core::Data NST_REGCALL chained(void* p,Nes::Core::Address a) {
+        return static_cast<ReadBankProbe*>(p)->next->Peek(a)^0x40;
+    }
+};
+static void read_bank_contract() {
+    Nes::Api::Emulator emulator;
+    auto& cpu=static_cast<Nes::Core::Machine&>(emulator).cpu;
+    std::vector<uint8_t> a(8192),b(8192);
+    for(unsigned i=0;i<8192;i++) { a[i]=(i^0x37)&255; b[i]=(i^0x6b)&255; }
+    ReadBankProbe probe,chain; probe.data=a.data();
+    cpu.Map(0x8000,0x9fff).Set(&probe,&ReadBankProbe::pure,&ReadBankProbe::write);
+    cpu.MapReadBank(0x8000,0x9fff,&probe,&ReadBankProbe::pure,&probe.data);
+    assert(cpu.GetDirectReadPageCount()==32);
+    for(unsigned i=0;i<8192;i++) assert(cpu.Peek(0x8000+i)==a[i]);
+    probe.data=b.data(); // The live bank pointer changes without changing handlers.
+    for(unsigned i=0;i<8192;i++) assert(cpu.Peek(0x8000+i)==b[i]);
+    auto& retained=cpu.Map(0x8123);
+    retained.Set(&ReadBankProbe::write); // A writer change preserves a pure reader.
+    assert(cpu.GetDirectReadPageCount()==32 && cpu.Peek(0x8123)==b[0x123]);
+    retained.Set(&ReadBankProbe::other);
+    assert(cpu.GetDirectReadPageCount()==31 && cpu.Peek(0x8123)==(b[0x123]^0x80));
+    assert(cpu.Peek(0x8122)==b[0x122]);
+    cpu.MapReadBank(0x8000,0x9fff,&probe,&ReadBankProbe::pure,&probe.data);
+    assert(cpu.GetDirectReadPageCount()==31); // A mixed page cannot opt in.
+    retained.Set(&ReadBankProbe::pure,&ReadBankProbe::write);
+    cpu.MapReadBank(0x8000,0x9fff,&probe,&ReadBankProbe::pure,&probe.data);
+    assert(cpu.GetDirectReadPageCount()==32);
+    retained=Nes::Core::Io::Port(&probe,&ReadBankProbe::other,&ReadBankProbe::write);
+    assert(cpu.GetDirectReadPageCount()==31 && cpu.Peek(0x8123)==(b[0x123]^0x80));
+    cpu.Map(0x8000,0x9fff).Set(&probe,&ReadBankProbe::pure,&ReadBankProbe::write);
+    cpu.MapReadBank(0x8000,0x9fff,&probe,&ReadBankProbe::pure,&probe.data);
+    chain.next=cpu.Link(0x81aa,Nes::Core::Cpu::LEVEL_HIGH,&chain,&ReadBankProbe::chained,&ReadBankProbe::write);
+    assert(cpu.GetDirectReadPageCount()==31 && cpu.Peek(0x81aa)==(b[0x1aa]^0x40));
+    cpu.Unlink(0x81aa,&chain,&ReadBankProbe::chained,&ReadBankProbe::write);
+    assert(cpu.Peek(0x81aa)==b[0x1aa]);
+    cpu.MapReadBank(0x8000,0x9fff,&probe,&ReadBankProbe::pure,&probe.data);
+    assert(cpu.GetDirectReadPageCount()==32);
+}
+#endif
 static std::string rom(bool pal) {
     std::string data(16 + 16384 + 8192, '\0');
     memcpy(&data[0], "NES\x1a", 4);
@@ -281,6 +357,56 @@ static std::string rom(bool pal) {
     for (int i = 0; i < 3; ++i) { data[16+16384-6+i*2] = 0; data[16+16384-5+i*2] = char(0xc0); }
     return data;
 }
+#ifdef RG_TEST_DIRECT_RGB
+static void rgb_output_contract() {
+    Nes::Api::Emulator emulator;
+    Nes::Api::Machine machine(emulator);
+    std::string image=rom(false);
+    MemoryStreamBuffer buffer(image.data(),image.size()); std::istream input(&buffer);
+    assert(machine.Load(input,Nes::Api::Machine::FAVORED_NES_NTSC)>=0);
+    Nes::Api::Input controllers(emulator);
+    assert(controllers.AutoSelectControllers()>=0);
+    Nes::Api::Video video(emulator);
+    Nes::Api::Video::RenderState state;
+    state.width=256; state.height=240; state.bits.count=16;
+    state.bits.mask.r=0xf800; state.bits.mask.g=0x07e0; state.bits.mask.b=0x001f;
+    assert(video.SetRenderState(state)>=0);
+    assert(machine.Power(true)>=0);
+    auto &screen=static_cast<Nes::Core::Machine&>(emulator).ppu.GetScreen();
+    assert(!screen.rgbPixels);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_OK && screen.rgbPixels);
+    // RGB copying must accept the same unaligned, padded output as indexed blits.
+    for(unsigned i=0;i<256*240;i++) screen.pixels[i]=uint16_t(i*313U);
+    const unsigned pitch=519;
+    std::vector<unsigned char> bytes(pitch*240+2,0xa5);
+    Nes::Core::Video::Output output(bytes.data()+1,pitch);
+    assert(video.Blit(output)>=0);
+    for(unsigned y=0;y<240;y++) {
+        assert(!memcmp(bytes.data()+1+y*pitch,screen.pixels+y*256,512));
+        for(unsigned x=512;x<pitch;x++) assert(bytes[1+y*pitch+x]==0xa5);
+    }
+    assert(bytes.front()==0xa5 && bytes.back()==0xa5);
+    assert(controllers.ConnectController(1,Nes::Api::Input::ZAPPER)>=0);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_NOP && !screen.rgbPixels);
+    assert(controllers.ConnectController(1,Nes::Api::Input::PAD2)>=0);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_OK && screen.rgbPixels);
+    // A format change cannot reinterpret RGB pixels as palette indices.
+    state.bits.count=32; state.bits.mask.r=0xff0000; state.bits.mask.g=0xff00; state.bits.mask.b=0xff;
+    assert(video.SetRenderState(state)>=0);
+    assert(video.Blit(output)==Nes::RESULT_ERR_INVALID_PARAM);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_NOP && !screen.rgbPixels);
+    state.bits.count=16; state.bits.mask.r=0xf800; state.bits.mask.g=0x07e0; state.bits.mask.b=0x001f;
+    assert(video.SetRenderState(state)>=0);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_OK && screen.rgbPixels);
+    assert(video.PrepareRgbFrame(false)==Nes::RESULT_NOP && !screen.rgbPixels);
+    assert(machine.Unload()>=0);
+    image=rom(false); image[6]=0x12; // MMC1 is deliberately outside the opt-in list.
+    MemoryStreamBuffer otherBuffer(image.data(),image.size()); std::istream other(&otherBuffer);
+    assert(machine.Load(other,Nes::Api::Machine::FAVORED_NES_NTSC)>=0);
+    assert(machine.Power(true)>=0);
+    assert(video.PrepareRgbFrame()==Nes::RESULT_NOP && !screen.rgbPixels);
+}
+#endif
 int main() {
     bool assertionsEnabled = false;
     assert(assertionsEnabled = true);
@@ -369,6 +495,12 @@ int main() {
         std::ifstream released("test.sram.nestopia.battery",std::ios::binary);
         assert(released.get()==0 && released.get()==0);
     }
+#ifdef RG_TEST_DIRECT_RGB
+    rgb_output_contract();
+#endif
+#ifdef RG_NESTOPIA_READ_BANK_SUPPORTED
+    read_bank_contract();
+#endif
     performance_regression();
 }
 '''
@@ -378,6 +510,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cxx", default="c++")
     parser.add_argument("--upstream", action="store_true", help="Test the unmodified pinned core for differential comparison")
+    parser.add_argument("--direct-rgb", action="store_true", help="Exercise the optional fused RGB raster output")
     parser.add_argument("--artifacts", type=Path, help="Keep the native executable and final states for diagnosis")
     parser.add_argument("--reference", type=Path, help="Compare all frame fingerprints with a prior --upstream --artifacts run")
     args = parser.parse_args()
@@ -396,6 +529,9 @@ def main():
         source = temp / "test.cpp"
         buttons = adapter[adapter.index("static uint32_t convert_buttons"):adapter.index("static Nes::Result load_image")]
         deferred = "#define RG_TEST_DEFERRED_VIDEO 1\n" if not args.upstream else ""
+        if args.direct_rgb:
+            assert not args.upstream, 'Direct RGB requires the prepared core'
+            deferred += '#define RG_TEST_DIRECT_RGB 1\n'
         source.write_text(deferred + PRELUDE + stream_and_io + buttons + load + DIFFERENTIAL + RUNNER)
         compiler = str(Path(args.cxx).resolve()) if Path(args.cxx).exists() else args.cxx
         command = [compiler] + (["c++"] if Path(args.cxx).stem == "zig" else [])

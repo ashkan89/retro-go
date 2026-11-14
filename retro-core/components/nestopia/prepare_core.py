@@ -15,7 +15,233 @@ def replace(source, old, new):
     return source.replace(old, new, 1)
 
 
-def prepare(source, destination):
+def prepare_read_banks(source, changes):
+    """Bypass only verified pure PRG readers; mapping writes revoke permission."""
+    port = (source / 'NstIoPort.hpp').read_text()
+    port = replace(port, '\t\t\tclass Port', '            typedef const byte* const* ReadBank;\n\n\t\t\tclass Port')
+    port = replace(port, '\t\t\t\tWriter writer;', '\t\t\t\tWriter writer;\n                ReadBank* readBank;')
+    port = replace(port, 'Port() {}', 'Port(): readBank(NULL) {}')
+    port = replace(port, 'writer    ( w )', 'writer    ( w ), readBank(NULL)')
+    port = replace(port, 'void Set(Component c,Reader r,Writer w)', '''typedef Reader ReadFunction;
+                Port(const Port& p): component(p.component), reader(p.reader), writer(p.writer), readBank(NULL) {}
+                Port& operator=(const Port& p)
+                {
+                    InvalidateReadBank();
+                    component=p.component; reader=p.reader; writer=p.writer;
+                    return *this;
+                }
+                void BindReadBank(ReadBank* p) { readBank=p; }
+                void InvalidateReadBank() { if (readBank) *readBank=NULL; }
+                bool IsReader(Component c,Reader r) const { return component==c && reader==r; }
+
+                void Set(Component c,Reader r,Writer w)''')
+    for signature in ['void Set(Component c,Reader r,Writer w)', 'void Set(Reader r)', 'void Set(Reader r,Writer w)']:
+        anchor = signature + '\n\t\t\t\t{'
+        port = replace(port, anchor, anchor + '\n                    InvalidateReadBank();')
+    changes['NstIoPort.hpp'] = port
+    cpu = changes['NstCpu.hpp']
+    cpu = replace(cpu, '#define NST_CPU_H', '#define NST_CPU_H\n#define RG_NESTOPIA_READ_BANK_SUPPORTED 1')
+    cpu = replace(cpu, 'std::unique_ptr<IoMap> mapStorage;',
+                  'Io::ReadBank readBanks[128] = {};\n\t\t\tstd::unique_ptr<IoMap> mapStorage;')
+    cpu = replace(cpu, 'uint PeekBus(uint address);', 'NST_FORCE_INLINE uint PeekMapped(uint) const;\n\t\t\tuint PeekBus(uint address);')
+    cpu = replace(cpu, 'Io::Port& Map(Address address)', '''// Register only pure standard PRG readers. Each page is verified in full.
+            void MapReadBank(uint,uint,void*,Io::Port::ReadFunction,Io::ReadBank);
+            uint GetDirectReadPageCount() const
+            {
+                uint count=0;
+                for (uint i=0; i<128; ++i) count += readBanks[i] != NULL;
+                return count;
+            }
+
+            Io::Port& Map(Address address)''')
+    changes['NstCpu.hpp'] = cpu
+    cpu = changes['NstCpu.cpp']
+    cpu = replace(cpu, ': Io::Map<SIZE_64K>( cpu, peek, poke ) {}', ''': Io::Map<SIZE_64K>( cpu, peek, poke )
+        {
+            for (uint i=0x8000; i<0x10000; ++i)
+                ports[i].BindReadBank(&cpu->readBanks[(i-0x8000) >> 8]);
+        }''')
+    if cpu.count('map.Peek8( address )') != 2:
+        raise ValueError('Direct PRG read anchors changed')
+    cpu = cpu.replace('map.Peek8( address )', 'PeekMapped( address )')
+    cpu = replace(cpu, 'const uint data = map.Peek16( address );',
+                  'const uint lo = PeekMapped(address);\n\t\t\tconst uint data = lo | (PeekMapped(address+1) << 8);')
+    anchor = 'RG_NES_CPU_HOT uint Cpu::PeekBus(const uint address)'
+    cpu = replace(cpu, anchor, '''void Cpu::MapReadBank(uint first,uint last,void* component,Io::Port::ReadFunction reader,Io::ReadBank bank)
+        {
+            NST_ASSERT(first>=0x8000 && last<=0xFFFF && !(first&255) && (last&255)==255);
+            for (uint page=first; page<=last; page+=256)
+            {
+                bool standard=true;
+                for (uint i=0; i<256; ++i)
+                    if (!map[page+i].IsReader(component,reader)) { standard=false; break; }
+                readBanks[(page-0x8000) >> 8] = standard ? bank : NULL;
+            }
+        }
+
+        NST_FORCE_INLINE uint Cpu::PeekMapped(uint address) const
+        {
+            if (uint(address-0x8000)<0x8000)
+                if (Io::ReadBank bank=readBanks[(address-0x8000) >> 8])
+                    return (*bank)[address & 0x1FFF];
+            return map.Peek8(address);
+        }
+
+        ''' + anchor)
+    changes['NstCpu.cpp'] = cpu
+    memory = (source / 'NstMemory.hpp').read_text()
+    memory = replace(memory, 'bool Readable(uint page) const',
+                     'const byte* const* ReadPagePointer(uint page) const { return pages.mem+page; }\n\n\t\t\tbool Readable(uint page) const')
+    changes['NstMemory.hpp'] = memory
+    board = changes['board/NstBoard.cpp']
+    calls = ''.join(f'\n                cpu.MapReadBank(0x{first:04X},0x{first+8191:04X},this,&Board::Peek_Prg_{name},prg.ReadPagePointer({index}));'
+                    for index,(first,name) in enumerate([(0x8000,'8'),(0xA000,'A'),(0xC000,'C'),(0xE000,'E')]))
+    board = replace(board, 'SubReset( hard );', 'SubReset( hard );' + calls)
+    changes['board/NstBoard.cpp'] = board
+
+
+def prepare_rgb_output(source, changes):
+    """Optional RGB raster output; the original indexed mode remains the default."""
+    screen = changes['NstVideoScreen.hpp']
+    screen = replace(screen, 'Pixel pixels[uint(PIXELS)+PIXELS_PADDING];',
+                     'Pixel pixels[uint(PIXELS)+PIXELS_PADDING];\n\t\t\t\tbool rgbPixels;')
+    changes['NstVideoScreen.hpp'] = screen
+    screen = (source / 'NstVideoScreen.cpp').read_text()
+    screen = replace(screen, 'Screen::Screen()\n\t\t\t{', 'Screen::Screen()\n\t\t\t: rgbPixels(false)\n\t\t\t{')
+    screen = replace(screen, 'Pixel(0)', 'Pixel(rgbPixels ? palette[0] : 0)')
+    changes['NstVideoScreen.cpp'] = screen
+
+    ppu = changes['NstPpu.hpp']
+    ppu = replace(ppu, 'word palette[Palette::SIZE];',
+                  'word palette[Palette::SIZE];\n\t\t\t\tword rgbPalette[Palette::SIZE];\n\t\t\t\tconst word* renderPalette;')
+    ppu = replace(ppu, 'void UpdatePalette();', 'void UpdatePalette();\n\t\t\tNST_FORCE_INLINE void StorePalette(uint,word);')
+    ppu = replace(ppu, 'void EnableCpuSynchronization();',
+                  'void SetRgbOutput(bool);\n\t\t\tvoid EnableCpuSynchronization();')
+    changes['NstPpu.hpp'] = ppu
+    ppu = changes['NstPpu.cpp']
+    ppu = replace(ppu, ': pixels(p) {}', ': pixels(p), renderPalette(palette) {}')
+    # Keep the indexed palette for state/CPU semantics, mirror its writes to a
+    # cached 32-entry output palette. Pixel loops need only one lookup/store.
+    stores = [
+        ('i', '((rgbMap ? rgbMap[palette.ram[i] & uint(Palette::COLOR)] : palette.ram[i]) & c) | e'),
+        ('i', '(palette.ram[i] & ce[0]) | ce[1]'),
+        ('i', '(map[palette.ram[i] & Palette::COLOR] & ce[0]) | ce[1]'),
+        ('address', 'final'), ('address ^ 0x10', 'final'),
+    ]
+    for index, value in stores:
+        ppu = replace(ppu, f'output.palette[{index}] = {value};', f'StorePalette({index}, {value});')
+    ppu = replace(ppu, 'void Ppu::UpdatePalette()\n', '''NST_FORCE_INLINE void Ppu::StorePalette(uint index,word color)
+        {
+            output.palette[index] = color;
+            if (screen.rgbPixels) output.rgbPalette[index] = word(screen.palette[color]);
+        }
+
+        void Ppu::SetRgbOutput(bool enable)
+        {
+            if (enable && !screen.rgbPixels)
+                for (uint i=0; i<Video::Screen::PIXELS+Video::Screen::PIXELS_PADDING; ++i)
+                    screen.pixels[i] = word(screen.palette[screen.pixels[i]]);
+            else if (!enable && screen.rgbPixels)
+            {
+                // Mode changes are only prepared between frames. A raw-screen
+                // observer starts from black until the next frame is rendered.
+                screen.rgbPixels = false;
+                screen.Clear();
+            }
+            screen.rgbPixels = enable;
+            if (enable)
+                for (uint i=0; i<Palette::SIZE; ++i)
+                    output.rgbPalette[i] = word(screen.palette[output.palette[i]]);
+            output.renderPalette = enable ? output.rgbPalette : output.palette;
+        }
+
+        void Ppu::UpdatePalette()
+''')
+    # Only the raster's reads change; raw palette RAM, register behavior and
+    # all sprite/IRQ decisions continue using their original values.
+    if ppu.count('*target = output.palette[pixel];') != 2:
+        raise ValueError('Scalar raster color anchors changed')
+    ppu = ppu.replace('*target = output.palette[pixel];', '*target = output.renderPalette[pixel];')
+    ppu = replace(ppu, 'const uint pixel = output.palette[(scroll.address & 0x3F00)',
+                  'const uint pixel = output.renderPalette[(scroll.address & 0x3F00)')
+    changes['NstPpu.cpp'] = ppu
+
+    renderer = (source / 'NstVideoRenderer.hpp').read_text()
+    renderer = replace(renderer, 'void Blit(Output&,Input&,uint);',
+                       'void Blit(Output&,Input&,uint);\n\t\t\t\tbool PrepareRgb(Input&);')
+    changes['NstVideoRenderer.hpp'] = renderer
+    renderer = (source / 'NstVideoRenderer.cpp').read_text()
+    anchor = 'void Renderer::Blit(Output& output,Input& input,uint burstPhase)'
+    renderer = replace(renderer, anchor, '''bool Renderer::PrepareRgb(Input& input)
+            {
+                if (!filter || state.filter != RenderState::FILTER_NONE || filter->format.bpp != 16)
+                    return false;
+                if (state.update) UpdateFilter(input);
+                return true;
+            }
+
+            ''' + anchor)
+    changes['NstVideoRenderer.cpp'] = renderer
+    video = changes['NstVideoFilterNone.cpp']
+    anchor = 'void Renderer::FilterNone::Blit(const Input& input,const Output& output,uint)\n\t\t\t{'
+    video = replace(video, anchor, anchor + '''
+                if (input.rgbPixels && format.bpp == 16)
+                {
+                    const byte* src = reinterpret_cast<const byte*>(input.pixels);
+                    byte* dst = static_cast<byte*>(output.pixels);
+                    if (output.pitch == WIDTH * sizeof(word))
+                        std::memcpy(dst,src,PIXELS*sizeof(word));
+                    else
+                        for (uint y=0; y<HEIGHT; ++y, src+=WIDTH*sizeof(word), dst+=output.pitch)
+                            std::memcpy(dst,src,WIDTH*sizeof(word));
+                    return;
+                }
+''')
+    changes['NstVideoFilterNone.cpp'] = video
+    api = (source / 'api/NstApiVideo.hpp').read_text()
+    api = replace(api, '#define NST_API_VIDEO_H', '#define NST_API_VIDEO_H\n#define RG_NESTOPIA_RGB_OUTPUT_SUPPORTED 1')
+    api = replace(api, 'Result Blit(Output& output) throw();',
+                  'Result PrepareRgbFrame(bool enable=true) throw();\n\t\t\tResult Blit(Output& output) throw();')
+    changes['api/NstApiVideo.hpp'] = api
+    api = (source / 'api/NstApiVideo.cpp').read_text()
+    api = replace(api, '#include "NstApiVideo.hpp"', '#include "NstApiVideo.hpp"\n#include "NstApiInput.hpp"\n#include "NstApiCartridge.hpp"')
+    anchor = 'Result Video::Blit(Output& output) throw()'
+    api = replace(api, anchor, '''Result Video::PrepareRgbFrame(bool enable) throw()
+        {
+            // Only tested cartridge families and ordinary pads may opt in.
+            // Light sensors and auxiliary screen observers keep indexed pixels.
+            const Cartridge::Profile* profile = Cartridge(emulator).GetProfile();
+            bool supported = false;
+            if (profile)
+                switch (profile->board.mapper)
+                {
+                    case 0: case 2: case 3: case 4: case 5: case 9: case 10:
+                    case 64: case 90: case 96: case 118: case 119: case 163:
+                    case 165: case 209: supported = true; break;
+                }
+            Input input(emulator);
+            for (uint p=0; p<Input::NUM_PORTS && supported; ++p)
+            {
+                const Input::Type type = input.GetConnectedController(p);
+                if (type != Input::UNCONNECTED && (type < Input::PAD1 || type > Input::PAD4)) supported = false;
+            }
+            enable = enable && supported && emulator.renderer.PrepareRgb(emulator.ppu.GetScreen());
+            emulator.ppu.SetRgbOutput(enable);
+            return enable ? RESULT_OK : RESULT_NOP;
+        }
+
+        ''' + anchor)
+    api = replace(api, 'if (emulator.renderer.IsReady())', '''if (emulator.ppu.GetScreen().rgbPixels)
+            {
+                RenderState state;
+                if (GetRenderState(state) < RESULT_OK || state.filter != RenderState::FILTER_NONE || state.bits.count != 16)
+                    return RESULT_ERR_INVALID_PARAM;
+            }
+            if (emulator.renderer.IsReady())''')
+    changes['api/NstApiVideo.cpp'] = api
+
+
+def prepare(source, destination, direct_prg=True):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Prepared core must be outside the pinned source tree')
@@ -199,6 +425,53 @@ def prepare(source, destination):
     for phase in range(10):
         anchor = f'void Ppu::EvaluateSpritesPhase{phase}()'
         ppu = replace(ppu, anchor, 'RG_NES_PPU_HOT ' + anchor)
+    tile_load = re.search(r'NST_SINGLE_CALL void Ppu::LoadTiles\(\)\n\t\t\{.*?\n\t\t\}', ppu, re.S).group(0)
+    tile_load_fast = replace(tile_load, '\t\t\ttiles.fetched = 0;\n\n\t\t\tdst[0] = src[0][0];',
+                  '\t\t\ttiles.fetched = 0;\n'
+                  '\t\t\tif (!(tiles.pattern[0] | tiles.pattern[1]))\n'
+                  '\t\t\t{\n\t\t\t\tstd::memset(dst,0,8);\n\t\t\t\treturn;\n\t\t\t}\n\n'
+                  '\t\t\tdst[0] = src[0][0];')
+    ppu = replace(ppu, tile_load, tile_load_fast)
+    # Complete sprite-fetch spans need no per-dot scheduler return when no CPU
+    # access intervenes. Retain both nametable opens and both pattern addresses
+    # at their original dots, including distinct 8x16-sprite A12 transitions.
+    anchor = '''\t\t\t\t\tcase 316:
+\t\t\t\t\t{
+\t\t\t\t\t\tconst uint slot = (cycles.hClock - 260) / 8;'''
+    ppu = replace(ppu, anchor, '''\t\t\t\t\tcase 316:
+
+                    {
+                        if (directTiles)
+                        {
+                            while (cycles.hClock < 316 && cycles.count >= cycles.hClock + 8)
+                            {
+                                const uint clock = cycles.hClock;
+                                const uint slot = (clock - 260) / 8;
+                                byte object[4];
+                                FetchOam2Object(object);
+                                OpenPatternTile(slot * 4 >= oam.secondary ? OpenSprite() : OpenSprite(object));
+                                cycles.hClock = clock + 1;
+                                if (oam.buffer + slot * 4 < oam.buffered)
+                                    io.pattern = io.busData = chr.Peek(((io.address & 0xFF00) | io.octalLatch) & 0x1FFF);
+                                cycles.hClock = clock + 2;
+                                OpenPatternTile(io.address | 8);
+                                cycles.hClock = clock + 3;
+                                if (slot * 4 < oam.secondary)
+                                {
+                                    io.busData = chr.Peek(((io.address & 0xFF00) | io.octalLatch) & 0x1FFF);
+                                    LoadSprite(io.pattern,io.busData,object,slot);
+                                }
+                                else
+                                    ClearSprite(slot);
+                                cycles.hClock = clock + 4;
+                                OpenNameTile(); StepOam2Address(2);
+                                cycles.hClock = clock + 6;
+                                OpenNameTile(); StepOam2Address(2);
+                                cycles.hClock = clock + 8;
+                            }
+                            if (cycles.count <= cycles.hClock) break;
+                        }
+                        const uint slot = (cycles.hClock - 260) / 8;''')
     ppu = replace(ppu, 'NST_NO_INLINE void Ppu::Run()\n\t\t{',
                   '\n\n'.join(direct_fetches) + '\n\n#include "rg_nestopia_tiles.inc"\n\n'
                   '\t\tRG_NES_PPU_HOT NST_NO_INLINE void Ppu::Run()\n\t\t{\n\t\t\tRG_NES_SCOPE(ppuCycles);\n'
@@ -384,6 +657,10 @@ def prepare(source, destination):
 ''' + anchor)
     changes['NstVideoFilterNone.cpp'] = video
 
+    prepare_rgb_output(source, changes)
+    if direct_prg:
+        prepare_read_banks(source, changes)
+
     changes['rg_nestopia_memory.hpp'] = (Path(__file__).parent / 'rg_nestopia_memory.hpp').read_text(encoding='utf-8')
     for name in ['rg_nestopia_profile.hpp', 'rg_nestopia_profile.cpp', 'rg_nestopia_tiles.inc']:
         changes[name] = (Path(__file__).parent / name).read_text(encoding='utf-8')
@@ -417,5 +694,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('source', type=Path)
     parser.add_argument('destination', type=Path)
+    parser.add_argument('--no-direct-prg', action='store_true')
     args = parser.parse_args()
-    prepare(args.source, args.destination)
+    prepare(args.source, args.destination, not args.no_direct_prg)

@@ -31,7 +31,7 @@ struct Ppu {
         struct Output { dword deadline; byte shift,behind,zero,palette,pixels[8]; } output[32];
         Output *visible; dword clock; uint mask;
     } oam;
-    struct { word palette[32], *target; } output;
+    struct { word palette[32], *target; const word* renderPalette; } output;
     word buffer[256];
     void RenderPixel(); void PrepareSpriteTile(word*); void RenderTilePixel(word);
     void RenderTilePixels(const word*, uint);
@@ -73,10 +73,13 @@ int main() {
         batch=scalar;
         scalar.output.target=scalar.buffer+4;
         batch.output.target=batch.buffer+4;
+        scalar.output.renderPalette=scalar.output.palette;
+        batch.output.renderPalette=batch.output.palette;
         batch.oam.visible=batch.oam.output+visible;
         word sprites[248]; batch.PrepareSpriteTile(sprites);
         Ppu grouped=batch;
         grouped.output.target=grouped.buffer+4;
+        grouped.output.renderPalette=grouped.output.palette;
         grouped.oam.visible=grouped.oam.output+visible;
         for(uint dot=0;dot<dots;dot++) {
             scalar.RenderPixel(); batch.RenderTilePixel(sprites[dot]);

@@ -119,7 +119,7 @@ static struct {
     int ramp_gain, ramp_target, ramp_step, ramp_remaining;
     volatile bool output_enabled;
 #endif
-#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+#if CONFIG_IDF_TARGET_ESP32P4 && (RG_AUDIO_TIMING_DIAGNOSTICS || defined(RG_AUDIO_TIMING_PROFILE))
     int64_t dma_deadline, diagnostic_time, maximum_gap;
     uint32_t late_writes;
 #endif
@@ -350,7 +350,7 @@ static bool driver_init(int device, int sample_rate)
     state.ramp_gain = state.ramp_target = state.ramp_step = state.ramp_remaining = 0;
     state.output_enabled = true;
 #endif
-#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+#if CONFIG_IDF_TARGET_ESP32P4 && (RG_AUDIO_TIMING_DIAGNOSTICS || defined(RG_AUDIO_TIMING_PROFILE))
     state.dma_deadline = state.diagnostic_time = state.maximum_gap = 0;
     state.late_writes = 0;
 #endif
@@ -512,7 +512,7 @@ static rg_audio_route_t driver_get_route(void)
 
 static bool write_dma(const rg_audio_frame_t *frames, size_t count)
 {
-#if CONFIG_IDF_TARGET_ESP32P4 && RG_AUDIO_TIMING_DIAGNOSTICS
+#if CONFIG_IDF_TARGET_ESP32P4 && (RG_AUDIO_TIMING_DIAGNOSTICS || defined(RG_AUDIO_TIMING_PROFILE))
     int64_t now = rg_system_timer();
     if (state.dma_deadline && now > state.dma_deadline + 1000)
     {
@@ -522,9 +522,12 @@ static bool write_dma(const rg_audio_frame_t *frames, size_t count)
     state.dma_deadline = RG_MAX(now, state.dma_deadline) + count * 1000000LL / state.sample_rate;
     if (now - state.diagnostic_time >= 5000000)
     {
+        portENTER_CRITICAL(&queue_lock);
+        unsigned queued = state.queue_count;
+        portEXIT_CRITICAL(&queue_lock);
         RG_LOGI("I2S timing: late=%lu max_gap=%lld us queue=%u errors=%lu\n",
                 (unsigned long)state.late_writes, (long long)state.maximum_gap,
-                (unsigned)state.queue_count, (unsigned long)state.write_errors);
+                queued, (unsigned long)state.write_errors);
         state.diagnostic_time = now;
         state.late_writes = 0;
         state.maximum_gap = 0;

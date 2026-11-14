@@ -80,6 +80,11 @@ if(RG_ENABLE_PROFILING)
     component_compile_options(-DRG_ENABLE_PROFILING)
 endif()
 
+if(RG_NESTOPIA_PROFILE)
+    # Correlate slow emulation with audio delivery gaps in diagnostic builds.
+    set_property(SOURCE drivers/audio/i2s.c APPEND PROPERTY COMPILE_DEFINITIONS RG_AUDIO_TIMING_PROFILE=1)
+endif()
+
 if(RG_PROJECT_VER)
     component_compile_options(-DRG_PROJECT_VER="${RG_PROJECT_VER}")
 endif()

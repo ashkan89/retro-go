@@ -1,5 +1,60 @@
 # ESP32-S3 performance audit
 
+## Nestopia RGB and sprite follow-up (November 14, 2026)
+
+The no-frameskip follow-up removes the second palette lookup from normal
+16-bit output: eligible cartridges render RGB directly into the internal PPU
+working screen, then copy that completed frame into the separate surface
+borrowed by the display. Palette writes, emphasis and decoder changes update
+the small cached output palette. Light sensors and other screen observers keep
+indexed output. Off/Auto now waits for display ownership instead of dropping a
+completed presentation when the display is busy.
+
+Two further PPU paths group secondary-OAM evaluation and complete sprite fetches
+between CPU access boundaries. They require standard memory accessors and
+either no address observer or the known IRQ-only MMC3 observer. Other callbacks
+retain the interleaved path. Both pattern addresses, 8x16-sprite address changes,
+nametable opens and their dot timestamps remain intact. This follows the
+observable OAM phases described by [NESdev's sprite-evaluation documentation](https://www.nesdev.org/wiki/PPU_sprite_evaluation)
+and avoids replacing [MMC3's address-edge behavior](https://www.nesdev.org/wiki/MMC3)
+with a fixed one-interrupt-per-line approximation.
+
+The P4 PRG read path verifies all 256 readers and their components in a page
+before following a standard bank pointer directly. Reader replacements and
+cheat links revoke that page's permission. Writer-only mappings do not revoke
+it, and bank changes remain visible through the live pointers. A broader cache
+of uniform read callbacks was slower in the live Mario 3 trial and was removed.
+S3 omits the PRG transformation to retain its original CPU map memory usage.
+
+Both indexed and direct-RGB paths pass the 57,600-frame upstream comparison,
+including per-frame video, PCM audio, final save states and callback traces.
+Additional checks exercise RGB opt-in, controller/format fallbacks, mode changes,
+and unaligned/padded output with byte guards. Live performance remains a separate
+measurement; passing these comparisons does not establish locked 60 FPS.
+The sprite fixture now alternates the 8x16 pattern-table bit across adjacent
+slots. A separate 200,000-span randomized test compares grouped OAM evaluation
+against the pinned per-dot phases, including misaligned addresses, both sprite
+limits, overflow and corruption. It reproduced and guards the first-byte latch
+ordering when corruption occurs at the start of a grouped span.
+
+Diagnostic builds now report generated PCM samples per wall-clock second and
+I2S delivery timing. Slow gameplay windows supply fewer than 32,000 samples per
+second to a 32 kHz output. The delivery-gap counters are not hardware underrun
+interrupt counts. The existing complete-DMA-block queue is retained: increasing
+its reserve cannot eliminate a sustained sample deficit. Driver review uses the
+installed SDK's [ESP-IDF 5.5.5 I2S documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/i2s.html).
+The user reported improved jitter on the first RGB build; heavy-scene slowdown
+still requires further optimization.
+
+The latest combined PRG/OAM test image is 2,163,216 bytes and is app-only flashed
+and hash-verified on COM3. Its new live-game FPS measurement is pending. Both
+RGB and indexed comparisons pass; direct PRG pages remain enabled after the
+test's save-state reload. The normal P4 release is built with profiling disabled
+(2,160,688 bytes), fits the installed `0x214000`-byte partition, and is not yet
+installed while the gameplay measurement is pending. The final S3 release links
+at 1,858,416 bytes with its original CPU port layout. The upstream submodule and
+managed dependencies are unchanged.
+
 ## Nestopia mapper callback paths (November 14, 2026)
 
 Tournament Fighters on the COM3 P4 exposed an exclusion in the earlier tile
