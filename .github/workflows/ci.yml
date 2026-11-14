@@ -38,6 +38,7 @@ jobs:
           python tools/test_nestopia_tiles.py --cxx c++
           python tools/test_nestopia_oam.py --cxx c++
           python tools/test_nestopia_irq_bounds.py --cxx c++
+          python tools/test_nestopia_presentation.py --cxx c++
       - run: python tools/test_multiplayer.py --cxx c++
       - run: python tools/test_sd_assets.py --cxx c++
       - run: python tools/test_webui.py --cc cc

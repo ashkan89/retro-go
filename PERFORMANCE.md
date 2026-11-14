@@ -1,5 +1,45 @@
 # ESP32-S3 performance audit
 
+## Nestopia scaling backpressure correction (November 14, 2026)
+
+The previous every-presentation wait also paced emulation from the LCD. This was
+a regression for large viewports: a complete 480x320 RGB565 frame takes at least
+30.72 ms over the configured single-lane 80 MHz SPI link, before command and
+queue overhead. Partial updates can avoid unchanged rows, but scrolling games
+cannot rely on that saving. Filter OFF uses the software nearest-neighbor path;
+PPA does not remove the panel's transfer budget.
+
+Nestopia Auto now checks source-buffer release without waiting. If the display
+still owns the previous RGB surface, CPU/PPU/APU execution and audio continue,
+and that presentation is omitted. The next available presentation uses the
+newly completed frame; no backlog of old frames accumulates. It does not restore
+the old escalating Auto frameskip ladder. Manual 0 still presents every frame
+and waits when necessary, and explicit manual skip values retain their cadence.
+
+The production-path regression test covers 600 native-rate presentations, a
+35-ms display consumer, unchanged pixels/metadata during a borrow, Manual 0/2,
+menu crop redraws and Auto/Manual switches. The slow-display simulation advances
+600 emulated frames in about 10 seconds in Auto rather than over 21 seconds
+under the previous blocking policy. Existing renderer, scaler and frameskip
+checks pass, and the S3 release builds successfully.
+
+Live Mario 3 checks on COM3 cover Fit (342x320), Full (480x320) and OFF (240x224),
+with Filter OFF, Sprite limit ON and Auto. Full-scaling windows mostly remain
+around 58-60 emulated FPS while the number of submitted presentations varies
+with dirty rows and display availability. Scaling OFF had no busy-display
+omissions. These are live inputs, not identical-input replay; some unscaled
+windows still exceed the CPU frame budget, so this is not a locked-60 claim.
+
+During diagnostic installation, an earlier saved partition table proved stale:
+the current device has a `0x210000`-byte retro-core partition at `0x2d0000`, not
+`0x214000`. A 2,163,216-byte diagnostic exceeded it by 528 bytes and the launcher
+correctly rejected app switching. The overlapping write also affected Doom's
+first sector. Doom was rebuilt from current sources and its app-only restoration
+was hash-verified. The helper now reads the live table before every write and
+checks the sector-rounded image extent. The partition table and SD files were
+not changed. Size-optimizing the cold UNIF cartridge parser makes room for the
+diagnostics without reducing optimization of emulation hot paths.
+
 ## Nestopia RGB and sprite follow-up (November 14, 2026)
 
 The no-frameskip follow-up removes the second palette lookup from normal

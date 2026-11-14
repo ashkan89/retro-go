@@ -145,6 +145,49 @@ static void submit_video(void)
     rg_display_submit(currentUpdate, RG_DISPLAY_SUBMIT_BORROW);
 }
 
+static bool acquire_video_surface(void)
+{
+    if (!rg_display_uses_frame_copy())
+        return true;
+    // Auto must never pace the CPU/APU from a slow LCD. At native size the
+    // previous borrow normally finishes during Execute, so every frame is
+    // presented. Larger scaled viewports can exceed the SPI payload budget;
+    // keep the borrowed pixels untouched and omit only that presentation.
+    // Manual 0 explicitly requests every frame, including the required wait.
+    return rg_display_sync(app->frameskipManual);
+}
+
+#if defined(RG_NESTOPIA_PROFILE) && CONFIG_IDF_TARGET_ESP32P4
+extern "C" void p4_copy_pixels(void*,const void*,size_t);
+static void benchmark_rgb_copy(void)
+{
+    static bool tested;
+    if (tested) return;
+    tested=true;
+    rg_display_sync(true);
+    const auto &screen=static_cast<Nes::Core::Machine&>(*activeEmulator).ppu.GetScreen();
+    const size_t bytes=256*240*2;
+    void *reference=rg_alloc(bytes,MEM_SLOW);
+    std::memcpy(reference,screen.pixels,bytes);
+    int64_t elapsed[2]={};
+    bool correct=true;
+    for (unsigned i=0; i<48; ++i)
+    {
+        void *dest=currentUpdate->data;
+        std::memset(dest,0xa5,bytes);
+        int64_t begin=rg_system_timer();
+        if (i&1) p4_copy_pixels(dest,screen.pixels,bytes/2);
+        else std::memcpy(dest,screen.pixels,bytes);
+        elapsed[i&1]+=rg_system_timer()-begin;
+        correct=correct && !std::memcmp(reference,dest,bytes);
+    }
+    printf("NES-COPY cpu_us=%lld vector_us=%lld correct=%u\n",
+           (long long)(elapsed[0]/24),(long long)(elapsed[1]/24),unsigned(correct));
+    free(reference);
+    if (!correct) RG_PANIC("RGB copy verification failed");
+}
+#endif
+
 static void event_handler(int event, void *arg)
 {
     (void)arg;
@@ -518,7 +561,7 @@ void nes_nestopia_main(void)
     app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
     // Nestopia simulates every PPU dot even without RGB output. Raising Auto
     // skip to 5 barely saves emulation work and needlessly reduces video to
-    // one frame in six. Off/Auto presents every completed frame.
+    // one frame in six. Auto omits RGB output only while the LCD is busy.
     app->frameskipDisplayOnly = rg_display_uses_frame_copy();
 
     if (app->bootFlags & RG_BOOT_RESUME)
@@ -528,13 +571,14 @@ void nes_nestopia_main(void)
     unsigned nsfOverlayFrames = 0;
 #ifdef RG_NESTOPIA_PROFILE
     int64_t profileStart = rg_system_timer(), executeTime = 0, audioTime = 0, videoTime = 0;
-    unsigned profileFrames = 0, drawnFrames = 0;
+    unsigned profileFrames = 0, drawnFrames = 0, busyFrames = 0;
     unsigned long long profileSamples = 0;
     printf("NES-CONFIG sprite_limit=%u frameskip=%d\n", unsigned(!video.AreUnlimSpritesEnabled()), rg_system_get_frameskip());
 #ifdef RG_NESTOPIA_READ_BANK_SUPPORTED
     printf("NES-PRG direct_pages=%u\n", static_cast<Nes::Core::Machine&>(*activeEmulator).cpu.GetDirectReadPageCount());
 #endif
     int profileDisplayStart = rg_display_get_counters().totalFrames;
+    int64_t profileDisplayBusyStart = rg_display_get_counters().busyTime;
 #endif
     while (true)
     {
@@ -596,14 +640,14 @@ void nes_nestopia_main(void)
         profileSamples += samples;
 #endif
 
-        // The display borrows this RGB surface. Wait for its release before
-        // copying the completed PPU screen, so every requested frame is safe.
-        const bool drawFrame = wantFrame;
+        // Reuse the RGB surface only after the display releases its borrow.
+        // Auto never stalls emulation on a presentation that cannot keep up.
+        const bool drawFrame = wantFrame && acquire_video_surface();
         if (drawFrame)
         {
-            // Off/Auto presents every completed frame. Explicit manual
-            // frameskip remains available, but a busy display never drops one.
-            if (rg_display_uses_frame_copy()) rg_display_sync(true);
+#if defined(RG_NESTOPIA_PROFILE) && CONFIG_IDF_TARGET_ESP32P4
+            benchmark_rgb_copy();
+#endif
             currentUpdate = updates[currentUpdate == updates[0] ? 1 : 0];
             Nes::Core::Video::Output videoOutput(currentUpdate->data, currentUpdate->stride);
             if (video.Blit(videoOutput) < Nes::RESULT_OK)
@@ -615,6 +659,7 @@ void nes_nestopia_main(void)
 #ifdef RG_NESTOPIA_PROFILE
         videoTime += rg_system_timer() - audioEnd;
         drawnFrames += drawFrame;
+        busyFrames += wantFrame && !drawFrame;
         if (++profileFrames == 300)
         {
             int displayed = rg_display_get_counters().totalFrames;
@@ -631,12 +676,19 @@ void nes_nestopia_main(void)
                    unsigned(RetroGo::tileBatches / profileFrames));
             printf("NES-AUDIO generated_hz=%.2f samples=%llu sprite_limit=%u\n",
                    profileSamples / seconds, profileSamples, unsigned(!video.AreUnlimSpritesEnabled()));
+            const rg_display_t *displayInfo = rg_display_get_info();
+            const auto displayCounters = rg_display_get_counters();
+            printf("NES-DISPLAY scaling=%d filter=%d manual=%u skip=%d viewport=%dx%d busy_frames=%u render_us=%lld\n",
+                   int(rg_display_get_scaling()), int(rg_display_get_filter()), unsigned(app->frameskipManual),
+                   rg_system_get_frameskip(), displayInfo->viewport.width, displayInfo->viewport.height,
+                   busyFrames, (long long)((displayCounters.busyTime - profileDisplayBusyStart) / profileFrames));
+            profileDisplayBusyStart = displayCounters.busyTime;
             profileSamples = 0;
             RetroGo::ppuCycles = RetroGo::apuWalkCycles = RetroGo::apuSampleCycles = 0;
             RetroGo::tileBatches = 0;
             profileStart = rg_system_timer();
             profileDisplayStart = displayed;
-            profileFrames = drawnFrames = 0;
+            profileFrames = drawnFrames = busyFrames = 0;
             executeTime = audioTime = videoTime = 0;
         }
 #endif

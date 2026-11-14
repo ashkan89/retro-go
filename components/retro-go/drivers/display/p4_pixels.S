@@ -28,6 +28,23 @@ p4_swap_pixels:
     esp.movx.w.cfg a4
     ret
     .size p4_swap_pixels, .-p4_swap_pixels
+    // Same ownership/alignment rules as p4_swap_pixels, without byte swapping.
+    // pixels must be a positive multiple of eight.
+    .align 4
+    .global p4_copy_pixels
+    .type p4_copy_pixels, @function
+p4_copy_pixels:
+    esp.movx.r.cfg a4
+    ori a3, a4, 3
+    esp.movx.w.cfg a3
+.Lp4_copy_loop:
+    esp.vld.128.ip q0, a1, 16
+    esp.vst.128.ip q0, a0, 16
+    addi a2, a2, -8
+    bnez a2, .Lp4_copy_loop
+    esp.movx.w.cfg a4
+    ret
+    .size p4_copy_pixels, .-p4_copy_pixels
     .section .rodata
     .align 4
 .Lp4_shift_left:
