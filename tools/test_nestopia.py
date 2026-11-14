@@ -502,12 +502,14 @@ int main() {
     read_bank_contract();
 #endif
     performance_regression();
+    fds_regression();
 }
 '''
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--fds-only', action='store_true', help='Run only the generated FDS BIOS/disk regression')
     parser.add_argument("--cxx", default="c++")
     parser.add_argument("--upstream", action="store_true", help="Test the unmodified pinned core for differential comparison")
     parser.add_argument("--direct-rgb", action="store_true", help="Exercise the optional fused RGB raster output")
@@ -532,7 +534,9 @@ def main():
         if args.direct_rgb:
             assert not args.upstream, 'Direct RGB requires the prepared core'
             deferred += '#define RG_TEST_DIRECT_RGB 1\n'
-        source.write_text(deferred + PRELUDE + stream_and_io + buttons + load + DIFFERENTIAL + RUNNER)
+        fds_fixture = (ROOT / 'tools/tests/nestopia_fds.inc').read_text()
+        runner = 'int main() { fds_regression(); }\n' if args.fds_only else RUNNER
+        source.write_text(deferred + PRELUDE + stream_and_io + buttons + load + DIFFERENTIAL + fds_fixture + runner)
         compiler = str(Path(args.cxx).resolve()) if Path(args.cxx).exists() else args.cxx
         command = [compiler] + (["c++"] if Path(args.cxx).stem == "zig" else [])
         prefix = len(command)
@@ -592,6 +596,16 @@ int main() {
             print(result.stderr, end='')
             result.check_returncode()
         print(result.stdout, end='')
+        fds_fingerprint = re.search(r'FDS video/audio/state fingerprints: ([0-9a-f ]+)', result.stdout).group(1).strip()
+        if args.reference:
+            assert fds_fingerprint == (args.reference / 'fds-fingerprints.txt').read_text().strip(), 'Upstream FDS fingerprints differ'
+            for path in run_dir.glob('fds-*.state'):
+                assert path.read_bytes() == (args.reference / path.name).read_bytes(), f'FDS state differs: {path.name}'
+        if args.artifacts:
+            (run_dir / 'fds-fingerprints.txt').write_text(fds_fingerprint)
+        if args.fds_only:
+            print('PASS: 1440 FDS frames, original BIOS, RAM/BIOS reads, IRQs, disk sides, expansion audio, RGB/fallback and state reload')
+            return
         fingerprint = re.search(r'Video/audio/state fingerprints: ([0-9a-f ]+)', result.stdout).group(1).strip()
         if args.reference:
             assert fingerprint == (args.reference / 'fingerprints.txt').read_text().strip(), 'Upstream frame fingerprints differ'

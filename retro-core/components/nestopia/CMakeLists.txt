@@ -54,6 +54,8 @@ if(RG_NESTOPIA_PORT)
     # enough room for diagnostics in existing small app partitions as well.
     set_source_files_properties("${NESTOPIA_CORE}/NstCartridgeInes.cpp" "${NESTOPIA_CORE}/NstCartridgeUnif.cpp"
         "${NESTOPIA_CORE}/NstImageDatabase.cpp"
+        "${NESTOPIA_CORE}/NstXml.cpp"
+        "${NESTOPIA_CORE}/NstCartridgeRomset.cpp"
         PROPERTIES COMPILE_OPTIONS "-Os")
 endif()
 if(RG_NESTOPIA_PORT AND CONFIG_IDF_TARGET_ESP32S3)

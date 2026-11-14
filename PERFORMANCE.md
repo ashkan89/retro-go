@@ -1,5 +1,42 @@
 # ESP32-S3 performance audit
 
+## FDS rendering and program-memory follow-up (November 14, 2026)
+
+FDS with ordinary pads can now use the same direct-RGB raster as supported
+cartridges. Screen-sensitive controllers and unsupported output formats retain
+indexed rendering. The display still borrows a separate completed RGB surface;
+the validated CPU memcpy path and Auto presentation policy are unchanged.
+
+On P4, the pure FDS RAM readers at $8000-$DFFF and BIOS reader at $E000-$FFFF
+register with the existing verified-page cache. The three RAM page references
+follow the fixed arrays, so disk loading and self-modifying program writes are
+immediately visible. Reader replacement revokes the page, and resets revalidate
+it. The $6000-$7FFF callbacks remain in use and move to IRAM alongside the FDS
+RAM/BIOS wrappers. Cartridge read dispatch and its cache layout are unchanged.
+FDS disk registers, timer clocks, IRQ delivery, side changes and expansion audio
+keep their existing implementations. The memory/register separation follows
+[NESdev's FDS reference](https://www.nesdev.org/wiki/Family_Computer_Disk_System).
+
+A generated BIOS and two-sided disk fixture compares 1,440 frames with upstream,
+including video, PCM and byte-for-byte final states. It exercises FDS expansion
+sound/modulation, IRQ acknowledgement, RAM code including self-modification,
+disk ejection/side changes, a mid-run state reload, the Zapper fallback, and page
+revocation/reset. RGB and indexed runs match. The existing 57,600-frame cartridge
+suite, callback traces, final states and 2,400 audio guard frames also match;
+these establish correctness, not a hardware FPS guarantee. S3 compiles with its
+original CPU map and omits the P4 FDS read-cache additions.
+
+The live baseline for `Super Mario Bros. 2 (Japan) (En).fds` on COM3 uses
+240x224, Filter OFF, Auto and Sprite limit OFF. After startup exclusions, 86
+300-frame windows have 52.755 median FPS (51.92-55.17), 17,180 us execution,
+1,719.5 us video and 28,088.4 PCM samples/second. No presentations were omitted
+in the retained baseline windows. An optimized hardware capture is still pending
+the SD-card recovery/power cycle; no new FDS FPS result is asserted yet.
+
+The live flash-table check rejected the older cached diagnostic before writing:
+this firmware layout now gives retro-core `0x20a000` bytes. Cold XML/ROM-set
+parsers use size optimization to fit diagnostics; emulator hot paths remain -O3.
+
 ## Nestopia scaling backpressure correction (November 14, 2026)
 
 The previous every-presentation wait also paced emulation from the LCD. This was

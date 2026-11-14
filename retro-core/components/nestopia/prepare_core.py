@@ -99,6 +99,32 @@ def prepare_read_banks(source, changes):
     board = replace(board, 'SubReset( hard );', 'SubReset( hard );' + calls)
     changes['board/NstBoard.cpp'] = board
 
+    # FDS program RAM and BIOS are fixed arrays. Keep their page references
+    # live and use the same reader verification/invalidation as cartridge PRG.
+    fds_header = (source / 'NstFds.hpp').read_text()
+    fds_header = replace(fds_header, '\t\t\tRam ram;', '\t\t\tRam ram;\n            const byte* directReadPages[4];')
+    changes['NstFds.hpp'] = fds_header
+    fds = changes['NstFds.cpp']
+    fds = replace(fds, '\t\t\tbool Available() const', '            const byte* GetRomData() const { return rom; }\n\n\t\t\tbool Available() const')
+    anchor = '\t\t\tcpu.Map( 0xE000, 0xFFFF ).Set( &bios, &Bios::Peek_Rom, &Bios::Poke_Nop );'
+    fds = replace(fds, anchor, anchor + '''
+            for (uint i=0; i<3; ++i)
+            {
+                directReadPages[i]=ram.mem+(i+1)*SIZE_8K;
+                cpu.MapReadBank(0x8000+i*SIZE_8K,0x9FFF+i*SIZE_8K,&ram,&Ram::Peek_Ram,directReadPages+i);
+            }
+            directReadPages[3]=bios.GetRomData();
+            cpu.MapReadBank(0xE000,0xFFFF,&bios,&Bios::Peek_Rom,directReadPages+3);''')
+    fds = replace(fds, '#include "NstFds.hpp"', '''#include "NstFds.hpp"
+#if defined(CONFIG_IDF_TARGET_ESP32P4) && CONFIG_IDF_TARGET_ESP32P4 && CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+#define RG_NES_FDS_HOT IRAM_ATTR
+#else
+#define RG_NES_FDS_HOT
+#endif''')
+    for accessor in ('NES_PEEK_A(Fds::Bios,Rom)', 'NES_PEEK_A(Fds::Ram,Ram)', 'NES_POKE_AD(Fds::Ram,Ram)'):
+        fds = replace(fds, accessor, 'RG_NES_FDS_HOT ' + accessor)
+    changes['NstFds.cpp'] = fds
+
 
 def prepare_rgb_output(source, changes):
     """Optional RGB raster output; the original indexed mode remains the default."""
@@ -204,14 +230,14 @@ def prepare_rgb_output(source, changes):
                   'Result PrepareRgbFrame(bool enable=true) throw();\n\t\t\tResult Blit(Output& output) throw();')
     changes['api/NstApiVideo.hpp'] = api
     api = (source / 'api/NstApiVideo.cpp').read_text()
-    api = replace(api, '#include "NstApiVideo.hpp"', '#include "NstApiVideo.hpp"\n#include "NstApiInput.hpp"\n#include "NstApiCartridge.hpp"')
+    api = replace(api, '#include "NstApiVideo.hpp"', '#include "NstApiVideo.hpp"\n#include "NstApiInput.hpp"\n#include "NstApiCartridge.hpp"\n#include "NstApiMachine.hpp"')
     anchor = 'Result Video::Blit(Output& output) throw()'
     api = replace(api, anchor, '''Result Video::PrepareRgbFrame(bool enable) throw()
         {
-            // Only tested cartridge families and ordinary pads may opt in.
+            // Tested cartridge families, FDS and ordinary pads may opt in.
             // Light sensors and auxiliary screen observers keep indexed pixels.
             const Cartridge::Profile* profile = Cartridge(emulator).GetProfile();
-            bool supported = false;
+            bool supported = Machine(emulator).Is(Machine::DISK);
             if (profile)
                 switch (profile->board.mapper)
                 {
