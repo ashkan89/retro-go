@@ -10,6 +10,7 @@
 #include <NstApiUser.hpp>
 #ifdef RG_NESTOPIA_PROFILE
 #include <NstMachine.hpp>
+#include <NstApiCartridge.hpp>
 #include <rg_nestopia_profile.hpp>
 #endif
 
@@ -473,6 +474,10 @@ void nes_nestopia_main(void)
     }
     if (machine.SetMode(machine.GetDesiredMode()) < Nes::RESULT_OK)
         RG_PANIC("Nestopia: region configuration failed.");
+#ifdef RG_NESTOPIA_PROFILE
+    if (const auto *profile = Nes::Api::Cartridge(*activeEmulator).GetProfile())
+        printf("NES-MAPPER id=%u submapper=%u\n", unsigned(profile->board.mapper), unsigned(profile->board.subMapper));
+#endif
 
     Nes::Api::Video::RenderState renderState;
     renderState.width = 256;
@@ -613,7 +618,7 @@ void nes_nestopia_main(void)
                    (unsigned long long)(RetroGo::ppuCycles / profileFrames),
                    (unsigned long long)(RetroGo::apuWalkCycles / profileFrames),
                    (unsigned long long)(RetroGo::apuSampleCycles / profileFrames),
-                   RetroGo::tileBatches / profileFrames);
+                   unsigned(RetroGo::tileBatches / profileFrames));
             RetroGo::ppuCycles = RetroGo::apuWalkCycles = RetroGo::apuSampleCycles = 0;
             RetroGo::tileBatches = 0;
             profileStart = rg_system_timer();

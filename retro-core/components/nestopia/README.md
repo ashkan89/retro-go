@@ -30,19 +30,49 @@ core for comparisons. The normal build enables the port on both P4 and S3.
   callback table and cartridge data can remain in PSRAM.
 - Direct opcode dispatch uses the existing instruction implementations. The
   common no-DMA check is inline; DMA transfers, interrupt timing and bus effects
-  keep their original implementation.
+  keep their original implementation. P4 places the dispatcher, common opcode
+  handlers, addressing helpers and standard memory callbacks in SRAM.
 - Sprite X counters use a shared visible-dot clock and per-sprite deadlines.
   This avoids decrementing every pending sprite on every pixel. Rendering-off
   advances X timing while preserving frozen sprite shifters, including partial
   fetches. The audio mixer, resampler and filters retain their original math.
 - Complete tile spans batch private sprite shifters while preserving the
-  original background fetch, active OAM evaluation, status and pixel-write order.
-  Cartridge address/scanline hooks and custom PPU accessors retain scalar
-  execution. Verified standard fetches read the same mapped memory directly.
+  original background fetch and active OAM evaluation sequence.
+  Cartridge address/scanline hooks and custom PPU accessors use a second tile
+  specialization which calls the original bus operations at their original
+  dots. Verified standard fetches read the same mapped memory directly. The
+  known MMC3 IRQ-only address callback can use those direct reads as well;
+  replacing an address hook clears that permission. Only A12 transitions need
+  notification for that timer. Other address callbacks retain every fetch.
   Batches stop at CPU access boundaries, the dot-64 OAM reset and the final
   special sprite-zero tile. Secondary-OAM clearing and completed evaluation
   combine private writes inside these spans, preserving every observable latch
   and address value. Active evaluation retains its original dot sequence.
+  This removes the old callback exclusion for MMC3 and its derivatives,
+  MMC2/MMC4 latches, MMC5 graphics, JY Company, Oeka Kids and Nanjing boards.
+  Scanline hooks remain outside the batched visible spans, in the scheduler.
+- With standard accessors and either no callback or the known IRQ-only callback,
+  pixel composition groups eight pixels after the tile's bus operations. Those
+  callbacks cannot observe intermediate pixel stores or sprite-zero status.
+  CPU accesses still stop the scheduler at their original dot, and arbitrary
+  mapper callbacks retain the scalar pixel/status sequence. Dot-255 handling
+  remains in the original scheduler. The inner tile function is explicitly in
+  SRAM on P4 and forced inline into its SRAM parent on S3; marking only the outer
+  function had left compiler-generated inner functions in cached memory.
+- MMC3 synchronization uses conservative IRQ bounds to avoid entering the PPU
+  after every CPU instruction. Disabled IRQs, remaining counter edges and the
+  current background fetch pattern determine when synchronization is needed.
+  Low-table fetches cannot raise A12 before sprite fetching. High-table fetches
+  can remain rejected by the existing hold filter throughout a background run.
+  CPU PPU/mapper accesses still synchronize before changing registers. The
+  scheduler stops deferral at scanline boundaries, preserving pre-render frame
+  shortening and frame-end NMI/audio ordering. Original bus callbacks and IRQ
+  timestamps remain in use; other timer unit types retain their original hook.
+- Cartridge detection and factory functions are marked cold so their large
+  switches compile compactly. Runtime mapper read/write handlers retain their
+  normal optimization. This makes room for the second tile specialization in
+  existing devices' smaller emulator partitions.
+  The iNES parser also compiles for size, outside runtime emulation.
 - Aligned unfiltered RGB conversion groups four palette lookups and output
   writes, reducing narrow PSRAM stores without changing pixel values.
 - Asynchronous display targets use one source framebuffer and convert only
@@ -61,7 +91,8 @@ On P4, the cold FDS BIOS uses external BSS to
 leave executable SRAM for these paths.
 
 Enable `-D RG_NESTOPIA_PROFILE=ON` with `idf.py` for `NES-MEM`, `NES-ROM`,
-`NES-PERF` and `NES-CORE` serial records. The latter reports CPU cycles spent
+`NES-MAPPER`, `NES-PERF` and `NES-CORE` serial records. The mapper record reports
+the loaded cartridge's mapper/submapper IDs. The latter reports CPU cycles spent
 inside PPU execution, APU transition integration and audio sample processing.
 These counters have overhead and are disabled in normal builds. A 300-frame
 window reports emulated, converted and submitted frame rates separately;
@@ -127,16 +158,31 @@ python tools/test_nestopia.py --cxx c++ --upstream --artifacts .cache/nes-refere
 python tools/test_nestopia.py --cxx c++ --artifacts .cache/nes-port --reference .cache/nes-reference
 ```
 
-The additional 7,680 generated-ROM frames exercise PAL/NTSC backgrounds, sprites,
+The additional 57,600 generated-ROM frames exercise PAL/NTSC backgrounds, sprites,
 emphasis, NMI, OAM/DMC DMA, both controllers, save-state reloads, all base audio
 channels, rapid rendering toggles during visible pixels and sprite fetches,
 OAM latch-read checksums, all five decoder presets, and crowded sprites with
 both the eight-sprite limit and unlimited sprites.
-NROM/UxROM/CNROM/MMC3 cases also exercise PRG/CHR bank changes and MMC3 IRQ
-state, covering both the batched path and cartridge-callback scalar fallback.
-Frame/audio fingerprints and final state bytes must match the original core.
+The real mapper IDs are 0, 2, 3, 4, 5, 9, 10, 64, 90, 96, 118, 119, 163, 165
+and 209, covering standard fetches, A12 IRQs, CHR latches, MMC5 custom graphics,
+nametable-driven banking and scanline hooks. NROM/UxROM/CNROM/MMC3 cases also
+exercise PRG/CHR bank changes and MMC3 IRQ state. Another 15 scenarios exercise
+every combination of address-line, CHR, nametable and scanline callbacks,
+recording callback order, addresses and dot timestamps while changing banks
+inside callbacks. Frame/audio fingerprints, final state bytes and callback trace
+digests must match the original core. This covers callback mechanisms, not
+every supported mapper's register logic or every commercial game.
+Both cores render two warm-up frames first: upstream does not initialize the
+background shift pixels at power-on, so the first NTSC visible frame can depend
+on prior heap contents. A second allocation pattern checks the same post-boot
+fingerprints.
 The runner explicitly enables assertions even when Zig defines `NDEBUG`.
-`tools/test_nestopia_tiles.py` additionally compares the actual scalar and
-batched sprite implementations across 131,072 randomized 8-184-dot cases.
+`tools/test_nestopia_tiles.py` additionally performs 262,144 comparisons of the
+actual scalar, batched-sprite and eight-pixel implementations over 8-184-dot spans,
+including clipping changes, private shift state and clock wrap.
+`tools/test_nestopia_irq_bounds.py` compares the actual original and bounded
+A12 timers across 600,000 instruction boundaries. It checks IRQ timestamps and
+delivery boundaries with NTSC/PAL clocks, hold filters, delayed IRQs, register
+writes, irregular address bursts and both background pattern layouts.
 `tools/test_nestopia_video.py` compares 256 RGB conversions against upstream,
 covering both output depths, buffer alignment, padded rows and buffer guards.

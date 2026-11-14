@@ -31,7 +31,11 @@ jobs:
       - run: python tools/test_msx_timing.py --cc cc
       - run: python tools/test_gba_rom_signature.py --cc cc
       - run: python tools/test_nes_timing.py --cc cc
-      - run: python tools/test_nestopia.py --cxx c++
+      - run: |
+          python tools/test_nestopia.py --cxx c++ --upstream --artifacts /tmp/nestopia-reference
+          python tools/test_nestopia.py --cxx c++ --artifacts /tmp/nestopia-port --reference /tmp/nestopia-reference
+          python tools/test_nestopia_tiles.py --cxx c++
+          python tools/test_nestopia_irq_bounds.py --cxx c++
       - run: python tools/test_multiplayer.py --cxx c++
       - run: python tools/test_sd_assets.py --cxx c++
       - run: python tools/test_webui.py --cc cc

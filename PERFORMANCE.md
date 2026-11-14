@@ -1,5 +1,118 @@
 # ESP32-S3 performance audit
 
+## Nestopia mapper callback paths (November 14, 2026)
+
+Tournament Fighters on the COM3 P4 exposed an exclusion in the earlier tile
+optimization: any cartridge PPU callback forced scalar execution. Eight live
+300-frame baseline windows recorded 39.93 median emulated/submitted FPS,
+39.24-40.56 FPS range, and 23,507 microseconds median execution time. Detailed
+core profiling was disabled, so the zero `NES-CORE` counters in these captures
+do not measure execution-path coverage. This is a live-game comparison, not
+a deterministic input replay.
+Both reported slow games identify as mapper 4 (MMC3). Contra identifies as
+mapper 2 and provides a check of the earlier path without an A12 timer.
+
+Complete callback tiles alone did not produce a useful Tournament Fighters
+speedup. A subsequent partial-tile sprite attempt measured around 35 FPS and
+was discarded. Detailed profiling put approximately 17-18 milliseconds of each
+23-millisecond frame inside the PPU; audio integration/sampling was under one
+millisecond.
+
+Earlier whole-scheduler direct reads, a general A12 notification filter and a
+scanline sprite cache were measured without a useful game speedup and discarded.
+
+The retained implementation defers MMC3's per-instruction PPU synchronization
+while an IRQ cannot occur. Bounds use IRQ enable/count state, the filter's hold
+interval and the current background fetch pattern. Low-table fetches cannot
+raise A12 before sprite fetching; repeated high-table edges remain rejected
+throughout a background run when the hold interval exceeds eight dots and the
+next edge is already blocked. IRQ clocks and delivery boundaries are retained.
+CPU PPU/mapper accesses synchronize before register changes, and
+deferral stops at scanline boundaries. Other timer unit types use the original
+instruction hook.
+
+An initial version delayed frame-end NMI scheduling until after the CPU's final
+audio update. It matched video but changed audio filter state, so it was never
+flashed. The scanline boundary and pre-render guards fix that ordering, and the
+full video/audio/state comparison now passes.
+
+Complete callback tiles retain their original fetches. Verified standard
+accessors can additionally use direct reads with the known MMC3 IRQ-only
+address callback; only A12 transitions need notification to that timer. Replacing
+the address hook clears this permission. Other callbacks keep every notification.
+With standard accessors and no arbitrary callback, eight-pixel composition
+commits pixels and sprite-zero status after that tile's bus operations. These
+callbacks cannot observe the intermediate writes; CPU access boundaries and the
+special final tile keep their original handling. Empty sprite tiles use a
+background-only loop.
+
+ELF inspection found that marking the outer tile function for SRAM had left
+compiler-generated inner functions in cached memory. Their P4 sections are now
+explicit; S3 forces them inline into the SRAM parent to avoid a template section
+conflict. P4 also places the CPU dispatcher, common handlers, addressing helpers
+and small memory callbacks in executable SRAM. The machine and PPU working
+screen still reside in internal SRAM on the tested P4; the larger RGB surface
+can fall back to PSRAM.
+
+Final profiling uses normal input and the 240x224 viewport, with frontend
+counters enabled and detailed core scopes disabled. Startup/menu windows whose
+converted/submitted counts differ are excluded. Captures are live gameplay,
+not an identical-input replay; small differences between intermediate builds
+are not established speedups.
+
+| Game | 300-frame windows | Median emulated/submitted FPS | Range | Median execution |
+|---|---:|---:|---:|---:|
+| Tournament Fighters, previous speedup | 8 | 39.93 | 39.24-40.56 | 23,507 us |
+| Tournament Fighters, mapper follow-up | 24 | 52.71 | 48.07-57.22 | 17,409 us |
+| Super Mario Bros. 3, mapper follow-up | 12 | 50.76 | 49.33-52.51 | 17,991 us |
+| Contra, mapper follow-up | 3 | 60.16 | 58.85-60.19 | 14,501 us |
+
+Tournament Fighters' median FPS increased approximately 32%. Mario 3's earlier
+profiling iteration measured about 36-37 FPS; that is not an untouched-release
+baseline. The later eight-pixel iteration measured 49.46 FPS before the final
+CPU/memory placement and background-loop changes. A short Sprite limit ON trial
+did not establish locked 60 FPS. **Tournament Fighters and Mario 3 still fall
+below 60 in heavy scenes.** No universal full-speed claim is made.
+
+All callback installation sites in the pinned core were reviewed:
+
+| Mechanism | Affected board implementations | Execution |
+|---|---|---|
+| A12 address IRQ timer | MMC3/derivatives, RAMBO-1, JY Company, Future Media, TF1201, Batlab SRRX, Dragon Ninja | MMC3 uses transition-only notifications with matching IRQ clocks; other units keep every fetch |
+| Nametable address banking | Bandai Oeka Kids | Original address callback before the fetch |
+| Custom CHR access | MMC2/MMC4, MMC5, JY Company, Waixing SH2, CNROM open bus | Original CHR accessor, including bank/latch side effects |
+| Custom nametable access | MMC5 | Original nametable accessor |
+| Visible/blank scanline hooks | MMC5, JY Company, Nanjing | Original scheduler hook outside the batched visible span |
+
+The native differential suite now checks 57,600 PAL/NTSC frames across 15 real
+mapper IDs and all 15 combinations of address, CHR, nametable and scanline
+callbacks. Every video/audio fingerprint, final state, per-frame video digest,
+and callback trace digest matches the original pinned core. Callbacks change
+banks while recording their order, addresses and pixel-dot timestamps. A second
+execution of the previous callback-tile implementation also matched all 600
+state, trace and per-frame artifact files. The 262,144 scalar/batched/eight-pixel
+comparisons cover 8-184-dot spans, clipping changes, private shift state
+and clock wrap. The A12 scheduling unit checks 600,000 CPU instruction boundaries
+with identical IRQ clocks and delivery boundaries for NTSC/PAL, hold 0/8/16,
+delayed IRQs, register writes, irregular address bursts and both pattern layouts.
+The video comparison renders two warm-up frames before measuring: upstream
+leaves background shift bytes uninitialized at power-on. This avoids comparing
+allocator-dependent pixels in the first NTSC visible frame. A second heap
+allocation pattern produces identical post-boot fingerprints.
+This checks the shared mechanisms; it does not establish compatibility or
+full speed for every game and mapper register implementation.
+
+Cartridge detection/factory functions are marked cold, preserving normal
+optimization of runtime mapper handlers. Images are checked against the actual
+installed `retro-core` partition at `0x2d0000`, capacity `0x214000`, rather than
+the build's larger generic partition. The device partition table was read and
+the existing emulator partition was backed up. Only the emulator application
+was written; esptool verified its hash.
+The final P4 release is 2,156,512 bytes; profiling strings are absent. The S3
+N16R8 ILI9341 release also links (1,853,856 bytes). Only P4 hardware was measured.
+After the final app-only flash, release serial captures reached NES startup and
+the gameplay viewport without a panic. The upstream submodule is unchanged.
+
 ## Nestopia execution and presentation (November 13, 2026)
 
 The COM3 device is an ESP32-P4 revision 1.3, built for
@@ -18,7 +131,7 @@ substantial improvement, but **a locked 60 FPS in every scene is not established
 The current viewport is 240x224 on the 80 MHz SPI ST7796; larger scaled viewports
 have different display bandwidth costs. Normal firmware disables all profiling.
 The 2,177,680-byte P4 release was written only to the installed `retro-core`
-partition at `0x2d0000` (capacity `0x219000`). Esptool verified the flash contents;
+partition at `0x2d0000` (capacity `0x214000`). Esptool verified the flash contents;
 a 70-second release serial capture reached NES rendering without a panic.
 Profiling/replay strings are absent from the release image. The device's
 bootloader and partition table were preserved.
@@ -37,7 +150,8 @@ internal SRAM for the machine and PPU working screen, uses direct opcode
 dispatch, and inlines the no-DMA path. Sprite X counters use dot deadlines to
 avoid per-sprite counter writes at every pixel. Uninterrupted complete tile spans
 batch sprite shifters, OAM clearing and completed evaluation. Standard PPU fetches
-avoid indirect dispatch; cartridge callbacks retain scalar execution. The PPU
+avoid indirect dispatch; cartridge callbacks used scalar execution in that
+iteration. The mapper follow-up above removes this restriction. The PPU
 loop, tile path and sprite evaluation phases use IRAM on S3/P4; the cold P4 FDS
 BIOS uses external BSS to leave executable SRAM for these paths. Aligned RGB
 conversion groups output stores. The original mixer, resampler,

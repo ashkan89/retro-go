@@ -34,6 +34,7 @@ struct Ppu {
     struct { word palette[32], *target; } output;
     word buffer[256];
     void RenderPixel(); void PrepareSpriteTile(word*); void RenderTilePixel(word);
+    void RenderTilePixels(const word*, uint);
 };
 '''
 
@@ -74,21 +75,34 @@ int main() {
         batch.output.target=batch.buffer+4;
         batch.oam.visible=batch.oam.output+visible;
         word sprites[248]; batch.PrepareSpriteTile(sprites);
+        Ppu grouped=batch;
+        grouped.output.target=grouped.buffer+4;
+        grouped.oam.visible=grouped.oam.output+visible;
         for(uint dot=0;dot<dots;dot++) {
             scalar.RenderPixel(); batch.RenderTilePixel(sprites[dot]);
-            if(dot==7) scalar.oam.mask=batch.oam.mask=randomWord()&1?3:0;
+            if((dot&7)==7) {
+                const uint clock=grouped.cycles.hClock;
+                grouped.cycles.hClock+=8;
+                grouped.RenderTilePixels(sprites+dot-7,clock);
+            }
+            if(dot==7) scalar.oam.mask=batch.oam.mask=grouped.oam.mask=randomWord()&1?3:0;
         }
         batch.oam.clock+=dots;
+        grouped.oam.clock+=dots;
         assert(!memcmp(scalar.buffer,batch.buffer,sizeof(scalar.buffer)));
+        assert(!memcmp(scalar.buffer,grouped.buffer,sizeof(scalar.buffer)));
         assert(scalar.regs.status==batch.regs.status);
+        assert(scalar.regs.status==grouped.regs.status);
         assert(scalar.cycles.hClock==batch.cycles.hClock && scalar.oam.clock==batch.oam.clock);
+        assert(scalar.cycles.hClock==grouped.cycles.hClock && scalar.oam.clock==grouped.oam.clock);
         assert(scalar.output.target==scalar.buffer+4+dots && batch.output.target==batch.buffer+4+dots);
+        assert(grouped.output.target==grouped.buffer+4+dots);
         for(uint i=0;i<32;i++) {
             assert(scalar.oam.output[i].shift==batch.oam.output[i].shift);
             assert(scalar.oam.output[i].deadline==batch.oam.output[i].deadline);
         }
     }
-    puts("PASS: 131072 scalar/span comparisons (8-184 dots), 0-32 sprites, priority, changing clipping, transparency, sprite-zero and clock wrap");
+    puts("PASS: 262144 scalar/span and eight-pixel comparisons (8-184 dots), 0-32 sprites, priority, changing clipping, transparency, sprite-zero and clock wrap");
 }
 '''
 
@@ -107,7 +121,7 @@ def main():
         scalar = source[source.index('NST_FORCE_INLINE void Ppu::RenderPixel()'):
                         source.index('NST_SINGLE_CALL void Ppu::RenderPixel255()')]
         tile = (PORT / 'rg_nestopia_tiles.inc').read_text(encoding='utf-8')
-        tile = tile[:tile.index('RG_NES_PPU_HOT NST_NO_INLINE void Ppu::RenderTile()')]
+        tile = tile[:tile.index('template<bool Direct>')]
         path = temp / 'tiles.cpp'
         path.write_text(PRELUDE + scalar + tile + RUNNER, encoding='utf-8')
         command = [args.cxx] + (['c++'] if Path(args.cxx).stem == 'zig' else [])

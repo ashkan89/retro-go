@@ -42,6 +42,16 @@ register_component()
 # promotes to int before storing back to wchar_t. Match the native core build
 # and allow this safe conversion without changing the pinned submodule.
 rg_setup_compile_options(-O3 -fno-rtti -fexceptions -DNST_NO_ZLIB -Wno-error -Wno-narrowing)
+if(RG_NESTOPIA_PORT)
+    # iNES parsing runs during cartridge loading, outside emulation.
+    set_source_files_properties("${NESTOPIA_CORE}/NstCartridgeInes.cpp"
+        PROPERTIES COMPILE_OPTIONS "-Os")
+endif()
+if(RG_NESTOPIA_PORT AND CONFIG_IDF_TARGET_ESP32S3)
+    # Keep Xtensa literal pools with the template's IRAM COMDAT sections.
+    set_source_files_properties("${NESTOPIA_CORE}/NstPpu.cpp"
+        PROPERTIES COMPILE_OPTIONS "-mtext-section-literals")
+endif()
 if(RG_NESTOPIA_PROFILE AND RG_NESTOPIA_PORT)
     set_source_files_properties("${NESTOPIA_CORE}/rg_nestopia_profile.cpp"
         PROPERTIES COMPILE_DEFINITIONS RG_NESTOPIA_PROFILE=1)

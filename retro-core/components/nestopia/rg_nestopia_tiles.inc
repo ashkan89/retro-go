@@ -1,7 +1,8 @@
-// Exact execution of complete tiles with no intervening CPU access or
-// cartridge PPU callbacks. Background bus accesses and pixel/status updates
+// Exact execution of complete tiles with no intervening CPU access.
+// Background bus accesses, cartridge callbacks and pixel/status updates
 // retain their original dots. Private sprite shifters and idle evaluation work
-// are combined between observable CPU/cartridge accesses.
+// are combined between CPU accesses. Cartridge callbacks cannot inspect these
+// private shifters or secondary-OAM evaluation state through the PPU API.
 
 static inline uint SpriteBatchDots(uint clock, uint count)
 {
@@ -56,6 +57,43 @@ NST_FORCE_INLINE void Ppu::RenderTilePixel(word sprite)
     *output.target++ = output.palette[pixel];
 }
 
+NST_FORCE_INLINE void Ppu::RenderTilePixels(const word* sprites, uint clock)
+{
+    // Standard memory with no callback or the known IRQ-only callback cannot
+    // observe intermediate screen stores or sprite-zero status. Bus operations
+    // still execute at each original dot; compose this tile after those reads.
+    word* NST_RESTRICT target = output.target;
+    const word* NST_RESTRICT palette = output.palette;
+    const byte* NST_RESTRICT background = tiles.pixels;
+    const uint mask = tiles.mask;
+    const uint fine = scroll.xFine;
+    // Most tiles contain no opaque sprite pixels. Keep their composition
+    // branch-free rather than testing sprite priority and hit state per dot.
+    if (!oam.mask || !(sprites[0] | sprites[1] | sprites[2] | sprites[3] |
+                       sprites[4] | sprites[5] | sprites[6] | sprites[7]))
+    {
+        for (uint i=0; i<8; ++i)
+            target[i] = palette[background[(clock + fine + i) & 15] & mask];
+        output.target = target + 8;
+        return;
+    }
+    uint hit = 0;
+    for (uint i=0; i<8; ++i)
+    {
+        uint pixel = background[(clock + fine + i) & 15] & mask;
+        const uint sprite = sprites[i];
+        if (sprite)
+        {
+            if ((sprite & 0x80) && (pixel & 3)) hit = Regs::STATUS_SP_ZERO_HIT;
+            if (!(sprite & 0x40) || !(pixel & 3)) pixel = sprite & 0x1F;
+        }
+        target[i] = palette[pixel];
+    }
+    regs.status |= hit;
+    output.target = target + 8;
+}
+
+template<bool Direct>
 RG_NES_PPU_HOT NST_NO_INLINE void Ppu::RenderTile()
 {
     const uint dots = SpriteBatchDots(cycles.hClock, uint(cycles.count));
@@ -64,15 +102,40 @@ RG_NES_PPU_HOT NST_NO_INLINE void Ppu::RenderTile()
 #endif
     word sprites[184];
     PrepareSpriteTile(sprites);
-    const auto tile = [&](const word* sprite, bool evaluate) {
-        LoadTiles(); if (evaluate) { EvaluateSpritesEven(); } OpenNameTile(); RenderTilePixel(sprite[0]);
-        FetchNameTile(); if (evaluate) { EvaluateSpritesOdd(); } RenderTilePixel(sprite[1]);
-        if (evaluate) { EvaluateSpritesEven(); } OpenAttributeTile(); RenderTilePixel(sprite[2]);
-        FetchAttributeTile(); if (evaluate) { EvaluateSpritesOdd(); } RenderTilePixel(sprite[3]);
-        if (evaluate) { EvaluateSpritesEven(); } OpenPatternTile(io.pattern | 0x0); RenderTilePixel(sprite[4]);
-        FetchBgPattern0Tile(); if (evaluate) { EvaluateSpritesOdd(); } RenderTilePixel(sprite[5]);
-        if (evaluate) { EvaluateSpritesEven(); } OpenPatternTile(io.pattern | 0x8); RenderTilePixel(sprite[6]);
-        FetchBgPattern1Tile(); if (evaluate) { EvaluateSpritesOdd(); } scroll.ClockX(); RenderTilePixel(sprite[7]);
+    const auto tile = [&](const word* sprite, bool evaluate) RG_NES_TILE_INNER_HOT {
+        const uint clock = cycles.hClock;
+        const auto pixel = [&](word color) {
+            if (!Direct) RenderTilePixel(color);
+        };
+        // Select at compile time. The mapper path retains every original
+        // fetch and address-line notification, including its dot timestamp.
+        LoadTiles(); if (evaluate) { EvaluateSpritesEven(); }
+        if (Direct) OpenNameTile(); else OpenName();
+        pixel(sprite[0]);
+        if (Direct) FetchNameTile(); else FetchName();
+        if (evaluate) { EvaluateSpritesOdd(); } pixel(sprite[1]);
+        if (Direct) cycles.hClock = clock + 2;
+        if (evaluate) { EvaluateSpritesEven(); }
+        if (Direct) OpenAttributeTile(); else OpenAttribute();
+        pixel(sprite[2]);
+        if (Direct) FetchAttributeTile(); else FetchAttribute();
+        if (evaluate) { EvaluateSpritesOdd(); } pixel(sprite[3]);
+        if (Direct) cycles.hClock = clock + 4;
+        if (evaluate) { EvaluateSpritesEven(); }
+        if (Direct) OpenPatternTile(io.pattern | 0x0); else OpenPattern(io.pattern | 0x0);
+        pixel(sprite[4]);
+        if (Direct) FetchBgPattern0Tile(); else FetchBgPattern0();
+        if (evaluate) { EvaluateSpritesOdd(); } pixel(sprite[5]);
+        if (Direct) cycles.hClock = clock + 6;
+        if (evaluate) { EvaluateSpritesEven(); }
+        if (Direct) OpenPatternTile(io.pattern | 0x8); else OpenPattern(io.pattern | 0x8);
+        pixel(sprite[6]);
+        if (Direct) FetchBgPattern1Tile(); else FetchBgPattern1();
+        if (evaluate) { EvaluateSpritesOdd(); } scroll.ClockX(); pixel(sprite[7]);
+        if (Direct) {
+            cycles.hClock = clock + 8;
+            RenderTilePixels(sprite, clock);
+        }
         tiles.mask = tiles.show[0];
         oam.mask = oam.show[0];
     };

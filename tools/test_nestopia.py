@@ -1,7 +1,8 @@
 """Build the pinned Nestopia core and exercise the real adapter's ROM/save IO.
 
 Requires a native C++ compiler (GCC/Clang, or --cxx /path/to/zig).
-Uses generated NROM/UxROM/CNROM/MMC3 ROMs; no copyrighted game data or hardware required.
+Uses generated ROMs for 15 mapper IDs and all PPU callback combinations;
+no copyrighted game data or hardware required.
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -22,6 +23,7 @@ PRELUDE = r'''
 #include <NstApiSound.hpp>
 #include <NstApiUser.hpp>
 #include <NstApiVideo.hpp>
+#include <NstMachine.hpp>
 #include <rg_input.h>
 #include <algorithm>
 #ifdef NDEBUG
@@ -56,6 +58,50 @@ static bool rg_storage_unzip_file(const char *, const char *, void **data, size_
 '''
 
 DIFFERENTIAL = r'''
+// Record the ordering, addresses and exact dot timestamps of all PPU hook
+// types, while changing mapped data inside callbacks as real mappers do.
+struct PpuProbe {
+    Nes::Core::Ppu &ppu;
+    uint64_t digest=14695981039346656037ULL;
+    unsigned lines=0, names=0, patterns=0, active=0, blank=0;
+    explicit PpuProbe(Nes::Core::Ppu &p): ppu(p) {}
+    void event(unsigned kind, unsigned address, unsigned cycle=0) {
+        for (unsigned value : {kind,address,cycle,ppu.GetPixelCycles()}) {
+            for(unsigned i=0;i<4;i++) { digest^=(value>>(8*i))&255; digest*=1099511628211ULL; }
+        }
+    }
+    static void NST_REGCALL line(void *p, Nes::Core::Address a, Nes::Core::Cycle c) {
+        auto &s=*static_cast<PpuProbe*>(p); ++s.lines; s.event(1,a,c);
+        s.ppu.GetChrMem().SwapBank<Nes::Core::SIZE_4K>(0,(a>>8)&1);
+    }
+    static Nes::Core::Data NST_REGCALL pattern(void *p, Nes::Core::Address a) {
+        auto &s=*static_cast<PpuProbe*>(p); ++s.patterns; s.event(2,a);
+        auto &chr=s.ppu.GetChrMem(); const auto value=chr.Peek(a);
+        if((a&0xff8)==0xfd8 || (a&0xff8)==0xfe8)
+            chr.SwapBank<Nes::Core::SIZE_4K>(a&0x1000,(a>>4)&1);
+        return value;
+    }
+    template<unsigned Bank>
+    static Nes::Core::Data NST_REGCALL name(void *p, Nes::Core::Address a) {
+        auto &s=*static_cast<PpuProbe*>(p); ++s.names; s.event(3,a|Bank*1024);
+        return s.ppu.GetNmtMem()[Bank][a];
+    }
+    static void NST_REGCALL hactive(void *p) {
+        auto &s=*static_cast<PpuProbe*>(p); ++s.active; s.event(4,0);
+    }
+    static void NST_REGCALL hblank(void *p) {
+        auto &s=*static_cast<PpuProbe*>(p); ++s.blank; s.event(5,0);
+    }
+    void install(unsigned mask) {
+        if(mask&1) ppu.SetAddressLineHook(Nes::Core::Io::Line(this,&line));
+        if(mask&2) ppu.GetChrMem().SetAccessor(this,&pattern);
+        if(mask&4) ppu.GetNmtMem().SetAccessors(this,&name<0>,&name<1>,&name<2>,&name<3>);
+        if(mask&8) {
+            ppu.SetHActiveHook(Nes::Core::Hook(this,&hactive));
+            ppu.SetHBlankHook(Nes::Core::Hook(this,&hblank));
+        }
+    }
+};
 // Exercise real background/sprite rendering, palette emphasis, NMI, OAM/DMC
 // DMA, both controllers and all base audio channels with an original test ROM.
 static void performance_regression() {
@@ -64,12 +110,17 @@ static void performance_regression() {
         auto bytes = static_cast<const unsigned char *>(data);
         while (size--) { digest ^= *bytes++; digest *= 1099511628211ULL; }
     };
-    for (unsigned mapper : {0U,2U,3U,4U}) for (bool pal : {false, true}) for (unsigned scene=0;scene<4;scene++) {
+    // Real callback boards, plus every combination of the four callback kinds.
+    for (unsigned scenario : {0U,2U,3U,4U,5U,9U,10U,64U,90U,96U,118U,119U,163U,165U,209U,
+                              257U,258U,259U,260U,261U,262U,263U,264U,265U,266U,267U,268U,269U,270U,271U})
+    for (bool pal : {false, true}) for (unsigned scene=0;scene<4;scene++) {
+        const unsigned mapper=scenario<256?scenario:0, hooks=scenario<256?0:scenario-256;
+        fprintf(stderr,"Mapper scenario %u %s scene %u\n",scenario,pal?"PAL":"NTSC",scene);
         const bool toggleRendering=scene==1;
         const unsigned prgSize=mapper?32768:16384, chrSize=mapper?16384:8192;
         std::string image(16 + prgSize + chrSize, '\0');
         memcpy(&image[0], "NES\x1a", 4); image[4]=prgSize/16384; image[5]=chrSize/8192;
-        image[6]=(mapper<<4)|2; image[9]=pal;
+        image[6]=(mapper<<4)|2; image[7]=mapper&0xf0; image[9]=pal;
         if(mapper) std::fill(image.begin()+16,image.begin()+16+prgSize,char(0xff));
         std::vector<unsigned char> code;
         auto emit = [&](std::initializer_list<unsigned char> bytes) { code.insert(code.end(),bytes); };
@@ -79,6 +130,16 @@ static void performance_regression() {
         auto branch = [&](unsigned op, size_t label) { imm(op,unsigned(label-code.size()-2)); };
         emit({0x78,0xd8}); imm(0xa2,0xff); emit({0x9a});
         write(0x2000,0); write(0x2001,0); write(0x4017,0x40);
+        if(mapper==5) {
+            write(0x5102,2); write(0x5103,1); write(0x5113,0);
+            write(0x5105,0x44); // Real MMC5 nametable accessors.
+            write(0x5104,scene&1); // Normal and extended-attribute modes.
+            write(0x5200,scene>=2?0x90:0); // Split-screen custom fetches.
+            write(0x5203,17); write(0x5204,0x80);
+        }
+        if(mapper==9 || mapper==10) {
+            write(0xb000,0); write(0xc000,1); write(0xd000,2); write(0xe000,3);
+        }
         size_t wait=code.size(); absolute(0x2c,0x2002); branch(0x10,wait);
         write(0x2006,0x3f); write(0x2006,0); imm(0xa2,0);
         size_t colors=code.size(); emit({0x8a}); absolute(0x8d,0x2007); emit({0xe8}); imm(0xe0,32); branch(0xd0,colors);
@@ -98,6 +159,7 @@ static void performance_regression() {
         write(0x400c,0x3f); write(0x400e,0x06); write(0x400f,0x08);
         write(0x4010,0x4f); write(0x4012,0x00); write(0x4013,0x01); write(0x4015,0x1f);
         write(0x2005,0); write(0x2005,0); write(0x2000,0x80); write(0x2001,0x1e);
+        if(mapper==4) emit({0x58}); // Accept real MMC3 IRQs, not just count edges.
         unsigned loopAddress=0xc000+code.size();
         if(toggleRendering) {
             // Repeatedly interrupt visible pixels and sprite fetches. This
@@ -114,18 +176,32 @@ static void performance_regression() {
         emit({0xa5,0x00}); absolute(0x8d,0x2005); write(0x2005,0);
         emit({0xa5,0x00}); imm(0x29,0xe0); imm(0x09,0x1e); absolute(0x8d,0x2001);
         emit({0xa5,0x00}); absolute(0x8d,0x4002);
-        if(mapper) {
+        if(mapper==2 || mapper==3 || mapper==4) {
             if(mapper==4) write(0x8000,6);
             emit({0xa5,0x00}); imm(0x29,1); absolute(0x8d,mapper==4?0x8001:0x8000);
             absolute(0xad,0x8000); absolute(0x8d,0x6004);
-            if(mapper==4) { write(0xc000,17); write(0xc001,0); write(0xe001,0); }
+            if(mapper==4) {
+                // Exercise both pattern tables, latch 0/1 as well as longer
+                // IRQ distances, and enabled/disabled periods every frame.
+                emit({0xa5,0x00}); imm(0x29,1);
+                emit({0x0a,0x0a,0x0a,0x0a}); imm(0x09,0x88); absolute(0x8d,0x2000);
+                emit({0xa5,0x00}); imm(0x29,31); absolute(0x8d,0xc000);
+                write(0xc001,0); write(0xe001,0);
+            }
         }
         write(0x4016,1); write(0x4016,0);
         absolute(0xad,0x4016); absolute(0x8d,0x6000); absolute(0xad,0x4017); absolute(0x8d,0x6001);
         emit({0x68,0xaa,0x68,0x40});
-        memcpy(&image[16+prgSize-16384],code.data(),code.size());
+        unsigned irq=0xc000+code.size();
+        emit({0x48}); absolute(0xee,0x6005); write(0xe000,0);
+        emit({0x68,0x40});
+        // Identical code/vectors in each bank keeps this fixture executable
+        // across each board's power-on PRG mapping and bus-conflict writes.
+        for(unsigned offset=0;offset<prgSize;offset+=8192) {
+            memcpy(&image[16+offset],code.data(),code.size());
+            for(unsigned i=0;i<3;i++) { unsigned address=i==1?0xc000:(i==2 && mapper==4)?irq:nmi; image[16+offset+8192-6+i*2]=char(address); image[16+offset+8192-5+i*2]=char(address>>8); }
+        }
         for(unsigned i=0;i<chrSize;i++) image[16+prgSize+i]=char((i*13)^(i>>3)^(i>>13)*0x5a);
-        for(unsigned i=0;i<3;i++) { unsigned address=i==1?0xc000:nmi; image[16+prgSize-6+i*2]=char(address); image[16+prgSize-5+i*2]=char(address>>8); }
         Nes::Api::Emulator emulator; Nes::Api::Machine machine(emulator);
         Nes::Api::User::fileIoCallback.Unset();
         MemoryStreamBuffer buffer(image.data(),image.size()); std::istream input(&buffer);
@@ -140,8 +216,20 @@ static void performance_regression() {
         assert(Nes::Api::Input(emulator).AutoSelectControllers()>=0);
         assert(Nes::Api::Sound(emulator).SetSampleRate(32000)>=0);
         assert(machine.Power(true)>=0);
+        PpuProbe probe(static_cast<Nes::Core::Machine&>(emulator).ppu);
+        probe.install(hooks);
         std::vector<uint16_t> pixels(256*240); int16_t pcm[641];
         Nes::Core::Input::Controllers pads;
+        // Upstream leaves the background shift pixels uninitialized at power
+        // on. The first NTSC visible frame can expose those heap bytes before
+        // any fetch reloads them. Compare defined rendering after two warm-up
+        // frames, with the same callbacks and audio active in both cores.
+        pads.pad[0].buttons=pads.pad[1].buttons=0;
+        for(unsigned warmup=0;warmup<2;warmup++) {
+            Nes::Core::Sound::Output audio(pcm,641);
+            assert(emulator.Execute(nullptr,&audio,&pads)>=0);
+        }
+        std::vector<uint64_t> frameHashes;
         for(unsigned frame=0;frame<240;frame++) {
             assert(video.SetDecoder(Nes::Api::Video::Decoder(
                 static_cast<Nes::Api::Video::DecoderPreset>((frame/48)%5)))>=0);
@@ -156,13 +244,25 @@ static void performance_regression() {
 #endif
             hash(audioHash,pcm,audio.length[0]*sizeof(pcm[0]));
             if(frame%3) hash(videoHash,pixels.data(),pixels.size()*sizeof(pixels[0]));
-            if(frame==119) { std::stringstream saved; assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0); assert(machine.LoadState(saved)>=0); }
+            uint64_t frameHash=14695981039346656037ULL;
+            if(frame%3) hash(frameHash,pixels.data(),pixels.size()*sizeof(pixels[0]));
+            frameHashes.push_back(frameHash);
+            if(frame==119) { std::stringstream saved; assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0); assert(machine.LoadState(saved)>=0); probe.install(hooks); }
         }
         std::stringstream saved; assert(machine.SaveState(saved,Nes::Api::Machine::NO_COMPRESSION)>=0);
         std::string bytes=saved.str(); hash(stateHash,bytes.data(),bytes.size());
         std::string name=std::string(pal?"pal":"ntsc")+(scene==3?"-unlimited":scene==2?"-crowded":toggleRendering?"-toggle":"");
-        if(mapper) name+="-mapper"+std::to_string(mapper);
+        if(scenario) name+="-mapper"+std::to_string(scenario);
+        if(hooks) {
+            assert(!(hooks&1) || probe.lines>1000);
+            assert(!(hooks&2) || probe.patterns>1000);
+            assert(!(hooks&4) || probe.names>1000);
+            assert(!(hooks&8) || (probe.active>100 && probe.blank>100));
+            hash(stateHash,&probe.digest,sizeof(probe.digest));
+            std::ofstream(name+".trace",std::ios::binary).write((const char*)&probe.digest,sizeof(probe.digest));
+        }
         std::ofstream(name+".state",std::ios::binary).write(bytes.data(),bytes.size());
+        std::ofstream(name+".frames",std::ios::binary).write((const char*)frameHashes.data(),frameHashes.size()*sizeof(frameHashes[0]));
         std::ofstream(name+".video",std::ios::binary).write((const char*)pixels.data(),pixels.size()*2);
     }
     printf("Video/audio/state fingerprints: %016llx %016llx %016llx\n",
@@ -319,7 +419,7 @@ int main() {
         subprocess.run(command + ["-std=c++11", "-fshort-wchar", "-Werror=narrowing"] + production_options +
                        ["-I" + str(core), str(wide_test), "-o", str(wide_executable)], check=True)
         subprocess.run([str(wide_executable)], check=True)
-        command += ["-std=c++11", "-O1", "-DNST_NO_ZLIB", "-fno-rtti", "-Wno-narrowing", "-I" + str(CORE),
+        command += ["-std=c++11", "-O1", "-UNDEBUG", "-DNST_NO_ZLIB", "-fno-rtti", "-Wno-narrowing", "-I" + str(CORE),
                     "-I" + str(core / "api"), "-I" + str(ROOT / "components/retro-go")]
         command = [arg.replace("-I" + str(CORE), "-I" + str(core)) for arg in command]
         sources = [source] + list(core.rglob("*.cpp"))
@@ -350,17 +450,22 @@ int main() {
         if args.artifacts:
             run_dir = args.artifacts.resolve()
             run_dir.mkdir(parents=True, exist_ok=True)
-        result = subprocess.run([str(executable)], cwd=run_dir, check=True, capture_output=True, text=True)
+        result = subprocess.run([str(executable)], cwd=run_dir, capture_output=True, text=True)
+        if result.returncode:
+            print(result.stdout, end='')
+            print(result.stderr, end='')
+            result.check_returncode()
         print(result.stdout, end='')
         fingerprint = re.search(r'Video/audio/state fingerprints: ([0-9a-f ]+)', result.stdout).group(1).strip()
         if args.reference:
             assert fingerprint == (args.reference / 'fingerprints.txt').read_text().strip(), 'Upstream frame fingerprints differ'
-            for path in run_dir.glob('*.state'):
-                assert path.read_bytes() == (args.reference / path.name).read_bytes(), f'State differs: {path.name}'
+            for pattern in ('*.state', '*.trace', '*.frames'):
+                for path in run_dir.glob(pattern):
+                    assert path.read_bytes() == (args.reference / path.name).read_bytes(), f'State/trace differs: {path.name}'
             print('PASS: every rendered frame and audio sample, plus final save states, match upstream')
         if args.artifacts:
             (run_dir / 'fingerprints.txt').write_text(fingerprint)
-    print("PASS: production 16-bit wchar_t options, ZIP/PAL/NTSC ROMs, 2400 audio guard frames, 7680 video/audio stress frames (NROM/UxROM/CNROM/MMC3), states/battery IO, independent NES ports")
+    print("PASS: production 16-bit wchar_t options, ZIP/PAL/NTSC ROMs, 2400 audio guard frames, 57600 video/audio stress frames (15 mapper IDs + 15 callback combinations), callback traces, states/battery IO, independent NES ports")
 
 
 if __name__ == "__main__":
