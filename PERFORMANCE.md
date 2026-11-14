@@ -46,14 +46,41 @@ installed SDK's [ESP-IDF 5.5.5 I2S documentation](https://docs.espressif.com/pro
 The user reported improved jitter on the first RGB build; heavy-scene slowdown
 still requires further optimization.
 
-The latest combined PRG/OAM test image is 2,163,216 bytes and is app-only flashed
-and hash-verified on COM3. Its new live-game FPS measurement is pending. Both
-RGB and indexed comparisons pass; direct PRG pages remain enabled after the
-test's save-state reload. The normal P4 release is built with profiling disabled
-(2,160,688 bytes), fits the installed `0x214000`-byte partition, and is not yet
-installed while the gameplay measurement is pending. The final S3 release links
-at 1,858,416 bytes with its original CPU port layout. The upstream submodule and
-managed dependencies are unchanged.
+Live captures use Sprite limit ON, frameskip Off/Auto and the 240x224 viewport.
+The first two 300-frame windows after each ROM load are excluded, as are windows
+whose emulated, rendered and submitted rates differ. Both mapper-4 games report
+all 128 direct PRG pages active. These are different live scenes, without an
+identical-input replay, so small differences cannot isolate individual changes.
+
+| Game / capture | Steady 300-frame windows | Median emulated/submitted FPS | Range |
+|---|---:|---:|---:|
+| Mario 3, first two level runs | 27 | 58.71 | 58.18-60.24 |
+| Tournament Fighters | 29 | 60.22 | 56.54-60.58 |
+| Mario 3, later capture | 250 | 60.22 | 60.09-60.34 |
+
+The later Mario capture does not establish full speed in every level. The user
+confirmed an active Tournament Fighters fight and good graphics/audio in both
+games. Full-speed windows often have zero late audio-delivery gaps; slower
+windows still produce fewer samples than the output consumes. **Heavy scenes
+can still fall below 60 FPS.** An incidental FDS capture remained around 55 FPS;
+disk images retain indexed rendering and do not use the direct PRG path.
+
+A final copy experiment used a cache-line-aligned RGB destination and the
+installed SDK's [AXI GDMA memory-copy API](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/system/async_memcpy.html).
+It poisoned and flushed the destination before each DMA trial, checked every
+byte and included submission/completion waits. At 400 MHz, CPU copy plus cache
+writeback averaged 270,094 cycles (~675 us), versus 290,948 cycles (~727 us) for
+DMA. DMA verification passed, but the trial did not improve the live Mario
+capture (58.6 median FPS). Both the DMA and framebuffer-allocation experiments
+were removed; the tested PRG/OAM/RGB sources were restored byte-for-byte.
+
+The normal P4 release is app-only flashed and hash-verified on COM3, with
+profiling disabled (2,160,688 bytes). It fits the installed `0x214000`-byte
+partition. The final S3 release links at 1,858,416 bytes with its original CPU
+port layout. The user confirmed game startup, graphics and sound on the installed
+normal release. A local rebuild after the source commit is 2,160,704 bytes, also
+within the installed partition, with profiling disabled. The upstream submodule
+and managed dependencies are unchanged.
 
 ## Nestopia mapper callback paths (November 14, 2026)
 
