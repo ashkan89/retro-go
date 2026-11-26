@@ -176,15 +176,28 @@ int check_filter(int filter, int stereo) {
 '''
 
 DISPLAY_STUB = r'''
+typedef struct { int frameskip, frameskipValue; bool frameskipManual, frameskipDisplayOnly; float speed; } test_app_t;
+static test_app_t test_app;
+static test_app_t *app = &test_app;
 typedef struct { int width, height, stride, offset; } rg_surface_t;
 static rg_surface_t surface;
 static rg_surface_t *currentUpdate = &surface;
-static bool busy;
+static const rg_surface_t *borrowedUpdate;
+static bool busy, frame_copy;
 static int overscan, autocrop, display_calls;
+static unsigned display_flags;
 #define NES_SCREEN_WIDTH 256
 #define NES_SCREEN_HEIGHT 240
-static bool rg_display_sync(bool block) { return !busy; }
-static void rg_display_submit(const rg_surface_t *s, unsigned flags) { display_calls++; }
+enum { RG_DISPLAY_SUBMIT_BORROW = (1 << 0) };
+static bool rg_display_uses_frame_copy(void) { return frame_copy; }
+static bool rg_display_sync(bool block) {
+    if (block) busy = false;
+    return !busy;
+}
+static void rg_display_submit(const rg_surface_t *s, unsigned flags) {
+    display_calls++;
+    display_flags = flags;
+}
 '''
 
 DISPLAY_RUNNER = r'''
@@ -192,16 +205,29 @@ DISPLAY_RUNNER = r'''
 __declspec(dllexport)
 #endif
 int check_display(void) {
-    busy = true; display_calls = 0;
+    frame_copy = false; busy = true; display_calls = 0;
+    borrowedUpdate = NULL;
     blit_screen(pixels);
-    // A busy previous frame must not discard the next completed frame.
-    if (display_calls != 1) return 50;
+    // The regular submission path submits even while the previous frame is busy.
+    if (display_calls != 1 || display_flags || borrowedUpdate) return 50;
+
+    frame_copy = true;
+    blit_screen(pixels);
+    if (display_calls != 1 || !busy || borrowedUpdate) return 51;
     busy = false;
     blit_screen(pixels);
-    if (display_calls != 2) return 51;
+    if (display_calls != 2 || display_flags != RG_DISPLAY_SUBMIT_BORROW
+        || borrowedUpdate != currentUpdate) return 52;
+
     busy = true;
     blit_screen(NULL);
-    if (display_calls != 3) return 52;
+    if (display_calls != 3 || busy) return 54;
+    busy = true;
+    app->frameskipManual = true;
+    blit_screen(pixels);
+    if (display_calls != 4 || busy) return 55;
+    app->frameskipManual = false;
+    frame_copy = false;
     for (int skipFrames = 0; skipFrames <= 1; skipFrames++)
         for (int nsfPlayer = 0; nsfPlayer <= 1; nsfPlayer++)
             for (busy = false; ; busy = true) {
@@ -215,14 +241,11 @@ int check_display(void) {
 '''
 
 POLICY_STUB = r'''
-typedef struct { int frameskip, frameskipValue; bool frameskipManual, frameskipDisplayOnly; float speed; } test_app_t;
-static test_app_t test_app;
 static int policy_elapsed;
 static int rg_system_timer(void) { return policy_elapsed; }
 static void nsf_draw_overlay(void) {}
 POLICY_HELPERS
 static int frame_policy(int skipFrames, bool nsfPlayer) {
-    test_app_t *app = &test_app;
     int startTime = 0;
     bool drawFrame = !skipFrames && !nsfPlayer;
 '''
@@ -378,7 +401,8 @@ def main():
             for stereo in (0, 1):
                 result = dll.check_filter(filter_type, stereo)
                 assert result == 0, (filter_type, stereo, result)
-        assert dll.check_display() == 0
+        result = dll.check_display()
+        assert result == 0, ("display", result)
         assert dll.check_frame_policy() == 0
         assert dll.check_sprites() == 0
         if os.name == "nt":
