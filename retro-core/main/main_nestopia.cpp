@@ -19,9 +19,12 @@
 #include <cstring>
 #include <fstream>
 #include <istream>
+#include <memory>
 #include <new>
 #include <streambuf>
 #include <string>
+
+#include "nestopia_benchmark.hpp"
 
 static Nes::Api::Emulator *activeEmulator;
 static Nes::Api::Machine *activeMachine;
@@ -29,6 +32,9 @@ static Nes::Api::Video *activeVideo;
 static rg_app_t *app;
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
+#ifdef RG_NESTOPIA_RGB_OUTPUT_SUPPORTED
+static rg_surface_t coreUpdate;
+#endif
 static bool nsfPlayer;
 static int overscan = true;
 static int autocrop;
@@ -75,7 +81,7 @@ public:
 };
 
 // Keep native saves separate from Nofrendo's SRAM and state formats.
-static void NST_CALLBACK file_io(void *, Nes::Api::User::File &file)
+static void NST_CALLBACK file_io(void *benchmarkContext, Nes::Api::User::File &file)
 {
     using File = Nes::Api::User::File;
     const char *suffix;
@@ -91,8 +97,11 @@ static void NST_CALLBACK file_io(void *, Nes::Api::User::File &file)
         default: return;
     }
     char *base = rg_emu_get_path(RG_PATH_SAVE_SRAM, app->romPath);
-    std::string path = std::string(base) + suffix;
+    std::string path = base;
     free(base);
+    if (benchmarkContext)
+        path += ".bench-save";
+    path += suffix;
     if (save)
     {
         rg_storage_mkdir(rg_dirname(path.c_str()));
@@ -211,6 +220,7 @@ static bool load_state_handler(const char *filename)
     if (!activeMachine)
         return false;
 
+    rg_display_sync(true);
     std::ifstream input(filename, std::ios::in | std::ios::binary);
     if (!input)
     {
@@ -233,6 +243,7 @@ static bool reset_handler(bool hard)
 {
     if (!activeMachine)
         return false;
+    rg_display_sync(true);
     return activeMachine->Reset(hard) >= Nes::RESULT_OK;
 }
 
@@ -334,7 +345,7 @@ static rg_gui_event_t disk_side_cb(rg_gui_option_t *option, rg_gui_event_t event
     {
         const int count = fds.GetNumSides();
         side = event == RG_DIALOG_NEXT ? (side + 1) % count : (side + count - 1) % count;
-        if (fds.EjectDisk() < Nes::RESULT_OK || fds.InsertDisk(side / 2, side % 2) < Nes::RESULT_OK)
+        if (!nestopia_change_side(fds, side))
             RG_LOGE("Nestopia: could not change disk side.");
     }
     snprintf(option->value, 32, "%d %c", side / 2 + 1, 'A' + side % 2);
@@ -424,6 +435,13 @@ void nes_nestopia_main(void)
     handlers.options = &options_handler;
 
     app = rg_system_reinit(AUDIO_SAMPLE_RATE, &handlers, NULL);
+    std::unique_ptr<NestopiaBenchmark> benchmark;
+    if (!rg_extension_match(app->romPath, "nsf|nsfe") &&
+        rg_storage_exists((std::string(app->romPath) + ".bench").c_str()))
+    {
+        benchmark.reset(new NestopiaBenchmark);
+        benchmark->open(app->romPath);
+    }
     overscan = rg_settings_get_number(NS_APP, SETTING_OVERSCAN, 1);
     autocrop = rg_settings_get_number(NS_APP, SETTING_AUTOCROP, 0);
     palette = rg_settings_get_number(NS_APP, SETTING_PALETTE, 0);
@@ -461,24 +479,33 @@ void nes_nestopia_main(void)
     Nes::Api::Video video(*activeEmulator);
     activeMachine = &machine;
     activeVideo = &video;
-    Nes::Api::User::fileIoCallback.Set(file_io, NULL);
+    Nes::Api::User::fileIoCallback.Set(file_io, benchmark.get());
 
     bool spriteLimit = rg_settings_get_number(NS_APP, SETTING_SPRITELIMIT, 1) != 0;
     if (video.EnableUnlimSprites(!spriteLimit) < Nes::RESULT_OK)
         RG_PANIC("Nestopia: could not configure sprite limit.");
 
-    std::ifstream bios(nes_fds_bios_path(), std::ios::in | std::ios::binary);
-    if (bios)
+    const int64_t biosStart = benchmark ? rg_system_timer() : 0;
     {
-        Nes::Result result = fds.SetBIOS(&bios);
-        if (result < Nes::RESULT_OK)
+        std::ifstream bios(nes_fds_bios_path(), std::ios::in | std::ios::binary);
+        if (bios)
         {
-            RG_LOGE("Nestopia: FDS BIOS load failed (result %d)", result);
-            RG_PANIC("Nestopia: FDS BIOS load failed.");
+            Nes::Result result = fds.SetBIOS(&bios);
+            if (result < Nes::RESULT_OK)
+            {
+                RG_LOGE("Nestopia: FDS BIOS load failed (result %d)", result);
+                RG_PANIC("Nestopia: FDS BIOS load failed.");
+            }
         }
     }
+    const int64_t imageStart = benchmark ? rg_system_timer() : 0;
 
     Nes::Result result = load_image(machine, app->romPath);
+    if (benchmark)
+    {
+        benchmark->biosUs = imageStart - biosStart;
+        benchmark->imageUs = rg_system_timer() - imageStart;
+    }
     if (result < Nes::RESULT_OK)
     {
         RG_LOGE("Nestopia: ROM load failed (result %d)", result);
@@ -519,12 +546,16 @@ void nes_nestopia_main(void)
         RG_PANIC("Nestopia: disk insertion failed.");
 
     nsfPlayer = machine.Is(Nes::Api::Machine::SOUND);
+    if (benchmark && nsfPlayer)
+        RG_PANIC("Nestopia benchmark requires a game image.");
     Nes::Api::Nsf nsf(*activeEmulator);
     previousNsfButtons = 0;
     if (nsfPlayer && nsf.PlaySong() < Nes::RESULT_OK)
         RG_PANIC("Nestopia: NSF playback could not start.");
 
-    refreshRate = machine.GetMode() == Nes::Api::Machine::PAL ? 50 : 60;
+    const double nativeFps = nestopia_native_fps(machine);
+    const int nativeFrameUs = int(1000000.0 / nativeFps + 0.5);
+    refreshRate = int(nativeFps + 0.5);
     rg_system_apply_saved_overclock();
     rg_system_set_tick_rate(refreshRate);
     app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
@@ -533,7 +564,9 @@ void nes_nestopia_main(void)
     // one frame in six. Auto omits RGB output only while the LCD is busy.
     app->frameskipDisplayOnly = rg_display_uses_frame_copy();
 
-    if (app->bootFlags & RG_BOOT_RESUME)
+    if (benchmark)
+        benchmark->configure(nativeFps);
+    else if (app->bootFlags & RG_BOOT_RESUME)
         rg_emu_load_state(app->saveSlot);
 
     int skipFrames = 0;
@@ -552,7 +585,13 @@ void nes_nestopia_main(void)
     while (true)
     {
         uint32_t joystick = rg_input_read_gamepad();
-        if (joystick & (RG_KEY_MENU | RG_KEY_OPTION))
+        if (benchmark)
+        {
+            if (joystick & RG_KEY_MENU)
+                rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, RG_BOOT_NORMAL);
+            benchmark->start_frame(fds);
+        }
+        else if (joystick & (RG_KEY_MENU | RG_KEY_OPTION))
         {
             if (joystick & RG_KEY_MENU)
                 rg_gui_game_menu();
@@ -564,23 +603,58 @@ void nes_nestopia_main(void)
             handle_nsf_input(nsf, joystick);
 
         int64_t startTime = rg_system_timer();
-        const bool wantFrame = !skipFrames && !nsfPlayer;
+        const bool wantFrame = !skipFrames && !nsfPlayer && (!benchmark || benchmark->lcd());
+        const bool measure = benchmark && benchmark->profile();
 
         Nes::Core::Input::Controllers input;
         if (!nsfPlayer)
         {
-            input.pad[0].buttons = convert_buttons(joystick);
-            input.pad[1].buttons = convert_buttons(rg_input_read_gamepad_player(RG_PLAYER_2));
+            input.pad[0].buttons = benchmark ? benchmark->replay.buttons : convert_buttons(joystick);
+            input.pad[1].buttons = benchmark ? 0 : convert_buttons(rg_input_read_gamepad_player(RG_PLAYER_2));
         }
 
+        rg_surface_t *directUpdate = nullptr;
+        bool discardVideo = false;
         // Drain every sample generated by a frame, including fractional carry.
         const unsigned requestedSamples = AUDIO_BUFFER_LENGTH;
         Nes::Core::Sound::Output audioOutput(audioMono, requestedSamples);
 #ifdef RG_NESTOPIA_RGB_OUTPUT_SUPPORTED
-        if (video.PrepareRgbFrame(!nsfPlayer) < Nes::RESULT_OK)
-            RG_PANIC("Nestopia: RGB frame preparation failed.");
+        const bool async = rg_display_uses_frame_copy();
+        const bool rasterBorrowed = async && currentUpdate == &coreUpdate &&
+            !rg_display_sync(wantFrame && app->frameskipManual);
+        if (rasterBorrowed)
+        {
+            // The LCD owns the RGB pixels. Keep running the PPU and suppress
+            // only raster writes, including on frames skipped by the user.
+            discardVideo = true;
+        }
+        else
+        {
+            const auto rgb = video.PrepareRgbFrame(!nsfPlayer);
+            if (rgb < Nes::RESULT_OK)
+                RG_PANIC("Nestopia: RGB frame preparation failed.");
+            if (async && rgb == Nes::RESULT_OK)
+            {
+                if (wantFrame)
+                {
+                    coreUpdate.data = video.GetRgbFrame();
+                    coreUpdate.stride = 512;
+                    coreUpdate.format = RG_PIXEL_565_LE;
+                    directUpdate = &coreUpdate;
+                }
+                else
+                    discardVideo = true;
+            }
+        }
+        if (discardVideo)
+            video.SetFrameWrites(false);
 #endif
         result = activeEmulator->Execute(NULL, &audioOutput, &input);
+#ifdef RG_NESTOPIA_RGB_OUTPUT_SUPPORTED
+        if (discardVideo)
+            video.SetFrameWrites(true);
+#endif
+        const int64_t measuredExecute = measure ? rg_system_timer() : 0;
 #ifdef RG_NESTOPIA_PROFILE
         int64_t executeEnd = rg_system_timer();
         executeTime += executeEnd - startTime;
@@ -601,8 +675,9 @@ void nes_nestopia_main(void)
             audioStereo[i].left = audioMono[i];
             audioStereo[i].right = audioMono[i];
         }
-        if (samples)
+        if (samples && (!benchmark || benchmark->audio()))
             rg_audio_submit(audioStereo, samples);
+        const int64_t measuredAudio = measure ? rg_system_timer() : 0;
 #ifdef RG_NESTOPIA_PROFILE
         int64_t audioEnd = rg_system_timer();
         audioTime += audioEnd - executeEnd;
@@ -611,13 +686,21 @@ void nes_nestopia_main(void)
 
         // Reuse the RGB surface only after the display releases its borrow.
         // Auto never stalls emulation on a presentation that cannot keep up.
-        const bool drawFrame = wantFrame && acquire_video_surface();
+        const bool drawFrame = wantFrame && !discardVideo && acquire_video_surface();
+        const int64_t acquired = measure ? rg_system_timer() : 0;
         if (drawFrame)
         {
-            currentUpdate = updates[currentUpdate == updates[0] ? 1 : 0];
-            Nes::Core::Video::Output videoOutput(currentUpdate->data, currentUpdate->stride);
-            if (video.Blit(videoOutput) < Nes::RESULT_OK)
-                RG_PANIC("Nestopia: video conversion failed.");
+            if (directUpdate)
+                currentUpdate = directUpdate;
+            else
+            {
+                currentUpdate = updates[currentUpdate == updates[0] ? 1 : 0];
+                Nes::Core::Video::Output videoOutput(currentUpdate->data, currentUpdate->stride);
+                if (video.Blit(videoOutput) < Nes::RESULT_OK)
+                    RG_PANIC("Nestopia: video conversion failed.");
+                if (measure)
+                    benchmark->blitUs += rg_system_timer() - acquired;
+            }
             submit_video();
         }
         if (nsfPlayer && (++nsfOverlayFrames % 10 == 0))
@@ -661,9 +744,27 @@ void nes_nestopia_main(void)
 
         rg_system_tick(rg_system_timer() - startTime);
 
+        if (benchmark)
+        {
+            if (measure)
+                benchmark->acquireUs += acquired - measuredAudio;
+            if (benchmark->timed())
+            {
+                benchmark->borrowedRgbFrames += drawFrame && directUpdate;
+                benchmark->skippedRasterFrames += discardVideo;
+            }
+            benchmark->record(startTime, measuredExecute, measuredAudio, measure ? rg_system_timer() : 0, samples, drawFrame);
+            if (++benchmark->frame == benchmark->warmupFrames + benchmark->timedFrames)
+            {
+                benchmark->finish(machine, sound.GetSampleRate(), spriteLimit, autocrop ? 8 : 0,
+                                  overscan && refreshRate == 60 ? 8 : 0, rg_system_get_frameskip());
+                rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, RG_BOOT_NORMAL);
+            }
+        }
+
         if (skipFrames == 0)
         {
-            int frameTime = 1000000 / (refreshRate * app->speed);
+            int frameTime = nativeFrameUs / app->speed;
             int elapsed = rg_system_timer() - startTime;
             skipFrames = rg_system_get_next_frameskip(elapsed > frameTime + 1500);
         }

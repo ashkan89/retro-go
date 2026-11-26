@@ -22,6 +22,16 @@ typedef enum
 
 typedef struct
 {
+    uint32_t queuedFrames;
+    uint32_t capacityFrames;
+    uint32_t producerWaits;
+    uint32_t writeErrors;
+    uint32_t dmaGapEvents;
+    uint32_t dmaWriteUs;
+} rg_audio_queue_stats_t;
+
+typedef struct
+{
     const char *name;                                             // Required
     bool (*init)(int device, int sample_rate);                    // Required
     bool (*deinit)(void);                                         // Required
@@ -32,6 +42,7 @@ typedef struct
     bool (*set_device)(int device);                               // Optional
     rg_audio_route_t (*get_route)(void);                          // Optional
     const char *(*get_error)(void);                               // Optional
+    rg_audio_queue_stats_t (*get_queue_stats)(void);               // Optional
 } rg_audio_driver_t;
 
 typedef struct
@@ -46,12 +57,14 @@ typedef struct
 {
     int64_t totalSamples;
     int64_t busyTime;
+    uint32_t failedSubmissions;
 } rg_audio_counters_t;
 
 void rg_audio_init(int sample_rate);
 void rg_audio_deinit(void);
 void rg_audio_submit(const rg_audio_frame_t *frames, size_t count);
 rg_audio_counters_t rg_audio_get_counters(void);
+rg_audio_queue_stats_t rg_audio_get_queue_stats(void);
 
 // const char **rg_audio_get_drivers(void);
 const char *rg_audio_get_driver(void);

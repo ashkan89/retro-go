@@ -31,7 +31,7 @@ struct Ppu {
         struct Output { dword deadline; byte shift,behind,zero,palette,pixels[8]; } output[32];
         Output *visible; dword clock; uint mask;
     } oam;
-    struct { word palette[32], *target; const word* renderPalette; } output;
+    struct { word palette[32], *target; const word* renderPalette; bool writePixels; } output;
     word buffer[256];
     void RenderPixel(); void PrepareSpriteTile(word*); void RenderTilePixel(word);
     void RenderTilePixels(const word*, uint);
@@ -71,6 +71,9 @@ int main() {
             for(uint j=0;j<8;j++)s.pixels[j]=randomWord()&3;
         }
         batch=scalar;
+        const bool render = (test & 128) == 0;
+        scalar.output.writePixels = true;
+        batch.output.writePixels = render;
         scalar.output.target=scalar.buffer+4;
         batch.output.target=batch.buffer+4;
         scalar.output.renderPalette=scalar.output.palette;
@@ -92,8 +95,15 @@ int main() {
         }
         batch.oam.clock+=dots;
         grouped.oam.clock+=dots;
-        assert(!memcmp(scalar.buffer,batch.buffer,sizeof(scalar.buffer)));
-        assert(!memcmp(scalar.buffer,grouped.buffer,sizeof(scalar.buffer)));
+        if (render) {
+            assert(!memcmp(scalar.buffer,batch.buffer,sizeof(scalar.buffer)));
+            assert(!memcmp(scalar.buffer,grouped.buffer,sizeof(scalar.buffer)));
+        } else {
+            for (uint i=0;i<256;i++) {
+                assert(batch.buffer[i]==0xbeef);
+                assert(grouped.buffer[i]==0xbeef);
+            }
+        }
         assert(scalar.regs.status==batch.regs.status);
         assert(scalar.regs.status==grouped.regs.status);
         assert(scalar.cycles.hClock==batch.cycles.hClock && scalar.oam.clock==batch.oam.clock);
@@ -113,13 +123,14 @@ int main() {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cxx', default='c++')
+    parser.add_argument('--source', type=Path, default=PORT / 'upstream')
     args = parser.parse_args()
     spec = importlib.util.spec_from_file_location('prepare_core', PORT / 'prepare_core.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     with tempfile.TemporaryDirectory() as folder:
         temp = Path(folder)
-        core = module.prepare(PORT / 'upstream/source/core', temp / 'core')
+        core = module.prepare(args.source / 'source/core', temp / 'core')
         source = (core / 'NstPpu.cpp').read_text(encoding='utf-8')
         scalar = source[source.index('NST_FORCE_INLINE void Ppu::RenderPixel()'):
                         source.index('NST_SINGLE_CALL void Ppu::RenderPixel255()')]

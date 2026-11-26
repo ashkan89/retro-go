@@ -11,6 +11,7 @@ static nes_t *nes;
 static rg_app_t *app;
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
+static const rg_surface_t *borrowedUpdate;
 
 static const char *SETTING_AUTOCROP = "autocrop";
 static const char *SETTING_OVERSCAN = "overscan";
@@ -58,6 +59,8 @@ static bool reset_handler(bool hard)
 
 static void build_palette(int n)
 {
+    if (rg_display_uses_frame_copy())
+        rg_display_sync(true);
     uint16_t *pal = nofrendo_buildpalette(n, 16);
     for (int i = 0; i < 256; i++)
     {
@@ -150,6 +153,9 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
 
 static void blit_screen(uint8 *bmp)
 {
+    const bool borrow = rg_display_uses_frame_copy();
+    if (borrow && !rg_display_sync(!bmp || app->frameskipManual))
+        return;
     // A rolling average should be used for autocrop == 1, it causes jitter in some games...
     // int crop_h = (autocrop == 2) || (autocrop == 1 && nes->ppu->left_bg_counter > 210) ? 8 : 0;
     int crop_v = (overscan) ? nes->overscan : 0;
@@ -158,7 +164,9 @@ static void blit_screen(uint8 *bmp)
     currentUpdate->width = NES_SCREEN_WIDTH - crop_h * 2;
     currentUpdate->height = NES_SCREEN_HEIGHT - crop_v * 2;
     currentUpdate->offset = crop_v * currentUpdate->stride + crop_h + 8;
-    rg_display_submit(currentUpdate, 0);
+    rg_display_submit(currentUpdate, borrow ? RG_DISPLAY_SUBMIT_BORROW : 0);
+    if (borrow)
+        borrowedUpdate = currentUpdate;
 }
 
 static void submit_audio(int offset, int count)
@@ -265,6 +273,7 @@ void nes_nofrendo_main(void)
     rg_system_set_tick_rate(nes->refresh_rate);
     // Seed Auto mode; saved manual values are selected by the shared policy.
     app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
+    app->frameskipDisplayOnly = rg_display_uses_frame_copy();
 
     int skipFrames = 0;
 
@@ -307,7 +316,13 @@ void nes_nofrendo_main(void)
 
         if (drawFrame)
         {
-            currentUpdate = updates[currentUpdate == updates[0]];
+            // DMA may still be consuming the last submitted surface. Render
+            // normally into the other surface so mapper and sprite behavior
+            // is independent of LCD backpressure.
+            const rg_surface_t *previous = currentUpdate;
+            if (rg_display_uses_frame_copy() && !rg_display_sync(false))
+                previous = borrowedUpdate;
+            currentUpdate = updates[previous == updates[0]];
             nes_setvidbuf(currentUpdate->data);
         }
 

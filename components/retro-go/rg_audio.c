@@ -197,20 +197,28 @@ void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
 
     // A momentary settings operation must not silently discard a whole audio
     // block. A short bounded wait preserves continuity without stalling a frame.
+    bool submitted = false;
     if (ACQUIRE_DEVICE(10))
     {
         sync_route();
-        audio.driver->submit(frames, count);
+        submitted = audio.driver->submit(frames, count);
         RELEASE_DEVICE();
     }
 
     counters.totalSamples += count;
     counters.busyTime += rg_system_timer() - time_start;
+    counters.failedSubmissions += !submitted;
 }
 
 rg_audio_counters_t rg_audio_get_counters(void)
 {
     return counters;
+}
+
+rg_audio_queue_stats_t rg_audio_get_queue_stats(void)
+{
+    const rg_audio_driver_t *driver = audio.driver;
+    return driver && driver->get_queue_stats ? driver->get_queue_stats() : (rg_audio_queue_stats_t){0};
 }
 
 const char *rg_audio_get_driver(void)

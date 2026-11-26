@@ -54,7 +54,9 @@ NST_FORCE_INLINE void Ppu::RenderTilePixel(word sprite)
         if (!(sprite & 0x40) || !(pixel & 3))
             pixel = sprite & 0x1F;
     }
-    *output.target++ = output.renderPalette[pixel];
+    if (output.writePixels)
+        *output.target = output.renderPalette[pixel];
+    ++output.target;
 }
 
 NST_FORCE_INLINE void Ppu::RenderTilePixels(const word* sprites, uint clock)
@@ -72,8 +74,21 @@ NST_FORCE_INLINE void Ppu::RenderTilePixels(const word* sprites, uint clock)
     if (!oam.mask || !(sprites[0] | sprites[1] | sprites[2] | sprites[3] |
                        sprites[4] | sprites[5] | sprites[6] | sprites[7]))
     {
-        for (uint i=0; i<8; ++i)
-            target[i] = palette[background[(clock + fine + i) & 15] & mask];
+        if (output.writePixels)
+            for (uint i=0; i<8; ++i)
+                target[i] = palette[background[(clock + fine + i) & 15] & mask];
+        output.target = target + 8;
+        return;
+    }
+    if (!output.writePixels)
+    {
+        if (mask && !(regs.status & Regs::STATUS_SP_ZERO_HIT))
+            for (uint i=0; i<8; ++i)
+                if ((sprites[i] & 0x80) && (background[(clock + fine + i) & 15] & 3))
+                {
+                    regs.status |= Regs::STATUS_SP_ZERO_HIT;
+                    break;
+                }
         output.target = target + 8;
         return;
     }

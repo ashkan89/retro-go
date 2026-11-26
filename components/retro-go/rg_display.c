@@ -114,7 +114,9 @@ static inline unsigned blend_pixels(unsigned a, unsigned b)
     // return (((a ^ b) & 0b1101111011110110U) >> 1) + (a & b);
 }
 
-IRAM_ATTR static inline void write_update(const rg_surface_t *update)
+static rg_display_transfer_stats_t transfer_stats;
+
+IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
 {
     const int64_t time_start = rg_system_timer();
 
@@ -151,7 +153,9 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
 #endif
        )
     {
+        const int64_t scale_start = rg_system_timer();
         const rg_surface_t *scaled = p4_scale_frame(update, draw_width, draw_height);
+        __atomic_fetch_add(&transfer_stats.ppaTimeUs, rg_system_timer() - scale_start, __ATOMIC_RELAXED);
         if (scaled)
         {
             update = scaled;
@@ -325,6 +329,7 @@ IRAM_ATTR static inline void write_update(const rg_surface_t *update)
     else
         counters.partFrames++;
     counters.busyTime += rg_system_timer() - time_start;
+    return lines_updated > 0;
 }
 
 static void update_viewport_scaling(void)
@@ -483,7 +488,7 @@ static void display_task(void *arg)
             display.changed = false;
         }
 
-        write_update(msg.dataPtr);
+        const bool changed = write_update(msg.dataPtr);
         // draw_on_screen_display(0, display.screen.height);
         rg_task_receive(&msg);
 #ifdef ESP_PLATFORM
@@ -491,7 +496,11 @@ static void display_task(void *arg)
         xEventGroupSetBits(display_events, DISPLAY_FRAME_RELEASED);
 #endif
 
+        const int64_t drain_start = rg_system_timer();
         lcd_sync();
+        __atomic_fetch_add(&transfer_stats.drainTimeUs, rg_system_timer() - drain_start, __ATOMIC_RELAXED);
+        __atomic_fetch_add(changed ? &transfer_stats.changedFrames : &transfer_stats.unchangedUpdates,
+                           1, __ATOMIC_RELAXED);
     }
 }
 
@@ -513,6 +522,15 @@ rg_display_counters_t rg_display_get_counters(void)
     return counters;
 }
 
+rg_display_transfer_stats_t rg_display_get_transfer_stats(void)
+{
+    return (rg_display_transfer_stats_t){
+        .changedFrames = __atomic_load_n(&transfer_stats.changedFrames, __ATOMIC_RELAXED),
+        .unchangedUpdates = __atomic_load_n(&transfer_stats.unchangedUpdates, __ATOMIC_RELAXED),
+        .ppaTimeUs = __atomic_load_n(&transfer_stats.ppaTimeUs, __ATOMIC_RELAXED),
+        .drainTimeUs = __atomic_load_n(&transfer_stats.drainTimeUs, __ATOMIC_RELAXED),
+    };
+}
 int rg_display_get_width(void)
 {
     // return display.screen.real_width - (display.screen.margins.left + display.screen.margins.right);

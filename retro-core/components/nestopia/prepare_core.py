@@ -15,6 +15,92 @@ def replace(source, old, new):
     return source.replace(old, new, 1)
 
 
+def prepare_fds_timer(changes):
+    # Specialize only the FDS callback; cartridge mapper timers keep their
+    # original code. Update() and the CPU use this same callback.
+    fds = changes['NstFds.cpp']
+    anchor = '\tnamespace Core\n\t{'
+    changes['NstFds.cpp'] = replace(fds, anchor, anchor + '''
+        template<>
+        void NST_REGCALL Timer::M2<Fds::Unit>::Hook_Signaled(void* context)
+        {
+            auto& m2 = *static_cast<M2*>(context);
+            auto& unit = m2.unit;
+            const Cycle clock = m2.cpu.GetClock();
+            const Cycle now = m2.cpu.GetCycles();
+            while (m2.count <= now)
+            {
+                const Cycle available = (now - m2.count) / clock + 1;
+                Cycle idle = available;
+                if (m2.connected)
+                {
+                    // The timer fires AFTER reaching zero. The drive advances
+                    // ON reaching zero. Leave both event clocks to Unit::Clock.
+                    const bool enabled = (unit.timer.ctrl & decltype(unit.timer)::CTRL_ENABLED) != 0;
+                    if (enabled && idle > unit.timer.count)
+                        idle = unit.timer.count;
+                    if (unit.drive.count && idle >= unit.drive.count)
+                        idle = unit.drive.count - 1;
+                    if (enabled)
+                        unit.timer.count -= idle;
+                    if (unit.drive.count)
+                        unit.drive.count -= idle;
+                }
+                m2.count += idle * clock;
+                if (idle == available)
+                    break;
+                if (unit.Clock())
+                    m2.cpu.DoIRQ(Cpu::IRQ_EXT, m2.count + m2.cpu.GetClock(IRQ_SETUP));
+                m2.count += clock;
+            }
+        }
+''')
+
+def prepare_apu_division(source, changes):
+    # The audio window weight is fixed until the core changes sample timing.
+    # Normalize it once so each sample can use a 32-bit divide on P4 and S3.
+    # Truncating both operands can only overestimate the exact quotient.
+    header = (source / 'NstApu.hpp').read_text()
+    header = replace(header, 'uint sampleShift;', '''uint sampleShift;
+                qaword sampleWeight;
+                dword sampleDivisor;
+                uint sampleDivisorShift;
+                qaword DivideSample(qaword sum) const;''')
+    apu = changes['NstApu.cpp']
+    apu = replace(apu, 'sampleShift(0), sampleSum(0)',
+                  'sampleShift(0), sampleWeight(2), sampleDivisor(2), sampleDivisorShift(0), sampleSum(0)')
+    anchor = '++sampleShift;'
+    apu = replace(apu, anchor, anchor + '''
+
+            sampleWeight = qaword(rate) * ((rate + rate) >> sampleShift);
+            sampleDivisorShift = 0;
+            while ((sampleWeight >> sampleDivisorShift) > 0xFFFF)
+                ++sampleDivisorShift;
+            sampleDivisor = dword(sampleWeight >> sampleDivisorShift);''')
+    anchor = 'NST_NO_INLINE Apu::Channel::Sample Apu::GetSample()'
+    apu = replace(apu, anchor, '''NST_FORCE_INLINE qaword Apu::Cycles::DivideSample(qaword sum) const
+        {
+            const qaword numerator = sum >> sampleDivisorShift;
+            if (sampleDivisorShift >= 32 || numerator > 0xFFFFFFFFUL)
+                return sum / sampleWeight;
+
+            dword estimate = dword(numerator) / sampleDivisor;
+            qaword product = qaword(estimate) * sampleWeight;
+            while (product > sum)
+            {
+                --estimate;
+                product -= sampleWeight;
+            }
+            return estimate;
+        }
+
+        ''' + anchor)
+    apu = replace(apu, '\t\t\tconst qaword weight = qaword(cycles.rate) * ((cycles.rate + cycles.rate) >> cycles.sampleShift);\n', '')
+    apu = replace(apu, 'Channel::Sample(sum / weight)', 'Channel::Sample(cycles.DivideSample(sum))')
+    changes['NstApu.hpp'] = header
+    changes['NstApu.cpp'] = apu
+
+
 def prepare_read_banks(source, changes):
     """Bypass only verified pure PRG readers; mapping writes revoke permission."""
     port = (source / 'NstIoPort.hpp').read_text()
@@ -139,13 +225,19 @@ def prepare_rgb_output(source, changes):
 
     ppu = changes['NstPpu.hpp']
     ppu = replace(ppu, 'word palette[Palette::SIZE];',
-                  'word palette[Palette::SIZE];\n\t\t\t\tword rgbPalette[Palette::SIZE];\n\t\t\t\tconst word* renderPalette;')
+                  'word palette[Palette::SIZE];\n\t\t\t\tword rgbPalette[Palette::SIZE];\n'
+                  '\t\t\t\tconst word* renderPalette;\n\t\t\t\tbool writePixels;')
     ppu = replace(ppu, 'void UpdatePalette();', 'void UpdatePalette();\n\t\t\tNST_FORCE_INLINE void StorePalette(uint,word);')
     ppu = replace(ppu, 'void EnableCpuSynchronization();',
-                  'void SetRgbOutput(bool);\n\t\t\tvoid EnableCpuSynchronization();')
+                  'void SetFrameWrites(bool enabled) { output.writePixels = enabled; }\n'
+                  '\t\t\tvoid SetRgbOutput(bool);\n\t\t\tvoid EnableCpuSynchronization();')
     changes['NstPpu.hpp'] = ppu
     ppu = changes['NstPpu.cpp']
-    ppu = replace(ppu, ': pixels(p) {}', ': pixels(p), renderPalette(palette) {}')
+    ppu = replace(ppu, ': pixels(p) {}', ': pixels(p), renderPalette(palette), writePixels(true) {}')
+    if ppu.count('screen.Clear();') != 2:
+        raise ValueError('PPU reset and boot-state raster clear anchors changed')
+    # An internal power-off on an Execute failure must also respect a borrow.
+    ppu = ppu.replace('screen.Clear();', 'if (output.writePixels) screen.Clear();')
     # Keep the indexed palette for state/CPU semantics, mirror its writes to a
     # cached 32-entry output palette. Pixel loops need only one lookup/store.
     stores = [
@@ -187,9 +279,18 @@ def prepare_rgb_output(source, changes):
     # all sprite/IRQ decisions continue using their original values.
     if ppu.count('*target = output.palette[pixel];') != 2:
         raise ValueError('Scalar raster color anchors changed')
-    ppu = ppu.replace('*target = output.palette[pixel];', '*target = output.renderPalette[pixel];')
+    ppu = ppu.replace('*target = output.palette[pixel];',
+                      'if (output.writePixels) *target = output.renderPalette[pixel];')
     ppu = replace(ppu, 'const uint pixel = output.palette[(scroll.address & 0x3F00)',
                   'const uint pixel = output.renderPalette[(scroll.address & 0x3F00)')
+    ppu = replace(ppu, '''do
+						{
+							*target++ = pixel;
+						}
+						while (++i != hClock);''', '''if (output.writePixels)
+							for (uint dot=i; dot<hClock; ++dot)
+								target[dot-i] = pixel;
+						target += hClock - i;''')
     changes['NstPpu.cpp'] = ppu
 
     renderer = (source / 'NstVideoRenderer.hpp').read_text()
@@ -227,7 +328,10 @@ def prepare_rgb_output(source, changes):
     api = (source / 'api/NstApiVideo.hpp').read_text()
     api = replace(api, '#define NST_API_VIDEO_H', '#define NST_API_VIDEO_H\n#define RG_NESTOPIA_RGB_OUTPUT_SUPPORTED 1')
     api = replace(api, 'Result Blit(Output& output) throw();',
-                  'Result PrepareRgbFrame(bool enable=true) throw();\n\t\t\tResult Blit(Output& output) throw();')
+                  'Result PrepareRgbFrame(bool enable=true) throw();\n'
+                  '\t\t\tword* GetRgbFrame() throw();\n'
+                  '\t\t\tvoid SetFrameWrites(bool enabled) throw();\n'
+                  '\t\t\tResult Blit(Output& output) throw();')
     changes['api/NstApiVideo.hpp'] = api
     api = (source / 'api/NstApiVideo.cpp').read_text()
     api = replace(api, '#include "NstApiVideo.hpp"', '#include "NstApiVideo.hpp"\n#include "NstApiInput.hpp"\n#include "NstApiCartridge.hpp"\n#include "NstApiMachine.hpp"')
@@ -256,6 +360,18 @@ def prepare_rgb_output(source, changes):
             return enable ? RESULT_OK : RESULT_NOP;
         }
 
+        word* Video::GetRgbFrame() throw()
+        {
+            auto& screen = emulator.ppu.GetScreen();
+            return screen.rgbPixels ? screen.pixels : NULL;
+        }
+
+        void Video::SetFrameWrites(bool enabled) throw()
+        {
+            // Indexed screen observers such as the Zapper need live pixels.
+            emulator.ppu.SetFrameWrites(enabled || !emulator.ppu.GetScreen().rgbPixels);
+        }
+
         ''' + anchor)
     api = replace(api, 'if (emulator.renderer.IsReady())', '''if (emulator.ppu.GetScreen().rgbPixels)
             {
@@ -267,7 +383,7 @@ def prepare_rgb_output(source, changes):
     changes['api/NstApiVideo.cpp'] = api
 
 
-def prepare(source, destination, direct_prg=True):
+def prepare(source, destination, direct_prg=True, batch_fds_timer=True):
     source, destination = Path(source).resolve(), Path(destination).resolve()
     if source == destination or source in destination.parents or destination in source.parents:
         raise ValueError('Prepared core must be outside the pinned source tree')
@@ -435,8 +551,12 @@ def prepare(source, destination, direct_prg=True):
 // Xtensa cannot put both template lambda COMDATs in one explicit section.
 // Inlining keeps the inner loop in its parent's IRAM section instead.
 #define RG_NES_TILE_INNER_HOT __attribute__((always_inline))
+// Keep the tile kernels in IRAM without pushing Xtensa exception
+// handlers outside the range of a vector's direct jump.
+#define RG_NES_PPU_RUN_HOT
 #else
 #define RG_NES_TILE_INNER_HOT RG_NES_PPU_HOT
+#define RG_NES_PPU_RUN_HOT RG_NES_PPU_HOT
 #endif
 #if defined(CONFIG_IDF_TARGET_ESP32P4) && CONFIG_IDF_TARGET_ESP32P4 && CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
 #define RG_NES_P4_MEMORY_HOT IRAM_ATTR
@@ -500,7 +620,7 @@ def prepare(source, destination, direct_prg=True):
                         const uint slot = (cycles.hClock - 260) / 8;''')
     ppu = replace(ppu, 'NST_NO_INLINE void Ppu::Run()\n\t\t{',
                   '\n\n'.join(direct_fetches) + '\n\n#include "rg_nestopia_tiles.inc"\n\n'
-                  '\t\tRG_NES_PPU_HOT NST_NO_INLINE void Ppu::Run()\n\t\t{\n\t\t\tRG_NES_SCOPE(ppuCycles);\n'
+                  '\t\tRG_NES_PPU_RUN_HOT NST_NO_INLINE void Ppu::Run()\n\t\t{\n\t\t\tRG_NES_SCOPE(ppuCycles);\n'
                   '\t\t\tconst bool directTiles = (!io.line || io.irqOnlyLine) && !hActiveHook && !hBlankHook &&\n'
                   '\t\t\t    chr.HasStandardAccessor() && nmt.HasStandardAccessors();')
     ppu = replace(ppu, '\t\t\t\t\tHActive:\n\n\t\t\t\t\t\tLoadTiles();',
@@ -684,8 +804,14 @@ def prepare(source, destination, direct_prg=True):
     changes['NstVideoFilterNone.cpp'] = video
 
     prepare_rgb_output(source, changes)
+    prepare_apu_division(source, changes)
     if direct_prg:
         prepare_read_banks(source, changes)
+    fds_header = changes.get('NstFds.hpp', (source / 'NstFds.hpp').read_text(encoding='utf-8'))
+    anchor = '\t\t\tclass Adapter : Timer::M2<Unit>'
+    changes['NstFds.hpp'] = replace(fds_header, anchor, '\t\t\tfriend class Timer::M2<Unit>;\n\n' + anchor)
+    if batch_fds_timer:
+        prepare_fds_timer(changes)
 
     changes['rg_nestopia_memory.hpp'] = (Path(__file__).parent / 'rg_nestopia_memory.hpp').read_text(encoding='utf-8')
     for name in ['rg_nestopia_profile.hpp', 'rg_nestopia_profile.cpp', 'rg_nestopia_tiles.inc']:
@@ -721,5 +847,6 @@ if __name__ == '__main__':
     parser.add_argument('source', type=Path)
     parser.add_argument('destination', type=Path)
     parser.add_argument('--no-direct-prg', action='store_true')
+    parser.add_argument('--scalar-fds-timer', action='store_true')
     args = parser.parse_args()
-    prepare(args.source, args.destination, not args.no_direct_prg)
+    prepare(args.source, args.destination, not args.no_direct_prg, not args.scalar_fds_timer)

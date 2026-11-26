@@ -3,12 +3,18 @@ if(NOT CONFIG_RG_NES_EMULATOR_NESTOPIA)
     return()
 endif()
 
-if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/upstream/source/core/api/NstApiEmulator.hpp")
+set(NESTOPIA_DEFAULT_SOURCE "${CMAKE_CURRENT_LIST_DIR}/upstream")
+if(DEFINED ENV{RG_NESTOPIA_SOURCE_DIR})
+    set(NESTOPIA_DEFAULT_SOURCE "$ENV{RG_NESTOPIA_SOURCE_DIR}")
+endif()
+set(RG_NESTOPIA_SOURCE_DIR "${NESTOPIA_DEFAULT_SOURCE}" CACHE PATH "Checkout of the pinned Nestopia source")
+if(NOT EXISTS "${RG_NESTOPIA_SOURCE_DIR}/source/core/api/NstApiEmulator.hpp")
     message(FATAL_ERROR "Nestopia sources missing. Run: git submodule update --init --recursive")
 endif()
 
 option(RG_NESTOPIA_PORT "Use the embedded Nestopia hot paths and SRAM layout" ON)
-set(NESTOPIA_CORE "${CMAKE_CURRENT_LIST_DIR}/upstream/source/core")
+option(RG_NESTOPIA_BATCH_FDS_TIMER "Skip idle FDS device clocks" ${CONFIG_IDF_TARGET_ESP32P4})
+set(NESTOPIA_CORE "${RG_NESTOPIA_SOURCE_DIR}/source/core")
 if(RG_NESTOPIA_PORT)
     file(GLOB_RECURSE NESTOPIA_INPUTS CONFIGURE_DEPENDS "${NESTOPIA_CORE}/*.hpp" "${NESTOPIA_CORE}/*.cpp")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
@@ -19,6 +25,9 @@ if(RG_NESTOPIA_PORT)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/rg_nestopia_tiles.inc")
     set(NESTOPIA_PREPARED "${CMAKE_BINARY_DIR}/nestopia-core")
     set(NESTOPIA_PREPARE_OPTIONS)
+    if(NOT RG_NESTOPIA_BATCH_FDS_TIMER)
+        list(APPEND NESTOPIA_PREPARE_OPTIONS --scalar-fds-timer)
+    endif()
     if(NOT CONFIG_IDF_TARGET_ESP32P4)
         # Per-port invalidation metadata costs additional PSRAM. Keep the
         # smaller CPU map on S3; native tests exercise the P4 transformation.
@@ -39,7 +48,7 @@ endif()
 
 set(COMPONENT_ADD_INCLUDEDIRS
     "."
-    "upstream/source"
+    "${RG_NESTOPIA_SOURCE_DIR}/source"
     "${NESTOPIA_CORE}"
     "${NESTOPIA_CORE}/api"
 )

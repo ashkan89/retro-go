@@ -9,7 +9,7 @@ parser.add_argument('--cc', default='cc')
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 source = (root / 'components/retro-go/rg_display.c').read_text()
-start = source.index('IRAM_ATTR static inline void write_update(')
+start = source.index('IRAM_ATTR static inline bool write_update(')
 end = source.index('static void update_viewport_scaling(', start)
 code = r'''
 #include <stdbool.h>
@@ -57,6 +57,7 @@ static struct {
     struct { struct { int left, top; } margins; } screen;
 } display;
 static struct { int fullFrames, partFrames; long busyTime; } counters;
+static struct { uint32_t ppaTimeUs; } transfer_stats;
 static int map_viewport_to_source_x[481], map_viewport_to_source_y[321];
 static uint32_t screen_line_checksum[321];
 static bool partial_updates;
@@ -102,7 +103,7 @@ int main(void) {
         partial_updates = partial;
         memset(screen_line_checksum, 0, sizeof(screen_line_checksum));
         memset(result, 0, sizeof(result)); send_count = 0;
-        write_update(&surface);
+        assert(write_update(&surface));
         for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             uint8_t *p = data + surface.offset + (y/2)*surface.stride + (x/scale)*pixel_size;
@@ -111,7 +112,7 @@ int main(void) {
             else { memcpy(&expected, p, 2); if (format == 2) expected = (expected<<8)|(expected>>8); }
             assert(result[y*w+x] == expected);
         }
-        if (partial) { send_count = 0; write_update(&surface); assert(send_count == 0); }
+        if (partial) { send_count = 0; assert(!write_update(&surface)); assert(send_count == 0); }
     }
 }
 '''

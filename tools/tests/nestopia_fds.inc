@@ -11,6 +11,7 @@ struct FdsReadProbe {
 #endif
 static void fds_regression() {
     uint64_t videoHash=14695981039346656037ULL,audioHash=videoHash,stateHash=videoHash;
+    std::chrono::steady_clock::duration executeTime{};
     auto hash=[](uint64_t &h,const void *data,size_t n) {
         auto p=static_cast<const unsigned char*>(data);
         while(n--) { h^=*p++; h*=1099511628211ULL; }
@@ -107,7 +108,23 @@ static void fds_regression() {
             pads.pad[0].buttons=(frame/30)&1;
             std::fill(pcm,pcm+643,12345);Nes::Core::Sound::Output sound(pcm+1,641);
             Nes::Core::Video::Output picture(pixels.data(),512);
-            assert(emulator.Execute(nullptr,&sound,&pads)>=0);assert(video.Blit(picture)>=0);
+            const uint16_t *directPixels = nullptr;
+#ifdef RG_TEST_DIRECT_RGB
+            if (frame < 2)
+                video.SetFrameWrites(false);
+            else
+                directPixels = video.GetRgbFrame();
+#endif
+            const auto start=std::chrono::steady_clock::now();
+            assert(emulator.Execute(nullptr,&sound,&pads)>=0);
+            executeTime += std::chrono::steady_clock::now() - start;
+#ifdef RG_TEST_DIRECT_RGB
+            video.SetFrameWrites(true);
+#endif
+            if (directPixels)
+                memcpy(pixels.data(), directPixels, 512 * 240);
+            else
+                assert(video.Blit(picture)>=0);
             assert(pcm[0]==12345 && pcm[642]==12345 && sound.length[0]<=641);
             if(frame>=2) {hash(videoHash,pixels.data(),pixels.size()*2);hash(audioHash,pcm+1,sound.length[0]*2);}
         }
@@ -127,4 +144,5 @@ static void fds_regression() {
     }
     printf("FDS video/audio/state fingerprints: %016llx %016llx %016llx\n",
            (unsigned long long)videoHash,(unsigned long long)audioHash,(unsigned long long)stateHash);
+    printf("FDS fixture Execute, 1440 frames: %.6f s\n", std::chrono::duration<double>(executeTime).count());
 }

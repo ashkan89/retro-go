@@ -63,6 +63,14 @@ typedef struct
 
 typedef struct
 {
+    uint32_t changedFrames;
+    uint32_t unchangedUpdates;
+    uint32_t ppaTimeUs;
+    uint32_t drainTimeUs;
+} rg_display_transfer_stats_t;
+
+typedef struct
+{
     const char *name;                                               // Driver name
     bool (*init)(void);                                             // Init the display
     bool (*deinit)(void);                                           // Deinit the display
@@ -114,6 +122,7 @@ enum { RG_DISPLAY_SUBMIT_BORROW = (1 << 0) };
 void rg_display_submit(const rg_surface_t *update, uint32_t flags);
 
 rg_display_counters_t rg_display_get_counters(void);
+rg_display_transfer_stats_t rg_display_get_transfer_stats(void);
 const rg_display_t *rg_display_get_info(void);
 int rg_display_get_width(void);
 int rg_display_get_height(void);

@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--cc', default='cc')
 args = parser.parse_args()
 source = (ROOT / 'components/retro-go/drivers/audio/i2s.c').read_text()
-producer = source[source.index('static bool driver_submit('):source.index('static bool driver_set_mute(')]
+producer = source[source.index('static bool driver_submit('):source.index('static rg_audio_queue_stats_t driver_get_queue_stats(')]
 stubs = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -25,6 +25,7 @@ static struct {
     bool running;
     rg_audio_frame_t *queue;
     size_t queue_read, queue_write, queue_count;
+    uint32_t producer_waits;
     void *queue_space;
 } state;
 static rg_audio_frame_t ring[RG_AUDIO_QUEUE_LENGTH], input[8192];

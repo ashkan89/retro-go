@@ -14,7 +14,7 @@ import importlib.util
 import hashlib
 
 ROOT = Path(__file__).resolve().parents[1]
-CORE = ROOT / "retro-core/components/nestopia/upstream/source/core"
+COMPONENT = ROOT / "retro-core/components/nestopia"
 
 PRELUDE = r'''
 #include <NstApiEmulator.hpp>
@@ -30,6 +30,7 @@ PRELUDE = r'''
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -255,8 +256,22 @@ static void performance_regression() {
             Nes::Core::Sound::Output audio(pcm,641);
             Nes::Core::Video::Output output(pixels.data(),512);
 #ifdef RG_TEST_DEFERRED_VIDEO
+            const uint16_t *directPixels = nullptr;
+#ifdef RG_TEST_DIRECT_RGB
+            if (!(frame % 3))
+                video.SetFrameWrites(false);
+            else if (frame % 2)
+                directPixels = video.GetRgbFrame();
+            assert(bool(directPixels) == bool(frame % 3 && frame % 2 && rgbResult == Nes::RESULT_OK));
+#endif
             assert(emulator.Execute(nullptr,&audio,&pads)>=0);
-            if(frame%3) assert(video.Blit(output)>=0);
+#ifdef RG_TEST_DIRECT_RGB
+            video.SetFrameWrites(true);
+#endif
+            if (directPixels)
+                memcpy(pixels.data(), directPixels, 512 * 240);
+            else if(frame%3)
+                assert(video.Blit(output)>=0);
 #else
             assert(emulator.Execute(frame%3?&output:nullptr,&audio,&pads)>=0);
 #endif
@@ -375,6 +390,7 @@ static void rgb_output_contract() {
     auto &screen=static_cast<Nes::Core::Machine&>(emulator).ppu.GetScreen();
     assert(!screen.rgbPixels);
     assert(video.PrepareRgbFrame()==Nes::RESULT_OK && screen.rgbPixels);
+    assert(video.GetRgbFrame() == screen.pixels);
     // RGB copying must accept the same unaligned, padded output as indexed blits.
     for(unsigned i=0;i<256*240;i++) screen.pixels[i]=uint16_t(i*313U);
     const unsigned pitch=519;
@@ -509,25 +525,36 @@ int main() {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=COMPONENT / "upstream", help="Checkout of the pinned Nestopia source")
     parser.add_argument('--fds-only', action='store_true', help='Run only the generated FDS BIOS/disk regression')
     parser.add_argument("--cxx", default="c++")
     parser.add_argument("--upstream", action="store_true", help="Test the unmodified pinned core for differential comparison")
     parser.add_argument("--direct-rgb", action="store_true", help="Exercise the optional fused RGB raster output")
     parser.add_argument("--artifacts", type=Path, help="Keep the native executable and final states for diagnosis")
     parser.add_argument("--reference", type=Path, help="Compare all frame fingerprints with a prior --upstream --artifacts run")
+    parser.add_argument("--scalar-fds-timer", action="store_true", help="Keep scalar FDS device clocks in the prepared core")
+    parser.add_argument("--benchmark", type=Path, metavar="ROM", help="Benchmark a local, extracted NES or FDS image")
+    parser.add_argument("--benchmark-copy", action="store_true", help="Benchmark RGB output with the intermediate frame copy")
+    parser.add_argument("--manifest", type=Path, help="Replay file for --benchmark (defaults to ROM.bench)")
+    parser.add_argument("--bios", type=Path, help="Local disksys.rom for --benchmark")
+    parser.add_argument("--sprite-limit", type=int, choices=(0, 1), default=1)
+    parser.add_argument("--palette", type=int, choices=range(5), default=0)
+    parser.add_argument("--repeat", type=int, choices=range(1, 11), default=1)
+    parser.add_argument("--opt-level", type=int, choices=range(4), help="Host compiler optimization level")
     args = parser.parse_args()
+    source_core = args.source.resolve() / "source/core"
     adapter = (ROOT / "retro-core/main/main_nestopia.cpp").read_text()
     stream_and_io = adapter[adapter.index("class MemoryStreamBuffer"):adapter.index("static void draw_nsf_overlay")]
     load = adapter[adapter.index("static Nes::Result load_image"):adapter.index("static void handle_nsf_input")]
     with tempfile.TemporaryDirectory() as directory:
         temp = args.artifacts.resolve() if args.artifacts else Path(directory)
         temp.mkdir(parents=True, exist_ok=True)
-        core = CORE
+        core = source_core
         if not args.upstream:
-            spec = importlib.util.spec_from_file_location("prepare_core", CORE.parents[2] / "prepare_core.py")
+            spec = importlib.util.spec_from_file_location("prepare_core", COMPONENT / "prepare_core.py")
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            core = module.prepare(CORE, temp / "core")
+            core = module.prepare(source_core, temp / "core", batch_fds_timer=not args.scalar_fds_timer)
         source = temp / "test.cpp"
         buttons = adapter[adapter.index("static uint32_t convert_buttons"):adapter.index("static Nes::Result load_image")]
         deferred = "#define RG_TEST_DEFERRED_VIDEO 1\n" if not args.upstream else ""
@@ -535,15 +562,18 @@ def main():
             assert not args.upstream, 'Direct RGB requires the prepared core'
             deferred += '#define RG_TEST_DIRECT_RGB 1\n'
         fds_fixture = (ROOT / 'tools/tests/nestopia_fds.inc').read_text()
-        runner = 'int main() { fds_regression(); }\n' if args.fds_only else RUNNER
-        source.write_text(deferred + PRELUDE + stream_and_io + buttons + load + DIFFERENTIAL + fds_fixture + runner)
+        if args.benchmark:
+            runner = (ROOT / 'tools/tests/nestopia_benchmark.inc').read_text()
+        else:
+            runner = DIFFERENTIAL + fds_fixture + ('int main() { fds_regression(); }\n' if args.fds_only else RUNNER)
+        source.write_text(deferred + PRELUDE + stream_and_io + buttons + load + runner)
         compiler = str(Path(args.cxx).resolve()) if Path(args.cxx).exists() else args.cxx
         command = [compiler] + (["c++"] if Path(args.cxx).stem == "zig" else [])
         prefix = len(command)
         # Exercise the exact production options with the Xtensa 16-bit wchar_t
         # ABI. The normal Linux host compiler uses 32-bit wchar_t and otherwise
         # misses the firmware's NstCore.hpp narrowing failure.
-        component = (CORE.parents[2] / "CMakeLists.txt").read_text()
+        component = (COMPONENT / "CMakeLists.txt").read_text()
         production_options = re.search(r"rg_setup_compile_options\((.*?)\)", component, re.S).group(1).split()
         wide_test = temp / "wide.cpp"
         wide_test.write_text('''#include "NstCore.hpp"
@@ -559,9 +589,10 @@ int main() {
         subprocess.run(command + ["-std=c++11", "-fshort-wchar", "-Werror=narrowing"] + production_options +
                        ["-I" + str(core), str(wide_test), "-o", str(wide_executable)], check=True)
         subprocess.run([str(wide_executable)], check=True)
-        command += ["-std=c++11", "-O1", "-UNDEBUG", "-DNST_NO_ZLIB", "-fno-rtti", "-Wno-narrowing", "-I" + str(CORE),
-                    "-I" + str(core / "api"), "-I" + str(ROOT / "components/retro-go")]
-        command = [arg.replace("-I" + str(CORE), "-I" + str(core)) for arg in command]
+        opt_level = args.opt_level if args.opt_level is not None else (3 if args.benchmark else 1)
+        command += ["-std=c++11", f"-O{opt_level}", "-UNDEBUG", "-DNST_NO_ZLIB", "-fno-rtti", "-Wno-narrowing",
+                    "-I" + str(core), "-I" + str(core / "api"), "-I" + str(ROOT / "components/retro-go"),
+                    "-I" + str(ROOT / "retro-core/main")]
         sources = [source] + list(core.rglob("*.cpp"))
         objects = [temp / f"{index}.o" for index in range(len(sources))]
         headers = hashlib.sha256()
@@ -571,6 +602,8 @@ int main() {
         def compile_one(item):
             path, obj = item
             extra = b''.join(p.read_bytes() for p in sorted(core.glob('*.inc'))) if path.name == 'NstPpu.cpp' else b''
+            if args.benchmark and path == source:
+                extra += (ROOT / "retro-core/main/nestopia_replay.hpp").read_bytes()
             signature = hashlib.sha256(compile_key + str(path).encode() + path.read_bytes() + extra).hexdigest()
             stamp = obj.with_suffix('.sha256')
             if args.artifacts and obj.exists() and stamp.exists() and stamp.read_text() == signature:
@@ -586,6 +619,17 @@ int main() {
         response = temp / "args.rsp"
         response.write_text("\n".join('"' + arg.replace('\\', '/') + '"' for arg in command[prefix:]))
         subprocess.run(command[:prefix] + ["@" + str(response)], check=True)
+        if args.benchmark:
+            image = args.benchmark.resolve(strict=True)
+            if image.suffix.lower() == ".zip":
+                parser.error("extract the selected ZIP member before benchmarking on the host")
+            manifest = args.manifest or Path(str(image) + ".bench")
+            parameters = [str(image), str(manifest.resolve(strict=True)) if args.manifest or manifest.exists() else "-",
+                          str(args.bios.resolve(strict=True)) if args.bios else "-", str(args.sprite_limit), str(args.palette),
+                          str(int(args.benchmark_copy))]
+            for _ in range(args.repeat):
+                subprocess.run([str(executable), *parameters], cwd=temp, check=True)
+            return
         run_dir = temp
         if args.artifacts:
             run_dir = args.artifacts.resolve()

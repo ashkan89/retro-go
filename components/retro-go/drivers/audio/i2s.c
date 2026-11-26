@@ -29,6 +29,11 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#if (CONFIG_IDF_TARGET_ESP32P4 || CONFIG_IDF_TARGET_ESP32S3) && !CONFIG_FREERTOS_UNICORE
+#include <esp_ipc.h>
+#define RG_I2S_PIN_IRQ 1
+#endif
+
 // Speaker amplifier shutdown pin (MAX98357A SD_MODE and friends). Active high unless inverted.
 #ifdef RG_GPIO_SND_AMP_ENABLE_INVERT
 #define AMP_ON 0
@@ -114,6 +119,9 @@ static struct {
     SemaphoreHandle_t task_stopped;
     volatile bool running;
     uint32_t write_errors;
+    uint32_t producer_waits, dma_gap_events, dma_write_us;
+    uint32_t dma_capacity_us;
+    int64_t last_dma_write;
     int sample_rate;
 #if RG_AUDIO_VOLUME_RAMP_MS
     int ramp_gain, ramp_target, ramp_step, ramp_remaining;
@@ -127,6 +135,67 @@ static struct {
 static portMUX_TYPE queue_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool write_frames(const rg_audio_frame_t *frames, size_t count);
+
+#if RG_I2S_PIN_IRQ
+// Legacy I2S/GDMA allocates its interrupt on the installing core. Keep it
+// with its writer so DMA completions can wake the worker on the same core
+// without interrupting the emulator on core 0.
+typedef struct
+{
+    const i2s_config_t *config;
+    esp_err_t result;
+} i2s_install_request_t;
+
+static int i2s_irq_core;
+
+static void install_i2s_on_core(void *arg)
+{
+    i2s_install_request_t *request = arg;
+    i2s_irq_core = xPortGetCoreID();
+    request->result = i2s_driver_install(I2S_NUM_0, request->config, 0, NULL);
+}
+
+static void uninstall_i2s_on_core(void *arg)
+{
+    esp_err_t *result = arg;
+    *result = i2s_driver_uninstall(I2S_NUM_0);
+}
+#endif
+
+static esp_err_t install_i2s(const i2s_config_t *config)
+{
+#if RG_I2S_PIN_IRQ
+    i2s_install_request_t request = {.config = config};
+    if (RG_TASK_AFFINITY_AUDIO != tskNO_AFFINITY && RG_TASK_AFFINITY_AUDIO != xPortGetCoreID())
+    {
+        esp_err_t error = esp_ipc_call_blocking(RG_TASK_AFFINITY_AUDIO, install_i2s_on_core, &request);
+        if (error == ESP_OK)
+            return request.result;
+    }
+    install_i2s_on_core(&request);
+    return request.result;
+#else
+    return i2s_driver_install(I2S_NUM_0, config, 0, NULL);
+#endif
+}
+
+static void uninstall_i2s(void)
+{
+#if RG_I2S_PIN_IRQ
+    esp_err_t result;
+    if (i2s_irq_core != xPortGetCoreID() &&
+        esp_ipc_call_blocking(i2s_irq_core, uninstall_i2s_on_core, &result) == ESP_OK)
+        return;
+#endif
+    i2s_driver_uninstall(I2S_NUM_0);
+}
+
+static void set_timing_rate(int sampleRate)
+{
+    const unsigned capacity = sampleRate > 0 ? DMA_BUFFER_LEN * DMA_BUFFER_COUNT * 1000000ULL / sampleRate : 0;
+    __atomic_store_n(&state.dma_capacity_us, capacity, __ATOMIC_RELAXED);
+    __atomic_store_n(&state.sample_rate, sampleRate, __ATOMIC_RELAXED);
+}
 
 // Drive the two analog output stages from the current route and mute state. Exactly one of
 // them is ever enabled, so the speaker can't keep playing into the room while someone is
@@ -259,7 +328,7 @@ static void audio_task(void *arg)
             if (wake_producer)
                 xSemaphoreGive(state.queue_space);
             if (!write_frames(frames, count))
-                state.write_errors++;
+                __atomic_fetch_add(&state.write_errors, 1, __ATOMIC_RELAXED);
         }
     }
 
@@ -285,6 +354,8 @@ static bool start_audio_task(void)
     state.queue_write = 0;
     state.queue_count = 0;
     state.write_errors = 0;
+    state.producer_waits = state.dma_gap_events = state.dma_write_us = 0;
+    state.last_dma_write = 0;
     state.running = true;
 
     BaseType_t result = xTaskCreatePinnedToCore(
@@ -345,7 +416,7 @@ static bool driver_init(int device, int sample_rate)
 {
     state.last_error = NULL;
     state.device = device;
-    state.sample_rate = sample_rate;
+    set_timing_rate(sample_rate);
 #if RG_AUDIO_VOLUME_RAMP_MS
     state.ramp_gain = state.ramp_target = state.ramp_step = state.ramp_remaining = 0;
     state.output_enabled = true;
@@ -386,7 +457,7 @@ static bool driver_init(int device, int sample_rate)
     if (state.device == DEVICE_INT_DAC)
     {
     #if RG_AUDIO_USE_INT_DAC
-        esp_err_t ret = i2s_driver_install(I2S_NUM_0, &(i2s_config_t){
+        esp_err_t ret = install_i2s(&(i2s_config_t){
             .mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN,
             .sample_rate = sample_rate,
             .bits_per_sample = 16,
@@ -396,7 +467,7 @@ static bool driver_init(int device, int sample_rate)
             .dma_buf_count = DMA_BUFFER_COUNT,
             .dma_buf_len = DMA_BUFFER_LEN,
             .tx_desc_auto_clear = true,
-        }, 0, NULL);
+        });
         if (ret == ESP_OK)
             ret = i2s_set_dac_mode(RG_AUDIO_USE_INT_DAC);
         if (ret != ESP_OK)
@@ -408,7 +479,7 @@ static bool driver_init(int device, int sample_rate)
     else if (DEVICE_IS_EXTERNAL(state.device))
     {
     #if RG_AUDIO_USE_EXT_DAC
-        esp_err_t ret = i2s_driver_install(I2S_NUM_0, &(i2s_config_t){
+        esp_err_t ret = install_i2s(&(i2s_config_t){
             .mode = I2S_MODE_MASTER | I2S_MODE_TX,
             .sample_rate = sample_rate,
             .bits_per_sample = 16,
@@ -421,7 +492,7 @@ static bool driver_init(int device, int sample_rate)
         #if CONFIG_IDF_TARGET_ESP32
             .use_apll = true, // External DAC may care about accuracy
         #endif
-        }, 0, NULL);
+        });
         if (ret == ESP_OK)
         {
             ret = i2s_set_pin(I2S_NUM_0, &(i2s_pin_config_t) {
@@ -440,7 +511,7 @@ static bool driver_init(int device, int sample_rate)
     }
 
     if (!state.last_error && !start_audio_task())
-        i2s_driver_uninstall(I2S_NUM_0);
+        uninstall_i2s();
 
     // The outputs stay shut down until rg_audio_init() applies the unmute, which happens once
     // the writer task is up and the DMA buffers hold real samples.
@@ -451,7 +522,7 @@ static bool driver_set_sample_rates(int sampleRate)
 {
     if (i2s_set_sample_rates(I2S_NUM_0, sampleRate) != ESP_OK)
         return false;
-    state.sample_rate = sampleRate;
+    set_timing_rate(sampleRate);
     return true;
 }
 
@@ -462,7 +533,7 @@ static bool driver_deinit(void)
     apply_route();
 #endif
     stop_audio_task();
-    i2s_driver_uninstall(I2S_NUM_0);
+    uninstall_i2s();
     if (state.device == DEVICE_INT_DAC)
     {
     #if RG_AUDIO_USE_INT_DAC
@@ -512,14 +583,16 @@ static rg_audio_route_t driver_get_route(void)
 
 static bool write_dma(const rg_audio_frame_t *frames, size_t count)
 {
+    const int64_t start = rg_system_timer();
 #if CONFIG_IDF_TARGET_ESP32P4 && (RG_AUDIO_TIMING_DIAGNOSTICS || defined(RG_AUDIO_TIMING_PROFILE))
     int64_t now = rg_system_timer();
+    const int rate = __atomic_load_n(&state.sample_rate, __ATOMIC_RELAXED);
     if (state.dma_deadline && now > state.dma_deadline + 1000)
     {
         state.late_writes++;
         state.maximum_gap = RG_MAX(state.maximum_gap, now - state.dma_deadline);
     }
-    state.dma_deadline = RG_MAX(now, state.dma_deadline) + count * 1000000LL / state.sample_rate;
+    state.dma_deadline = RG_MAX(now, state.dma_deadline) + count * 1000000LL / rate;
     if (now - state.diagnostic_time >= 5000000)
     {
         portENTER_CRITICAL(&queue_lock);
@@ -527,7 +600,7 @@ static bool write_dma(const rg_audio_frame_t *frames, size_t count)
         portEXIT_CRITICAL(&queue_lock);
         RG_LOGI("I2S timing: late=%lu max_gap=%lld us queue=%u errors=%lu\n",
                 (unsigned long)state.late_writes, (long long)state.maximum_gap,
-                queued, (unsigned long)state.write_errors);
+                queued, (unsigned long)__atomic_load_n(&state.write_errors, __ATOMIC_RELAXED));
         state.diagnostic_time = now;
         state.late_writes = 0;
         state.maximum_gap = 0;
@@ -537,6 +610,14 @@ static bool write_dma(const rg_audio_frame_t *frames, size_t count)
     size_t written = 0;
     esp_err_t result = i2s_write(I2S_NUM_0, frames, requested, &written,
                                 pdMS_TO_TICKS(RG_AUDIO_I2S_WRITE_TIMEOUT_MS));
+    const int64_t end = rg_system_timer();
+    // A gap beyond the entire DMA capacity implies that some PCM was missing.
+    // Shorter gaps can go undetected by the legacy driver's write interface.
+    const unsigned capacity = __atomic_load_n(&state.dma_capacity_us, __ATOMIC_RELAXED);
+    if (capacity && state.last_dma_write && start - state.last_dma_write > capacity)
+        __atomic_fetch_add(&state.dma_gap_events, 1, __ATOMIC_RELAXED);
+    state.last_dma_write = end;
+    __atomic_fetch_add(&state.dma_write_us, end - start, __ATOMIC_RELAXED);
     if (result != ESP_OK || written != requested)
     {
         RG_LOGW("I2S submission error: %s, written=%d/%d\n",
@@ -554,7 +635,7 @@ static bool write_frames(const rg_audio_frame_t *frames, size_t count)
     if (target != state.ramp_target)
     {
         state.ramp_target = target;
-        state.ramp_remaining = RG_MAX(1, state.sample_rate * RG_AUDIO_VOLUME_RAMP_MS / 1000);
+        state.ramp_remaining = RG_MAX(1, __atomic_load_n(&state.sample_rate, __ATOMIC_RELAXED) * RG_AUDIO_VOLUME_RAMP_MS / 1000);
         state.ramp_step = (target - state.ramp_gain) / state.ramp_remaining;
     }
 #endif
@@ -680,11 +761,27 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
             // The hardware sample clock is the ultimate pacing source. This
             // wait only happens when software is already a full queue ahead;
             // it prevents sample loss while normal submissions stay async.
+            __atomic_fetch_add(&state.producer_waits, 1, __ATOMIC_RELAXED);
             xSemaphoreTake(state.queue_space, portMAX_DELAY);
         }
     }
 
     return true;
+}
+
+static rg_audio_queue_stats_t driver_get_queue_stats(void)
+{
+    portENTER_CRITICAL(&queue_lock);
+    unsigned queued = state.queue_count;
+    portEXIT_CRITICAL(&queue_lock);
+    return (rg_audio_queue_stats_t){
+        .queuedFrames = queued,
+        .capacityFrames = RG_AUDIO_QUEUE_LENGTH,
+        .producerWaits = __atomic_load_n(&state.producer_waits, __ATOMIC_RELAXED),
+        .writeErrors = __atomic_load_n(&state.write_errors, __ATOMIC_RELAXED),
+        .dmaGapEvents = __atomic_load_n(&state.dma_gap_events, __ATOMIC_RELAXED),
+        .dmaWriteUs = __atomic_load_n(&state.dma_write_us, __ATOMIC_RELAXED),
+    };
 }
 
 static bool driver_set_mute(bool mute)
@@ -713,6 +810,7 @@ const rg_audio_driver_t rg_audio_driver_i2s = {
     .init = driver_init,
     .deinit = driver_deinit,
     .submit = driver_submit,
+    .get_queue_stats = driver_get_queue_stats,
     .set_mute = driver_set_mute,
     .set_volume = driver_set_volume,
     .set_sample_rate = driver_set_sample_rates,
