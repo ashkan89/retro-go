@@ -762,7 +762,8 @@ static bool driver_submit(const rg_audio_frame_t *frames, size_t count)
             // wait only happens when software is already a full queue ahead;
             // it prevents sample loss while normal submissions stay async.
             __atomic_fetch_add(&state.producer_waits, 1, __ATOMIC_RELAXED);
-            xSemaphoreTake(state.queue_space, portMAX_DELAY);
+            if (xSemaphoreTake(state.queue_space, pdMS_TO_TICKS(RG_AUDIO_I2S_WRITE_TIMEOUT_MS)) != pdTRUE)
+                return false;
         }
     }
 

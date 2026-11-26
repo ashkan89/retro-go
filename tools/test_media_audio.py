@@ -34,7 +34,7 @@ def main():
         work = Path(directory)
         (work / "rg_system.h").write_text((root / "tools/tests/media_audio_stubs.h").read_text(encoding="utf-8"), encoding="utf-8")
         player = (root / "components/media/media_player.c").read_text(encoding="utf-8")
-        state = player[player.index("static void set_state("):player.index("static void set_error(")]
+        state = player[player.index("static void publish_state("):player.index("static void set_error(")]
         buffering = player[player.index("static bool prebuffer_satisfied("):
                            player.index("static bool prepared_done(")]
         (work / "media_buffering_under_test.h").write_text(state + buffering, encoding="utf-8")
@@ -43,6 +43,8 @@ def main():
             media[media.index("void media_tick("):media.index("bool media_has_library(")], encoding="utf-8")
         (work / "media_route_under_test.h").write_text(
             player[player.index("static void poll_audio_route("):player.index("void media_player_tick(")], encoding="utf-8")
+        (work / "media_pause_under_test.h").write_text(
+            function(player, "void media_player_pause("), encoding="utf-8")
         (work / "media_prepared_type.h").write_text(
             player[player.index("typedef struct\n{"):player.index("static struct\n{")], encoding="utf-8")
         (work / "media_continuous_under_test.h").write_text(
@@ -92,6 +94,8 @@ def main():
             for width, height, font in [(320,240,16),(480,320,16),(240,320,16),(320,240,19)]:
                 path = (args.preview_dir / f"player-{width}x{height}-font{font}.ppm").resolve()
                 subprocess.run([str(executable), str(width), str(height), str(path), str(font)], check=True, cwd=root)
+            path = (args.preview_dir / "seek-320x240-font19.ppm").resolve()
+            subprocess.run([str(executable), "320", "240", str(path), "19", "seek"], check=True, cwd=root)
             print(f"Host UI previews written to {args.preview_dir}")
         feature_command = command.copy()
         feature_command[feature_command.index(str(root / "tools/tests/test_media_audio.c"))] = str(

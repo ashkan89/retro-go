@@ -63,6 +63,7 @@ static struct
 
     volatile command_t command;
     volatile uint32_t command_seek_ms;
+    uint32_t command_seek_generation;
     volatile uint32_t command_serial;   // Bumped per command so stale work can be discarded
     volatile uint32_t handled_serial;
 
@@ -83,7 +84,7 @@ static struct
     media_track_t announcement_track;
     char announcement_path[MEDIA_MAX_PATH + 1];
 
-    media_state_t state;
+    _Atomic(media_state_t) state;
     media_err_t last_error;
     char error_text[64];
 
@@ -169,6 +170,16 @@ static void emit(media_event_t event, intptr_t arg)
     __atomic_fetch_or(&player.pending_events, 1u << event, __ATOMIC_RELEASE);
 }
 
+static void publish_state(media_state_t state)
+{
+    if (player.state == state)
+        return;
+
+    RG_LOGD("State %s -> %s", media_state_name(player.state), media_state_name(state));
+    player.state = state;
+    emit(MEDIA_EVENT_STATE_CHANGED, (intptr_t)state);
+}
+
 static void set_state(media_state_t state)
 {
     if (state == MEDIA_STATE_BUFFERING || state == MEDIA_STATE_LOADING ||
@@ -176,12 +187,7 @@ static void set_state(media_state_t state)
         media_audio_set_buffering(true);
     else if (state == MEDIA_STATE_PLAYING || state == MEDIA_STATE_PAUSED)
         media_audio_set_buffering(false);
-    if (player.state == state)
-        return;
-
-    RG_LOGD("State %s -> %s", media_state_name(player.state), media_state_name(state));
-    player.state = state;
-    emit(MEDIA_EVENT_STATE_CHANGED, (intptr_t)state);
+    publish_state(state);
 }
 
 static void set_error(media_err_t err, const char *detail)
@@ -197,9 +203,16 @@ static void set_error(media_err_t err, const char *detail)
 static void post_command(command_t command, uint32_t arg)
 {
     rg_mutex_take(player.lock, -1);
-    player.command_seek_ms = arg;
-    player.command_serial++;
-    player.command = command;
+    // A held seek button must not replace a track change or Stop before the
+    // decoder has had a chance to take it.
+    if (command != CMD_SEEK || (player.command != CMD_OPEN && player.command != CMD_STOP &&
+                               player.decoder && player.decoder->seekable))
+    {
+        player.command_seek_ms = arg;
+        player.command_seek_generation = player.generation;
+        player.command_serial++;
+        player.command = command;
+    }
     rg_mutex_give(player.lock);
 }
 
@@ -1007,6 +1020,7 @@ static void decode_task(void *arg)
         command_t command = player.command;
         uint32_t serial = player.command_serial;
         uint32_t command_seek_ms = player.command_seek_ms;
+        uint32_t command_seek_generation = player.command_seek_generation;
         player.command = CMD_NONE;
         rg_mutex_give(player.lock);
         if (command != CMD_NONE)
@@ -1020,7 +1034,7 @@ static void decode_task(void *arg)
                 break;
 
             case CMD_SEEK:
-                if (player.decoder)
+                if (player.decoder && player.generation == command_seek_generation)
                 {
                     if (player.announcement_pending)
                     {
@@ -1414,7 +1428,7 @@ void media_player_play(void)
 
     media_audio_set_paused(false);
     if (player.state == MEDIA_STATE_PAUSED)
-        set_state(MEDIA_STATE_PLAYING);
+        publish_state(media_audio_get_buffering() ? MEDIA_STATE_BUFFERING : MEDIA_STATE_PLAYING);
 }
 
 void media_player_pause(void)
@@ -1425,7 +1439,7 @@ void media_player_pause(void)
         return;
 
     media_audio_set_paused(true);
-    set_state(MEDIA_STATE_PAUSED);
+    publish_state(MEDIA_STATE_PAUSED);
 
     // Pausing is a natural place to persist where we are.
     if (player.track.id)
@@ -1579,6 +1593,7 @@ media_snapshot_t media_player_snapshot(void)
     snapshot.repeat = media_queue_get_repeat();
     snapshot.favorite = player.track.favorite;
     snapshot.live = player.live;
+    snapshot.seekable = player.decoder && player.decoder->seekable && !snapshot.live;
     snapshot.network = media_net_is_url(player.path);
     snapshot.pcm_fill_pct = (uint8_t)media_clampi(media_audio_fill_percent(), 0, 100);
     // Never follow a decoder pointer while the decode task can detach/free it.
@@ -1761,9 +1776,9 @@ static void ensure_network_tags(void)
 }
 
 /** Load lyrics for the current track. Runs on the UI task, off the critical path. */
-static void ensure_lyrics(void)
+void media_player_load_lyrics(void)
 {
-    if (player.lyrics_loaded || !player.path[0] || !media_settings()->lyrics_enabled ||
+    if (!player.initialized || player.lyrics_loaded || !player.path[0] || !media_settings()->lyrics_enabled ||
         player.state == MEDIA_STATE_STOPPED || player.state == MEDIA_STATE_LOADING ||
         player.state == MEDIA_STATE_ERROR)
         return;
@@ -1840,10 +1855,7 @@ void media_player_tick(void)
     }
 
     if (player.event_cb) // Background playback keeps only playback resources resident.
-    {
-        ensure_lyrics();
         ensure_network_tags();
-    }
 
     poll_audio_route();
 

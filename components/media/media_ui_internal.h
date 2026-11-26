@@ -114,6 +114,9 @@ typedef struct
     char overlay_title[32];
     char overlay_value[48];
     int overlay_percent;         // -1 when the overlay has no bar
+    bool seek_open;
+    uint32_t seek_position_ms;
+    uint32_t seek_generation;
     int32_t seek_preview_ms;     // Non-zero while a seek is being previewed
 
     /* Animation */
@@ -153,6 +156,7 @@ void media_ui_draw_marquee(int x, int y, int w, const char *text, rg_color_t col
 void media_ui_draw_scrollbar(int x, int y, int h, int visible, int total, int offset);
 void media_ui_show_overlay(const char *title, const char *value, int percent);
 void media_ui_draw_overlay(void);
+void media_ui_open_seek(void);
 void media_ui_draw_mini_player(void);
 void media_ui_draw_message(const char *title, const char *body);
 void media_ui_draw_art(int x, int y, int size, const char *path, const media_palette_t *palette,

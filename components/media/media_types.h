@@ -214,6 +214,7 @@ typedef struct
     bool favorite;
     bool muted;
     bool live;          // Continuous broadcast: no duration, no seeking
+    bool seekable;
     bool network;       // Source is a URL rather than a file on the card
 
     uint8_t pcm_fill_pct;

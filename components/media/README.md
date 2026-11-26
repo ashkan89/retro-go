@@ -70,6 +70,7 @@ anywhere in this component.
 | B | Back to the library |
 | Left / Right (tap) | Previous / next track |
 | Left / Right (hold) | Rewind / fast-forward, accelerating 5 → 10 → 20 → 30 → 60 s |
+| Y on Now Playing, or MENU → Seek to position | Preview a jump on the timeline. Left / Right adjusts, A seeks, B cancels. |
 | Up / Down | Volume (on the Lyrics page with unsynced text: scroll) |
 | START / SELECT | Next / previous page |
 | MENU | Player menu |

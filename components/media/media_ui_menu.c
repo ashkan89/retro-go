@@ -858,6 +858,8 @@ void media_ui_player_menu(void)
         {1,  "Now Playing",      NULL, flag_playing, NULL},
         {2,  "Browse Media",     NULL, RG_DIALOG_FLAG_NORMAL, NULL},
         {3,  "Queue",            NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        {12, "Seek to position", NULL, mui.snapshot.duration_ms && mui.snapshot.seekable ?
+                                       flag_playing : RG_DIALOG_FLAG_DISABLED, NULL},
         RG_DIALOG_SEPARATOR,
         {0,  "Shuffle",          values[0], RG_DIALOG_FLAG_NORMAL, &shuffle_cb},
         {0,  "Repeat",           values[1], RG_DIALOG_FLAG_NORMAL, &repeat_cb},
@@ -940,6 +942,10 @@ void media_ui_player_menu(void)
 
     case 11:
         mui.running = false;
+        break;
+
+    case 12:
+        media_ui_open_seek();
         break;
 
     default:

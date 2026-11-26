@@ -33,6 +33,8 @@ static struct
     media_snapshot_t snapshot;
     media_track_t *track;
     int64_t frame_us, marquee_reset_at;
+    bool seek_open;
+    uint32_t seek_position_ms;
 } mui;
 static uint16_t framebuffer[480 * 480];
 static int font_height = 16;
@@ -133,6 +135,8 @@ int main(int argc, char **argv)
     mui.track = &track;
     mui.snapshot = (media_snapshot_t){.state=MEDIA_STATE_PLAYING,.duration_ms=245000,.position_ms=83000,
         .sample_rate=44100,.bitrate=192000,.volume=75,.favorite=true,.next_track_id=1};
+    mui.seek_open = argc > 5 && strcmp(argv[5], "seek") == 0;
+    mui.seek_position_ms = 172000;
     mui.frame_us = 16000000;
     rg_gui_draw_rect(0,0,width,height,0,0,mui.theme.background);
     media_ui_nowplaying_draw();

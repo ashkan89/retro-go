@@ -22,7 +22,9 @@ static test_decoder_t decoder = {.source = &source};
 static struct
 {
     test_decoder_t *decoder;
+    bool initialized;
     media_state_t state;
+    media_track_t track;
     rg_audio_route_t previous_route;
     char path[256];
     bool preroll_active;
@@ -43,11 +45,11 @@ static void media_player_tick(void) { housekeeping_calls++; }
 #include "media_tick_under_test.h"
 static struct { bool pause_on_unplug; } settings = {.pause_on_unplug = true};
 #define media_settings() (&settings)
-static void media_player_pause(void)
+static void media_library_note_position(uint32_t id, uint32_t position_ms, uint32_t duration_ms)
 {
-    media_audio_set_paused(true);
-    set_state(MEDIA_STATE_PAUSED);
+    (void)id; (void)position_ms; (void)duration_ms;
 }
+#include "media_pause_under_test.h"
 #include "media_route_under_test.h"
 
 static size_t submitted, stop_after;
@@ -77,6 +79,7 @@ static void rg_audio_submit(const rg_audio_frame_t *frames, size_t count)
 static void start_output(void)
 {
     delay_hook = NULL;
+    player.initialized = true;
     assert(media_audio_start());
     submitted = 0;
     stop_after = 1;
@@ -294,6 +297,19 @@ static void test_buffering_pause(void)
     assert(media_audio_underruns() == 1 && media_audio_get_buffering());
 }
 
+static void test_transport_during_output(void)
+{
+    start_output();
+    player.state = MEDIA_STATE_PLAYING;
+    assert(rg_mutex_take(audio.lock, 0));
+    media_player_pause();
+    assert(player.state == MEDIA_STATE_PAUSED && media_audio_get_paused());
+    assert(media_audio_get_buffering());
+    media_audio_set_paused(false);
+    assert(!media_audio_get_paused());
+    rg_mutex_give(audio.lock);
+}
+
 static void test_fifo_and_position(void)
 {
     int16_t pcm[600 * 2];
@@ -301,7 +317,7 @@ static void test_fifo_and_position(void)
     start_output();
     assert(media_audio_set_sample_rate(48000));
     media_audio_flush(12500);
-    audio.fade = audio.fade_target = 1.0f;
+    audio.fade = 1.0f;
     assert(media_audio_write(pcm, 600, 0) == 600);
     stop_after = 600;
     expected_sample = 0;
@@ -443,6 +459,7 @@ int main(void)
     media_audio_release(MEDIA_AUDIO_OWNER_EMULATOR);
     assert(media_audio_get_owner() == MEDIA_AUDIO_OWNER_PLAYER);
     test_buffering_pause();
+    test_transport_during_output();
     test_transient_starvation();
     test_fifo_and_position();
     test_dma_tail();

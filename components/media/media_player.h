@@ -64,6 +64,7 @@ const char *media_player_path(void);
 const char *media_player_art_path(void);
 
 const media_lyrics_t *media_player_lyrics(void);
+void media_player_load_lyrics(void);
 bool media_player_lyrics_available(void);
 
 /** Human-readable reason for the last failure, or NULL. */

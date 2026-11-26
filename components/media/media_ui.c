@@ -175,15 +175,17 @@ void media_ui_draw_scrollbar(int x, int y, int h, int visible, int total, int of
 void media_ui_draw_header(const char *title, const char *right)
 {
     media_layout_t *l = &mui.layout;
+    bool has_right = right && *right;
 
     rg_gui_draw_rect(0, 0, l->width, l->header_h, 0, 0, media_color_scale(mui.theme.surface, 200));
     rg_gui_draw_rect(0, l->header_h - 1, l->width, 1, 0, 0, mui.theme.divider);
 
     rg_gui_draw_rect(l->pad, l->pad + 2, 2, l->line_h - 4, 0, 0, mui.theme.accent);
-    rg_gui_draw_text(l->pad * 2, l->pad, l->width / 2 - l->pad * 3, title ?: "", mui.theme.text, C_TRANSPARENT,
+    int title_w = (has_right ? l->width / 2 : l->width) - l->pad * 3;
+    rg_gui_draw_text(l->pad * 2, l->pad, title_w, title ?: "", mui.theme.text, C_TRANSPARENT,
                      RG_TEXT_ALIGN_LEFT);
 
-    if (right && *right)
+    if (has_right)
         rg_gui_draw_text(l->width / 2, l->pad, l->width / 2 - l->pad * 2, right, mui.theme.text_dim,
                          C_TRANSPARENT, RG_TEXT_ALIGN_RIGHT);
 }
@@ -299,7 +301,7 @@ void media_ui_show_overlay(const char *title, const char *value, int percent)
 
 void media_ui_draw_overlay(void)
 {
-    if (mui.frame_us > mui.overlay_until_us)
+    if (!mui.overlay_until_us || mui.frame_us >= mui.overlay_until_us)
         return;
 
     media_layout_t *l = &mui.layout;
@@ -683,18 +685,47 @@ static int32_t seek_step_ms(int repeats)
     return steps[index];
 }
 
+static bool can_seek(void)
+{
+    return mui.snapshot.seekable && mui.snapshot.duration_ms &&
+           (mui.snapshot.state == MEDIA_STATE_PLAYING || mui.snapshot.state == MEDIA_STATE_PAUSED ||
+            mui.snapshot.state == MEDIA_STATE_BUFFERING || mui.snapshot.state == MEDIA_STATE_SEEKING);
+}
+
+void media_ui_open_seek(void)
+{
+    if (!can_seek())
+    {
+        media_ui_show_overlay("Seek", "Unavailable", -1);
+        return;
+    }
+    mui.page = MEDIA_PAGE_NOW_PLAYING;
+    mui.in_library = false;
+    mui.seek_open = true;
+    mui.seek_position_ms = mui.snapshot.position_ms;
+    mui.seek_generation = mui.snapshot.generation;
+    mui.overlay_until_us = 0;
+    mui.needs_redraw = true;
+}
+
+static uint32_t offset_position(uint32_t position, int32_t delta)
+{
+    int64_t target = (int64_t)position + delta;
+    if (target < 0)
+        return 0;
+    if (mui.snapshot.duration_ms && target > mui.snapshot.duration_ms)
+        return mui.snapshot.duration_ms;
+    return target > UINT32_MAX ? UINT32_MAX : (uint32_t)target;
+}
+
 static void handle_seek(int direction, int repeats)
 {
+    if (!mui.snapshot.seekable)
+        return;
     int32_t delta = seek_step_ms(repeats) * direction;
     uint32_t position = mui.snapshot.position_ms;
-    int64_t target = (int64_t)position + delta;
-
-    if (target < 0)
-        target = 0;
-    if (mui.snapshot.duration_ms && target > (int64_t)mui.snapshot.duration_ms)
-        target = mui.snapshot.duration_ms;
-
-    media_player_seek_to((uint32_t)target);
+    uint32_t target = offset_position(position, delta);
+    media_player_seek_to(target);
 
     char value[48], now[16], total[16];
     media_format_time(now, sizeof(now), (uint32_t)target);
@@ -703,7 +734,7 @@ static void handle_seek(int direction, int repeats)
     media_format_delta(delta_text, sizeof(delta_text), (int32_t)(target - (int64_t)position));
     snprintf(value, sizeof(value), "%s   %s / %s", delta_text, now, total);
 
-    int percent = mui.snapshot.duration_ms ? (int)((target * 100) / mui.snapshot.duration_ms) : 0;
+    int percent = mui.snapshot.duration_ms ? (int)((uint64_t)target * 100 / mui.snapshot.duration_ms) : 0;
     media_ui_show_overlay("Seek", value, percent);
 }
 
@@ -721,6 +752,29 @@ static void adjust_volume(int delta)
 static bool handle_input(uint32_t key, int repeats)
 {
     bool repeat = repeats > 0;
+
+    if (mui.seek_open)
+    {
+        switch (key)
+        {
+        case RG_KEY_LEFT:
+        case RG_KEY_RIGHT:
+            mui.seek_position_ms = offset_position(mui.seek_position_ms,
+                seek_step_ms(repeats) * (key == RG_KEY_LEFT ? -1 : 1));
+            break;
+        case RG_KEY_A:
+            media_player_seek_to(mui.seek_position_ms);
+            /* fallthrough */
+        case RG_KEY_B:
+        case RG_KEY_Y:
+            mui.seek_open = false;
+            break;
+        default:
+            break;
+        }
+        mui.needs_redraw = true;
+        return true;
+    }
 
     /* Quick settings swallow everything while open. */
     if (mui.quick_open)
@@ -853,6 +907,11 @@ static bool handle_input(uint32_t key, int repeats)
         media_ui_show_overlay("Favorite", mui.snapshot.favorite ? "Removed" : "Added", -1);
         break;
 
+    case RG_KEY_Y:
+        if (mui.page == MEDIA_PAGE_NOW_PLAYING)
+            media_ui_open_seek();
+        break;
+
     default:
         break;
     }
@@ -974,6 +1033,9 @@ void media_ui_run(void)
     mui.running = true;
     mui.needs_redraw = true;
     mui.lyric_index = -1;
+    mui.quick_open = false;
+    mui.seek_open = false;
+    mui.overlay_until_us = 0;
     mui.overlay_percent = -1;
     mui.marquee_reset_at = rg_system_timer();
 
@@ -998,7 +1060,9 @@ void media_ui_run(void)
     }
     pending_view = -1;
 
-    uint32_t previous_keys = 0;
+    uint32_t previous_keys = rg_input_read_gamepad();
+    uint32_t repeat_key = 0;
+    uint32_t transport_tap = 0;
     int64_t next_repeat = 0;
     int repeats = 0;
     int64_t next_frame = 0;
@@ -1007,6 +1071,8 @@ void media_ui_run(void)
     uint32_t fps_frames = 0;
 
     const int64_t fft_interval = 1000000 / 25;
+    const uint32_t directions = RG_KEY_UP | RG_KEY_DOWN | RG_KEY_LEFT | RG_KEY_RIGHT;
+    bool screen_was_visible = !rg_system_screen_is_dimmed();
 
     while (mui.running)
     {
@@ -1016,37 +1082,45 @@ void media_ui_run(void)
         // Through the system filter so a press that wakes a dimmed screen only wakes it,
         // rather than also triggering whatever that button normally does.
         uint32_t keys = rg_system_filter_screen_timeout_input(rg_input_read_gamepad());
-        uint32_t pressed = 0;
-
-        if (keys)
-        {
-            if (keys != previous_keys)
-            {
-                pressed = keys;
-                repeats = 0;
-                next_repeat = mui.frame_us + REPEAT_DELAY_US;
-            }
-            else if (mui.frame_us >= next_repeat)
-            {
-                pressed = keys;
-                repeats++;
-                // Accelerate while held, but never faster than ~8 Hz
-                next_repeat = mui.frame_us + RG_MAX(REPEAT_DELAY_US / (repeats + 1), 120000);
-            }
-        }
-        else
+        uint32_t pressed = keys & ~previous_keys;
+        bool new_press = pressed != 0;
+        if (pressed)
         {
             repeats = 0;
+            next_repeat = mui.frame_us + REPEAT_DELAY_US;
         }
+        else if ((keys & repeat_key) && mui.frame_us >= next_repeat)
+        {
+            pressed = repeat_key;
+            repeats++;
+            next_repeat = mui.frame_us + RG_MAX(REPEAT_DELAY_US / (repeats + 1), 120000);
+        }
+        if (!(keys & repeat_key))
+            repeat_key = 0;
         previous_keys = keys;
 
         /* --- State ------------------------------------------------------------------- */
         media_player_tick();
         mui.snapshot = media_player_snapshot();
         mui.track = media_player_track();
+        if (mui.seek_open && (!can_seek() || mui.snapshot.generation != mui.seek_generation))
+        {
+            mui.seek_open = false;
+            mui.needs_redraw = true;
+        }
+
+        // A short press skips tracks. Decide on release so holding the same
+        // button can seek within the current track without first skipping it.
+        if (transport_tap && !(keys & transport_tap))
+        {
+            if (!new_press)
+                handle_input(transport_tap, 0);
+            transport_tap = 0;
+        }
 
         if (pressed)
         {
+            transport_tap = 0;
             // Isolate a single logical key so chords do not trigger two actions at once.
             uint32_t key = pressed & (RG_KEY_MENU | RG_KEY_OPTION);
             if (!key)
@@ -1054,23 +1128,39 @@ void media_ui_run(void)
             if (!key)
                 key = pressed & (RG_KEY_A | RG_KEY_B | RG_KEY_X | RG_KEY_Y);
             if (!key)
-                key = pressed & (RG_KEY_UP | RG_KEY_DOWN | RG_KEY_LEFT | RG_KEY_RIGHT);
+                key = pressed & directions;
 
-            if (key && !handle_input(key, repeats))
+            key &= 0u - key; // Keep the lowest set bit within the priority group.
+            repeat_key = key & directions;
+            if (new_press && (key & (RG_KEY_LEFT | RG_KEY_RIGHT)) && mui.snapshot.seekable &&
+                !mui.quick_open && !mui.seek_open && mui.page != MEDIA_PAGE_LIBRARY && mui.page != MEDIA_PAGE_QUEUE)
+                transport_tap = key;
+            else if (key && !handle_input(key, repeats))
                 break;
         }
+
+        if (mui.page == MEDIA_PAGE_LYRICS || mui.page == MEDIA_PAGE_INFO)
+            media_player_load_lyrics();
 
         /* --- Visualiser -------------------------------------------------------------- */
         bool audio_pressure = media_player_pressure() >= 2;
         bool screen_visible = !rg_system_screen_is_dimmed();
-        if (screen_visible && !audio_pressure && mui.frame_us >= next_fft)
+        if (screen_visible && !screen_was_visible)
+            mui.needs_redraw = true;
+        screen_was_visible = screen_visible;
+        if (mui.overlay_until_us && mui.frame_us >= mui.overlay_until_us)
+        {
+            mui.overlay_until_us = 0;
+            mui.needs_redraw = true;
+        }
+        if (mui.page == MEDIA_PAGE_VISUALIZER && screen_visible && !audio_pressure &&
+            mui.frame_us >= next_fft)
         {
             next_fft = mui.frame_us + fft_interval;
             if (media_fft_ready() && mui.snapshot.state == MEDIA_STATE_PLAYING)
             {
                 media_fft_analyze();
-                if (mui.page == MEDIA_PAGE_VISUALIZER || mui.page == MEDIA_PAGE_NOW_PLAYING)
-                    mui.needs_redraw = true;
+                mui.needs_redraw = true;
             }
         }
 
@@ -1084,7 +1174,7 @@ void media_ui_run(void)
         if (audio_pressure && fps > 15)
             fps = 15;
         int64_t frame_interval = 1000000 / fps;
-        bool animating = screen_visible &&
+        bool animating = screen_visible && !mui.seek_open &&
                          (media_anim_running(&mui.progress_anim) ||
                           mui.frame_us < mui.overlay_until_us ||
                           mui.snapshot.state == MEDIA_STATE_PLAYING ||
@@ -1129,6 +1219,7 @@ void media_ui_run(void)
     media_ui_library_release();
     media_list_free(&mui.list);
     rg_display_sync(true); // Retire the last queued reference before freeing it.
+    rg_gui_set_backdrop(NULL);
     rg_surface_free(mui.surface);
     mui.surface = NULL;
     mui.running = false;

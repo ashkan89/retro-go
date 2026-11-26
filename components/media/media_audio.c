@@ -55,7 +55,6 @@ static struct
 
     float gain;                 // ReplayGain / sleep fade
     float fade;                 // Current click-suppression ramp, 0.0 - 1.0
-    float fade_target;
 
     uint64_t frames_played;
     uint32_t published_position_ms; // Atomic UI snapshot; never waits for DMA back-pressure.
@@ -71,7 +70,6 @@ static struct
 } audio = {
     .gain = 1.0f,
     .fade = 0.0f,
-    .fade_target = 1.0f,
     .sample_rate = 44100,
 };
 
@@ -109,9 +107,9 @@ media_audio_owner_t media_audio_get_owner(void)
 /* -------------------------------------------------------------------------------------- */
 
 /** Apply the click-suppression ramp in place and advance it towards its target. */
-static void apply_fade(int16_t *pcm, size_t frames)
+static void apply_fade(int16_t *pcm, size_t frames, float target)
 {
-    if (audio.fade == audio.fade_target && audio.fade == 1.0f)
+    if (audio.fade == target && target == 1.0f)
         return;
 
     // MEDIA_FADE_MS worth of samples to go from one end of the ramp to the other.
@@ -121,10 +119,10 @@ static void apply_fade(int16_t *pcm, size_t frames)
 
     for (size_t i = 0; i < frames; ++i)
     {
-        if (audio.fade < audio.fade_target)
-            audio.fade = media_clampf(audio.fade + step, 0.0f, audio.fade_target);
-        else if (audio.fade > audio.fade_target)
-            audio.fade = media_clampf(audio.fade - step, audio.fade_target, 1.0f);
+        if (audio.fade < target)
+            audio.fade = media_clampf(audio.fade + step, 0.0f, target);
+        else if (audio.fade > target)
+            audio.fade = media_clampf(audio.fade - step, target, 1.0f);
 
         pcm[i * 2 + 0] = (int16_t)((float)pcm[i * 2 + 0] * audio.fade);
         pcm[i * 2 + 1] = (int16_t)((float)pcm[i * 2 + 1] * audio.fade);
@@ -152,7 +150,8 @@ static void audio_task(void *arg)
     while (!audio.stop)
     {
         rg_mutex_take(audio.lock, -1);
-        if (__atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE) || (audio.paused && audio.fade <= 0.0f))
+        bool paused = media_audio_get_paused();
+        if (__atomic_load_n(&audio.buffering, __ATOMIC_ACQUIRE) || (paused && audio.fade <= 0.0f))
         {
             starvation_waited = false;
             // Fully faded out: stop consuming so the buffer is intact when we resume.
@@ -175,7 +174,7 @@ static void audio_task(void *arg)
 
         if (frames == 0)
         {
-            if (!audio.draining && !audio.paused && !starvation_waited)
+            if (!audio.draining && !paused && !starvation_waited)
             {
                 // DMA/software output still has a reserve. Give the producer a
                 // bounded chance to refill before turning a brief dip into a
@@ -205,7 +204,7 @@ static void audio_task(void *arg)
                 }
                 audio.drained = rg_system_timer() >= audio.drain_deadline_us;
             }
-            else if (!audio.paused)
+            else if (!paused)
             {
                 // A genuine underrun. The hardware keeps playing its own DMA reserve, so this
                 // is recoverable; we just note it and let the controller rebuffer.
@@ -220,7 +219,7 @@ static void audio_task(void *arg)
                 audio.fade = 0.0f;
             }
             rg_mutex_give(audio.lock);
-            if (audio.draining || audio.paused)
+            if (audio.draining || paused)
                 rg_task_delay(10);
             else
                 media_ring_wait_readable(audio.pcm, 20);
@@ -232,8 +231,8 @@ static void audio_task(void *arg)
 
         // EQ, ReplayGain and the limiter all run here, on the way out, so the same block is
         // touched exactly once.
-        media_eq_process(audio.chunk, frames, audio.gain);
-        apply_fade(audio.chunk, frames);
+        media_eq_process(audio.chunk, frames, media_audio_get_gain());
+        apply_fade(audio.chunk, frames, paused ? 0.0f : 1.0f);
 
         // Non-blocking tap for the visualiser: it sees exactly what is being played.
         media_fft_feed(audio.chunk, frames);
@@ -296,13 +295,12 @@ bool media_audio_start(void)
 
     audio.previous_system_rate = rg_audio_get_sample_rate();
     audio.stop = false;
-    audio.paused = false;
+    media_audio_set_paused(false);
     __atomic_store_n(&audio.buffering, true, __ATOMIC_RELEASE);
     audio.draining = false;
     audio.drained = false;
     audio.drain_padded = false;
     audio.fade = 0.0f;
-    audio.fade_target = 1.0f;
     audio.frames_played = 0;
     audio.frames_at_base = 0;
     audio.track_marked = false;
@@ -330,9 +328,7 @@ void media_audio_stop(void)
         return;
 
     // Fade out before tearing anything down, otherwise the amplifier clicks.
-    rg_mutex_take(audio.lock, -1);
-    audio.fade_target = 0.0f;
-    rg_mutex_give(audio.lock);
+    media_audio_set_paused(true);
     for (int i = 0; i < 10 && audio.fade > 0.0f && audio.alive; ++i)
         rg_task_delay(MEDIA_FADE_MS / 4 + 1);
 
@@ -403,7 +399,6 @@ bool media_audio_set_sample_rate(uint32_t sample_rate)
     // the speaker, and fade back in afterwards.
     bool was_muted = rg_audio_get_mute();
     audio.fade = 0.0f;
-    audio.fade_target = 0.0f;
 
     rg_audio_set_mute(true);
     rg_audio_set_sample_rate((int)sample_rate);
@@ -412,7 +407,6 @@ bool media_audio_set_sample_rate(uint32_t sample_rate)
 
     audio.sample_rate = sample_rate;
     media_eq_set_sample_rate(sample_rate);
-    audio.fade_target = audio.paused ? 0.0f : 1.0f;
     rg_mutex_give(audio.lock);
 
     RG_LOGI("Output rate is now %u Hz", (unsigned)sample_rate);
@@ -449,7 +443,6 @@ void media_audio_flush(uint32_t position_ms)
     audio.track_marked = false;
     audio.drained = false;
     audio.drain_padded = false;
-    audio.fade_target = audio.paused ? 0.0f : 1.0f;
 
     publish_position();
     media_eq_flush();
@@ -480,38 +473,29 @@ size_t media_audio_capacity_frames(void)
 
 void media_audio_set_paused(bool paused)
 {
-    if (!audio.lock)
-        return;
-    rg_mutex_take(audio.lock, -1);
-    if (audio.paused == paused)
-    {
-        rg_mutex_give(audio.lock);
-        return;
-    }
-    audio.paused = paused;
-    audio.fade_target = paused ? 0.0f : 1.0f;
-    rg_mutex_give(audio.lock);
+    // Transport runs on the UI task. The output task adopts this intent at the
+    // next chunk boundary, even if the current I2S submission is still pending.
+    __atomic_store_n(&audio.paused, paused, __ATOMIC_RELEASE);
 }
 
 bool media_audio_get_paused(void)
 {
-    return audio.paused;
+    return __atomic_load_n(&audio.paused, __ATOMIC_ACQUIRE);
 }
 
 void media_audio_set_gain(float gain)
 {
     if (!(gain > 0.0f) || !isfinite(gain))
         gain = 0.0f;
-    if (!audio.lock)
-        return;
-    rg_mutex_take(audio.lock, -1);
-    audio.gain = media_clampf(gain, 0.0f, 4.0f);
-    rg_mutex_give(audio.lock);
+    gain = media_clampf(gain, 0.0f, 4.0f);
+    __atomic_store(&audio.gain, &gain, __ATOMIC_RELAXED);
 }
 
 float media_audio_get_gain(void)
 {
-    return audio.gain;
+    float gain;
+    __atomic_load(&audio.gain, &gain, __ATOMIC_RELAXED);
+    return gain;
 }
 
 void media_audio_set_draining(bool draining)
