@@ -89,13 +89,15 @@ static bool gw_system_LoadState(const char *pathName)
     return success;
 }
 
+static uint32_t frame_buttons;
+
 /* callback to get buttons state */
 unsigned int gw_get_buttons()
 {
     uint32_t hw_buttons = 0;
     if (!softkey_only)
     {
-        uint32_t joystick = rg_input_read_gamepad();
+        uint32_t joystick = frame_buttons;
         if (joystick & RG_KEY_LEFT) hw_buttons |= GW_BUTTON_LEFT;
         if (joystick & RG_KEY_UP) hw_buttons |= GW_BUTTON_UP;
         if (joystick & RG_KEY_RIGHT) hw_buttons |= GW_BUTTON_RIGHT;
@@ -245,6 +247,8 @@ void gw_main(void)
             rg_gui_game_menu();
         else if (joystick & RG_KEY_OPTION)
             rg_gui_options_menu();
+
+        frame_buttons = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
 
         // soft keys emulation
         if (softkey_duration > 0)

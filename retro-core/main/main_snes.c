@@ -76,6 +76,7 @@ static bool lowpass_filter = false;
 
 static int keymap_id = 0;
 static keymap_t keymap;
+static uint32_t frame_buttons[RG_PLAYER_COUNT];
 
 static const char *SETTING_KEYMAP = "keymap";
 static const char *SETTING_APU_EMULATION = "apu";
@@ -239,7 +240,7 @@ uint32_t S9xReadJoypad(int32_t port)
     if (port != 0 && port != 1)
         return 0;
 
-    uint32_t joystick = rg_input_read_gamepad_player(port == 0 ? RG_PLAYER_1 : RG_PLAYER_2);
+    uint32_t joystick = frame_buttons[port];
     uint32_t joypad = 0;
 
     for (int i = 0; i < RG_COUNT(keymap.keys); ++i)
@@ -453,6 +454,8 @@ void snes_main(void)
         // Audio is mixed and queued incrementally by S9xAudioTick() (called from
         // cpuexec.c once per scanline) as S9xMainLoop() progresses, instead of
         // once in a lump here after the whole frame's emulation finishes.
+        frame_buttons[RG_PLAYER_1] = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
+        frame_buttons[RG_PLAYER_2] = rg_input_read_gamepad_gameplay(RG_PLAYER_2);
         S9xMainLoop();
 
         if (drawFrame)

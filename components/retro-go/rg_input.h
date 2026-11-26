@@ -19,7 +19,10 @@ typedef enum
     RG_KEY_Y       = (1 << 11),
     RG_KEY_L       = (1 << 12),
     RG_KEY_R       = (1 << 13),
-    RG_KEY_COUNT   = 14,
+    RG_KEY_TURBO_A = (1 << 14),
+    RG_KEY_TURBO_B = (1 << 15),
+    RG_KEY_COUNT   = 16,
+    RG_KEY_TURBO   = RG_KEY_TURBO_A | RG_KEY_TURBO_B,
     RG_KEY_ANY     = 0xFFFF,
     RG_KEY_ALL     = 0xFFFF,
     RG_KEY_NONE    = 0,
@@ -121,7 +124,14 @@ bool rg_input_key_is_pressed(rg_key_t mask);
 bool rg_input_wait_for_key(rg_key_t mask, bool pressed, int timeout_ms);
 uint32_t rg_input_read_gamepad(void);
 uint32_t rg_input_read_gamepad_unfiltered(void);
+// Physical logical keys, including Turbo A/B. P1 still honors screen wake filtering.
 uint32_t rg_input_read_gamepad_player(rg_player_t player);
+// Call once per emulated frame (or game tic) for each player.
+uint32_t rg_input_apply_turbo(uint32_t keys, rg_player_t player);
+static inline uint32_t rg_input_read_gamepad_gameplay(rg_player_t player)
+{
+    return rg_input_apply_turbo(rg_input_read_gamepad_player(player), player);
+}
 rg_battery_t rg_input_read_battery(void);
 bool rg_input_read_gamepad_raw(uint32_t *out);
 bool rg_input_read_battery_raw(rg_battery_t *out);

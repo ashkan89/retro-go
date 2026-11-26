@@ -66,13 +66,14 @@ static uint32_t capture_candidate[RG_USB_XINPUT_MAX_DEVICES];
 static uint8_t capture_candidate_count[RG_USB_XINPUT_MAX_DEVICES];
 
 // Bit index within the GIP button mask (see process_input_report) for each RG_KEY_*,
-// in RG_KEY_UP..RG_KEY_R order. -1 means "no default, map it manually".
+// in RG_KEY_UP..RG_KEY_TURBO_B order. -1 means "no default, map it manually".
 static const int8_t default_button_bits[RG_KEY_COUNT] = {
     8, 11, 9, 10, /* UP RIGHT DOWN LEFT -> D-pad */
     3, 2,         /* SELECT -> View, START -> Menu */
     -1, -1,       /* MENU, OPTION: unmapped by default */
     4, 5, 6, 7,   /* A B X Y */
     12, 13,       /* L -> LB, R -> RB */
+    -1, -1,       /* Turbo A/B: unmapped by default */
 };
 
 static uint32_t default_mapping(int key_index)

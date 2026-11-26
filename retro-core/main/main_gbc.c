@@ -322,7 +322,7 @@ void gbc_main(void)
 
     while (true)
     {
-        joystick = rg_input_read_gamepad();
+        joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {

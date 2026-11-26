@@ -279,7 +279,7 @@ void nes_nofrendo_main(void)
 
     while (true)
     {
-        uint32_t joystick = rg_input_read_gamepad();
+        uint32_t joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {
@@ -302,7 +302,7 @@ void nes_nofrendo_main(void)
         if (joystick & RG_KEY_A)      buttons |= NES_PAD_A;
         if (joystick & RG_KEY_B)      buttons |= NES_PAD_B;
 
-        uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+        uint32_t joystick2 = rg_input_read_gamepad_gameplay(RG_PLAYER_2);
         int buttons2 = 0;
 
         if (joystick2 & RG_KEY_START)  buttons2 |= NES_PAD_START;

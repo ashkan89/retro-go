@@ -115,8 +115,8 @@ static void input_poll(void) {}
 static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
     static const uint32_t map[] = {
-        RG_KEY_B, RG_KEY_Y, RG_KEY_SELECT, RG_KEY_START, RG_KEY_UP, RG_KEY_DOWN,
-        RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_X, RG_KEY_L, RG_KEY_R,
+        RG_KEY_B, RG_KEY_Y | RG_KEY_TURBO_B, RG_KEY_SELECT, RG_KEY_START, RG_KEY_UP, RG_KEY_DOWN,
+        RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_X | RG_KEY_TURBO_A, RG_KEY_L, RG_KEY_R,
     };
     // One emulated GBA has one keypad. P2 is a separate logical controller,
     // not a second handheld or a link-cable connection.

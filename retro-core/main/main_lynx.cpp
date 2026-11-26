@@ -232,7 +232,7 @@ extern "C" void lynx_main(void)
     // Start emulation
     while (1)
     {
-        uint32_t joystick = rg_input_read_gamepad();
+        uint32_t joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {

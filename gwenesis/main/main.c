@@ -267,18 +267,16 @@ void app_main(void)
     extern int hint_pending;
 
     uint32_t keymap[8] = {RG_KEY_UP, RG_KEY_DOWN, RG_KEY_LEFT, RG_KEY_RIGHT, RG_KEY_A, RG_KEY_B, RG_KEY_SELECT, RG_KEY_START};
-    uint32_t joystick = 0, joystick_old;
-    uint32_t joystick2 = 0, joystick2_old;
+    uint32_t joystick = 0, joystick_old = 0;
+    uint32_t joystick2 = 0, joystick2_old = 0;
 
     int skipFrames = 0;
 
     RG_LOGI("emulation loop\n");
     while (true)
     {
-        joystick_old = joystick;
-        joystick = rg_input_read_gamepad();
-        joystick2_old = joystick2;
-        joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+        joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
+        joystick2 = rg_input_read_gamepad_gameplay(RG_PLAYER_2);
 
         if (joystick & (RG_KEY_MENU | RG_KEY_OPTION))
         {
@@ -298,6 +296,7 @@ void app_main(void)
                     else
                         gwenesis_io_pad_release_button(0, i);
                 }
+                joystick_old = joystick;
             }
             if (joystick2 != joystick2_old)
             {
@@ -308,6 +307,7 @@ void app_main(void)
                     else
                         gwenesis_io_pad_release_button(1, i);
                 }
+                joystick2_old = joystick2;
             }
         }
 

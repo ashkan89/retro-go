@@ -430,7 +430,10 @@ void I_StartTic(void)
     static int64_t last_time = 0;
     static int32_t prev_joystick = 0x0000;
     static int32_t rg_menu_delay = 0;
-    uint32_t joystick = rg_input_read_gamepad();
+    uint32_t joystick = rg_input_read_gamepad_player(RG_PLAYER_1);
+    if (menuactive || gamestate != GS_LEVEL)
+        joystick &= ~RG_KEY_TURBO;
+    joystick = rg_input_apply_turbo(joystick, RG_PLAYER_1);
     uint32_t changed = prev_joystick ^ joystick;
     event_t event = {0};
 
@@ -468,11 +471,11 @@ void I_StartTic(void)
                 D_PostEvent(&event);
             }
         }
+        prev_joystick = joystick;
     }
 
     rg_system_tick(rg_system_timer() - last_time);
     last_time = rg_system_timer();
-    prev_joystick = joystick;
 }
 
 void I_Init(void)

@@ -101,7 +101,7 @@ void osd_vsync(void)
 
 void osd_input_read(uint8_t joypads[8])
 {
-    uint32_t joystick = rg_input_read_gamepad();
+    uint32_t joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
     uint32_t buttons = 0;
 
     if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
@@ -125,7 +125,7 @@ void osd_input_read(uint8_t joypads[8])
 
     joypads[0] = buttons;
 
-    uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    uint32_t joystick2 = rg_input_read_gamepad_gameplay(RG_PLAYER_2);
     uint32_t buttons2 = 0;
 
     if (joystick2 & RG_KEY_LEFT)   buttons2 |= JOY_LEFT;

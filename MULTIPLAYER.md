@@ -19,6 +19,15 @@ leave built-in input on P1 and assign the external controller to P2. Keyboard
 and mouse sources also participate in Auto assignment, so use explicit player
 assignments when connecting several different peripheral types through a hub.
 
+## Turbo buttons on ESP32-S3 and ESP32-P4
+
+In **Options > USB controllers > Gamepad mapping** or **Options > Xbox
+controller**, select **Turbo A** or **Turbo B**, then press a spare physical
+button to assign it. Hold the assigned button in a game to repeat
+the current emulator's A or B action. Turbo works independently for each player
+on systems with two controller ports. gpSP also accepts the existing X and Y
+bindings for Turbo A and Turbo B, respectively.
+
 ## P4 physical connections
 
 Both P4 N16R32 display targets have one bank of built-in active-low buttons,

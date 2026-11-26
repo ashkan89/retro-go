@@ -197,7 +197,7 @@ void sms_main(void)
     while (true)
     {
         const int64_t startTime = rg_system_timer();
-        uint32_t joystick = rg_input_read_gamepad();
+        uint32_t joystick = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
         bool drawFrame = !skipFrames;
         bool slowFrame = false;
 
@@ -210,7 +210,7 @@ void sms_main(void)
             continue;
         }
 
-        uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+        uint32_t joystick2 = rg_input_read_gamepad_gameplay(RG_PLAYER_2);
 
         input.pad[0] = 0x00;
         input.pad[1] = 0x00;

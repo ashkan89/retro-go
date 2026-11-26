@@ -23,6 +23,7 @@ def main():
 #include <string>
 #include "rg_input.h"
 #include "libretro.h"
+#define RG_COUNT(a) (sizeof(a)/sizeof((a)[0]))
 static uint32_t states[2];
 uint32_t rg_input_read_gamepad(void) { return states[0]; }
 uint32_t rg_input_read_gamepad_player(rg_player_t p) { return states[p]; }
@@ -30,6 +31,27 @@ static bool primary, legacy;
 #define RG_BASE_PATH_BIOS "/retro-go/bios"
 static bool rg_storage_exists(const char *path) {
     return std::string(path).find("disksys.rom") != std::string::npos ? primary : legacy;
+}
+'''
+    source += section("components/retro-go/rg_input.c", "uint32_t rg_input_apply_turbo", "bool rg_input_key_is_pressed")
+    source += r'''
+static void check_turbo() {
+    states[0] = RG_KEY_TURBO_A | RG_KEY_LEFT;
+    states[1] = RG_KEY_TURBO_B;
+    for (int tick = 0; tick < 8; ++tick) {
+        const bool pressed = tick % 4 < 2;
+        assert(rg_input_read_gamepad_gameplay(RG_PLAYER_1) == (RG_KEY_LEFT | (pressed ? RG_KEY_A : 0)));
+        assert(rg_input_read_gamepad_gameplay(RG_PLAYER_2) == (pressed ? RG_KEY_B : 0));
+    }
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A | RG_KEY_TURBO_B, RG_PLAYER_1) == (RG_KEY_A | RG_KEY_B));
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A | RG_KEY_TURBO_B, RG_PLAYER_1) == (RG_KEY_A | RG_KEY_B));
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A | RG_KEY_TURBO_B | RG_KEY_A, RG_PLAYER_1) == RG_KEY_A);
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A | RG_KEY_MENU, RG_PLAYER_1) == RG_KEY_MENU);
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A, RG_PLAYER_1) == RG_KEY_A);
+    assert(rg_input_apply_turbo(0, RG_PLAYER_1) == 0);
+    assert(rg_input_apply_turbo(RG_KEY_TURBO_A, RG_PLAYER_1) == RG_KEY_A);
+    rg_input_apply_turbo(0, RG_PLAYER_1);
+    rg_input_apply_turbo(0, RG_PLAYER_2);
 }
 '''
     source += section("retro-core/main/shared.h", "static inline const char *nes_fds_bios_path", "extern uint8_t")
@@ -147,15 +169,15 @@ static void check() {
 }
 }
 namespace snes {
-#define RG_COUNT(a) (sizeof(a)/sizeof((a)[0]))
 static struct {struct {uint32_t local_mask,mod_mask,snes9x_mask;} keys[2];} keymap = {{{RG_KEY_A,0,1},{RG_KEY_LEFT,0,2}}};
+static uint32_t frame_buttons[RG_PLAYER_COUNT];
 '''
     source += section("retro-core/main/main_snes.c", "uint32_t S9xReadJoypad", "bool S9xReadMousePosition")
     source += r'''
 static void check() {
-    states[0]=RG_KEY_A; states[1]=RG_KEY_LEFT;
+    frame_buttons[0]=RG_KEY_A; frame_buttons[1]=RG_KEY_LEFT;
     assert(S9xReadJoypad(0)==1 && S9xReadJoypad(1)==2 && S9xReadJoypad(2)==0);
-    states[0]=states[1]=0; assert(!S9xReadJoypad(0) && !S9xReadJoypad(1));
+    frame_buttons[0]=frame_buttons[1]=0; assert(!S9xReadJoypad(0) && !S9xReadJoypad(1));
 }
 }
 '''
@@ -176,9 +198,9 @@ static void check() {
 namespace msx {
 enum {JST_UP=1,JST_DOWN=2,JST_LEFT=4,JST_RIGHT=8,JST_FIREA=16,JST_FIREB=32};
 static int JoyState;
-static void map(uint32_t joystick) { JoyState=0; if(false) {}
+static void map(uint32_t joystick) { const bool gameplay = true; JoyState=0; if(false) {}
 '''
-    source += section("fmsx/main/main.c", "    else\n    {\n        if (joystick & RG_KEY_LEFT)\n            JoyState", "    return 0;")
+    source += section("fmsx/main/main.c", "    else\n    {\n        if (joystick & RG_KEY_LEFT)\n            JoyState", "}\n\nint InitMachine")
     source += r'''
 }
 static void check() {
@@ -234,6 +256,8 @@ static void check() {
         assert(!input_state(0,RETRO_DEVICE_JOYPAD,1,id));
         assert(!input_state(0,RETRO_DEVICE_MOUSE,0,id));
     }
+    keys=RG_KEY_TURBO_A; assert(input_state(0,RETRO_DEVICE_JOYPAD,0,RETRO_DEVICE_ID_JOYPAD_X));
+    keys=RG_KEY_TURBO_B; assert(input_state(0,RETRO_DEVICE_JOYPAD,0,RETRO_DEVICE_ID_JOYPAD_Y));
     keys=0; for(unsigned id=0;id<16;id++) assert(!input_state(0,RETRO_DEVICE_JOYPAD,0,id));
 }
 }
@@ -241,6 +265,7 @@ int main() {
     primary=legacy=false; assert(std::string(nes_fds_bios_path()).find("disksys.rom")!=std::string::npos);
     legacy=true; assert(std::string(nes_fds_bios_path()).find("fds_bios.bin")!=std::string::npos);
     primary=true; assert(std::string(nes_fds_bios_path()).find("disksys.rom")!=std::string::npos);
+    check_turbo();
     routing::check(); a78::check(); a26::check(); spectrum::check(); sms::check(); snes::check();
     pce::check(); msx::check(); nes::check(); mega::check();
     gba::check();
@@ -257,7 +282,7 @@ int main() {
                                   "-I", str(ROOT / "gbsp/components/gpsp/core/libretro/libretro-common/include"),
                                   str(cpp), "-o", str(executable)], check=True)
         subprocess.run([str(executable)], check=True)
-    print("PASS: FDS BIOS precedence, controller assignment/unplug, independent P1/P2 mappings and release")
+    print("PASS: FDS BIOS precedence, controller routing, independent P1/P2 mappings, and turbo pulses")
 
 
 if __name__ == "__main__":

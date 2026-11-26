@@ -630,16 +630,41 @@ uint32_t rg_input_read_gamepad_unfiltered(void)
 
 uint32_t rg_input_read_gamepad(void)
 {
-    return rg_system_filter_screen_timeout_input(rg_input_read_gamepad_unfiltered());
+    return rg_input_read_gamepad_player(RG_PLAYER_1) & ~RG_KEY_TURBO;
 }
 
 uint32_t rg_input_read_gamepad_player(rg_player_t player)
 {
     if (player == RG_PLAYER_1)
-        return rg_input_read_gamepad();
+        return rg_system_filter_screen_timeout_input(rg_input_read_gamepad_unfiltered());
     if (player < 0 || player >= RG_PLAYER_COUNT)
         return 0;
     return gamepad_state[player];
+}
+
+uint32_t rg_input_apply_turbo(uint32_t keys, rg_player_t player)
+{
+    static uint8_t phase[RG_PLAYER_COUNT][2];
+    static const rg_key_t triggers[] = {RG_KEY_TURBO_A, RG_KEY_TURBO_B};
+    static const rg_key_t buttons[] = {RG_KEY_A, RG_KEY_B};
+    uint32_t result = keys & ~RG_KEY_TURBO;
+    if (player < 0 || player >= RG_PLAYER_COUNT)
+        return result;
+
+    // Match gpSP's default: two pressed frames followed by two released frames.
+    for (int i = 0; i < RG_COUNT(triggers); ++i)
+    {
+        uint8_t *step = &phase[player][i];
+        if (!(keys & triggers[i]) || (keys & (RG_KEY_MENU | RG_KEY_OPTION)))
+        {
+            *step = 0;
+            continue;
+        }
+        if (*step < 2)
+            result |= buttons[i];
+        *step = (*step + 1) % 4;
+    }
+    return result;
 }
 
 bool rg_input_key_is_pressed(rg_key_t mask)
@@ -682,6 +707,8 @@ const char *rg_input_get_key_name(rg_key_t key)
     case RG_KEY_Y: return "Y";
     case RG_KEY_L: return "Left Shoulder";
     case RG_KEY_R: return "Right Shoulder";
+    case RG_KEY_TURBO_A: return "Turbo A";
+    case RG_KEY_TURBO_B: return "Turbo B";
     case RG_KEY_NONE: return "None";
     default: return "Unknown";
     }

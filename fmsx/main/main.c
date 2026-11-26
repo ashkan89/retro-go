@@ -72,23 +72,24 @@ static inline void SubmitFrame(void)
     rg_display_submit(currentUpdate, 0);
 }
 
-int ProcessEvents(int Wait)
+static void process_events(bool gameplay)
 {
     for (int i = 0; i < 16; ++i)
         KeyState[i] = 0xFF;
     JoyState = 0;
 
-    uint32_t joystick = rg_input_read_gamepad();
+    uint32_t physical = rg_input_read_gamepad_player(RG_PLAYER_1);
+    uint32_t joystick = physical & ~RG_KEY_TURBO;
 
     if (joystick == RG_KEY_MENU)
     {
         rg_gui_game_menu();
-        return 0;
+        return;
     }
     else if (joystick == RG_KEY_OPTION)
     {
         rg_gui_options_menu();
-        return 0;
+        return;
     }
     else if (joystick == RG_KEY_SELECT)
     {
@@ -100,8 +101,11 @@ int ProcessEvents(int Wait)
         // I think this key could be better used for something else
         // but for now the feedback is to keep a key for fMSX menu...
         InMenu = 2;
-        return 0;
+        return;
     }
+
+    if (gameplay)
+        joystick = rg_input_apply_turbo(InMenu || InKeyboard ? joystick : physical, RG_PLAYER_1);
 
     if (InMenu == 2)
     {
@@ -192,7 +196,8 @@ int ProcessEvents(int Wait)
 
     // fMSX packs both joystick ports into one word: low byte = port 1 (JoyState above),
     // high byte = port 2 (see MSX.c's `Port? (JoyState>>8):JoyState`).
-    uint32_t joystick2 = rg_input_read_gamepad_player(RG_PLAYER_2);
+    uint32_t joystick2 = gameplay ? rg_input_read_gamepad_gameplay(RG_PLAYER_2)
+                                  : rg_input_read_gamepad_player(RG_PLAYER_2);
     uint16_t joy2State = 0;
 
     if (joystick2 & RG_KEY_LEFT)
@@ -209,8 +214,6 @@ int ProcessEvents(int Wait)
         joy2State |= JST_FIREB;
 
     JoyState |= joy2State << 8;
-
-    return 0;
 }
 
 int InitMachine(void)
@@ -273,7 +276,7 @@ void PutImage(void)
 
 unsigned int Joystick(void)
 {
-    ProcessEvents(0);
+    process_events(true);
     return JoyState;
 }
 
@@ -313,7 +316,7 @@ int ShowVideo(void)
 
 unsigned int GetJoystick(void)
 {
-    ProcessEvents(0);
+    process_events(false);
     return 0;
 }
 
@@ -325,7 +328,7 @@ unsigned int GetMouse(void)
 unsigned int GetKey(void)
 {
     unsigned int J;
-    ProcessEvents(0);
+    process_events(false);
     J = LastKey;
     LastKey = 0;
     return J;

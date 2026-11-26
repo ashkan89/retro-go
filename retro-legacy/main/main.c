@@ -55,7 +55,7 @@ void app_main(void)
     app->frameskip = rg_display_uses_frame_copy() ? 0 : 1;
     unsigned frame = 0;
     while (true) {
-        uint32_t keys = rg_input_read_gamepad();
+        uint32_t keys = rg_input_read_gamepad_gameplay(RG_PLAYER_1);
         if (keys & RG_KEY_MENU) rg_gui_game_menu();
         else if (keys & RG_KEY_OPTION) rg_gui_options_menu();
         int64_t start = rg_system_timer();

@@ -584,7 +584,7 @@ void nes_nestopia_main(void)
 #endif
     while (true)
     {
-        uint32_t joystick = rg_input_read_gamepad();
+        uint32_t joystick = rg_input_read_gamepad_player(RG_PLAYER_1);
         if (benchmark)
         {
             if (joystick & RG_KEY_MENU)
@@ -600,7 +600,7 @@ void nes_nestopia_main(void)
         }
 
         if (nsfPlayer)
-            handle_nsf_input(nsf, joystick);
+            handle_nsf_input(nsf, joystick & ~RG_KEY_TURBO);
 
         int64_t startTime = rg_system_timer();
         const bool wantFrame = !skipFrames && !nsfPlayer && (!benchmark || benchmark->lcd());
@@ -609,8 +609,9 @@ void nes_nestopia_main(void)
         Nes::Core::Input::Controllers input;
         if (!nsfPlayer)
         {
-            input.pad[0].buttons = benchmark ? benchmark->replay.buttons : convert_buttons(joystick);
-            input.pad[1].buttons = benchmark ? 0 : convert_buttons(rg_input_read_gamepad_player(RG_PLAYER_2));
+            input.pad[0].buttons = benchmark ? benchmark->replay.buttons
+                : convert_buttons(rg_input_apply_turbo(joystick, RG_PLAYER_1));
+            input.pad[1].buttons = benchmark ? 0 : convert_buttons(rg_input_read_gamepad_gameplay(RG_PLAYER_2));
         }
 
         rg_surface_t *directUpdate = nullptr;
