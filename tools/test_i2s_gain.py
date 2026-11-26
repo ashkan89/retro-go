@@ -29,7 +29,15 @@ typedef int esp_err_t;
 #define RG_MAX(a,b) ((a)>(b)?(a):(b))
 #define RG_AUDIO_USE_INT_DAC 0
 #define DEVICE_IS_EXTERNAL(dev) ((dev) >= 1 && (dev) <= 3)
-static struct { bool muted; int volume, device, sample_rate, ramp_gain, ramp_target, ramp_step, ramp_remaining; } state;
+static struct {
+    bool muted;
+    int volume, device, sample_rate, ramp_gain, ramp_target, ramp_step, ramp_remaining;
+    uint32_t dma_capacity_us, dma_gap_events, dma_write_us;
+    int64_t last_dma_write;
+} state;
+static int64_t rg_system_timer(void) {
+    return 0;
+}
 static rg_audio_frame_t output[640];
 static size_t output_count;
 static const void *last_pointer;
