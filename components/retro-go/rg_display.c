@@ -9,13 +9,21 @@
 #include <freertos/event_groups.h>
 static EventGroupHandle_t display_events;
 #define DISPLAY_FRAME_RELEASED BIT0
+#define DISPLAY_TASK_STOPPED BIT1
+#define DISPLAY_TASK_READY BIT2
 #endif
 
+#if !defined(RG_SCREEN_BUFFER_LINES) && CONFIG_IDF_TARGET_ESP32S3
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
+#define RG_SCREEN_BUFFER_LINES 8
+#endif
+#endif
 #ifndef RG_SCREEN_BUFFER_LINES
 #define RG_SCREEN_BUFFER_LINES 4
 #endif
 #define LCD_BUFFER_LENGTH (RG_SCREEN_WIDTH * RG_SCREEN_BUFFER_LINES) // In pixels
 
+static int lcd_buffer_pixels = LCD_BUFFER_LENGTH;
 // static rg_display_driver_t driver;
 static rg_task_t *display_task_queue;
 static rg_display_counters_t counters;
@@ -26,6 +34,8 @@ static rg_mutex_t *frame_copy_lock;
 static rg_display_t display;
 static int16_t map_viewport_to_source_x[RG_SCREEN_WIDTH + 1];
 static int16_t map_viewport_to_source_y[RG_SCREEN_HEIGHT + 1];
+static uint16_t horizontal_blend_columns[RG_SCREEN_WIDTH];
+static int horizontal_blend_count;
 static uint32_t screen_line_checksum[RG_SCREEN_HEIGHT + 1];
 
 #define LINE_IS_REPEATED(Y) (map_viewport_to_source_y[(Y)] == map_viewport_to_source_y[(Y) - 1])
@@ -56,6 +66,11 @@ static inline void lcd_send_buffer(uint16_t *buffer, size_t length);
 #include "drivers/display/dummy.h"
 #endif
 
+#if RG_SCREEN_DRIVER != 0 && RG_SCREEN_DRIVER != 1
+static inline void lcd_lock(void) {}
+static inline void lcd_unlock(void) {}
+#endif
+
 #if CONFIG_IDF_TARGET_ESP32P4
 #include "drivers/display/p4_ppa.h"
 #include "drivers/display/p4_pixels.h"
@@ -64,9 +79,14 @@ static bool p4_force_software;
 #endif
 #endif
 
-static int draw_on_screen_display(int region_start, int region_end)
+static int draw_on_screen_display(int region_end, bool *wrote_to_panel)
 {
-    static unsigned int area_dirty = 0;
+    static bool battery_visible;
+    const bool show_battery = rg_system_get_indicator(RG_INDICATOR_POWER_LOW) &&
+                              ((counters.totalFrames / 20) & 1);
+    if (!show_battery && !battery_visible)
+        return 0;
+
     rg_margins_t margins = rg_gui_get_safe_area();
     int left = display.screen.width - margins.right - 28;
     int top = margins.top + 4;
@@ -78,21 +98,23 @@ static int draw_on_screen_display(int region_start, int region_end)
         return top + height;
 
     // Low battery indicator
-    if (rg_system_get_indicator(RG_INDICATOR_POWER_LOW) && ((counters.totalFrames / 20) & 1))
+    if (show_battery)
     {
         rg_display_clear_rect(left, top, width, height, C_RED); // Main body
         rg_display_clear_rect(left + width, top + height / 4, border, height / 2, C_RED); // The tab
         rg_display_clear_rect(left + border, top + border, width - border * 2, height - border * 2, C_BLACK); // The fill
-        // memset(&screen_line_checksum[top], 0, sizeof(uint32_t) * height);
-        area_dirty |= (1 << RG_INDICATOR_POWER_LOW);
+        *wrote_to_panel = true;
     }
-    else if (area_dirty)
+    else
     {
         if (display.viewport.width < display.screen.width || display.viewport.height < display.screen.height)
+        {
             rg_display_clear_rect(left, top, width + border, height, C_BLACK);
+            *wrote_to_panel = true;
+        }
         memset(&screen_line_checksum[top], 0, sizeof(uint32_t) * height);
-        area_dirty = 0;
     }
+    battery_visible = show_battery;
     return 0;
 }
 
@@ -180,7 +202,7 @@ IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
 
     const bool partial_update = RG_SCREEN_PARTIAL_UPDATES;
 
-    int lines_per_buffer = LCD_BUFFER_LENGTH / draw_width;
+    int lines_per_buffer = lcd_buffer_pixels / draw_width;
     int lines_remaining = draw_height;
     int lines_updated = 0;
     int window_top = -1;
@@ -201,11 +223,12 @@ IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
                 --lines_to_copy;
         }
 
-        uint16_t *line_buffer = lcd_get_buffer(LCD_BUFFER_LENGTH);
+        uint16_t *line_buffer = lcd_get_buffer(lcd_buffer_pixels);
         uint16_t *line_buffer_ptr = line_buffer;
 
         uint32_t checksum = 0xFFFFFFFF;
-        bool need_update = !partial_update;
+        int first_dirty = partial_update ? lines_to_copy : 0;
+        int last_dirty = partial_update ? -1 : lines_to_copy - 1;
 
         for (int i = 0; i < lines_to_copy; ++i)
         {
@@ -256,26 +279,33 @@ IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
                 }
             }
 
-            if (screen_line_checksum[draw_top + y] != checksum)
+            if (partial_update && screen_line_checksum[draw_top + y] != checksum)
             {
                 screen_line_checksum[draw_top + y] = checksum;
-                need_update = true;
+                first_dirty = RG_MIN(first_dirty, i);
+                last_dirty = i;
             }
 
             ++y;
         }
 
+        const bool need_update = last_dirty >= first_dirty;
+        if (filter_y && need_update)
+        {
+            // Interpolated rows depend on their neighbors within this stripe.
+            first_dirty = 0;
+            last_dirty = lines_to_copy - 1;
+        }
+
         if (filter_x && need_update)
         {
-            for (int i = 0; i < lines_to_copy; ++i)
+            for (int i = first_dirty; i <= last_dirty; ++i)
             {
                 uint16_t *buffer = line_buffer + i * draw_width;
-                for (int x = 1; x < draw_width - 1; ++x)
+                for (int j = 0; j < horizontal_blend_count; ++j)
                 {
-                    if (map_viewport_to_source_x[x] == map_viewport_to_source_x[x - 1])
-                    {
-                        buffer[x] = blend_pixels(buffer[x - 1], buffer[x + 1]);
-                    }
+                    int x = horizontal_blend_columns[j];
+                    buffer[x] = blend_pixels(buffer[x - 1], buffer[x + 1]);
                 }
             }
         }
@@ -301,12 +331,17 @@ IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
         if (need_update)
         {
             int left = display.screen.margins.left + draw_left;
-            int top = display.screen.margins.top + draw_top + y - lines_to_copy;
+            int top = display.screen.margins.top + draw_top + y - lines_to_copy + first_dirty;
+            int send_lines = last_dirty - first_dirty + 1;
+            size_t send_pixels = draw_width * send_lines;
+            // Reuse the aligned DMA address when skipping leading clean rows.
+            if (first_dirty)
+                memmove(line_buffer, line_buffer + first_dirty * draw_width, send_pixels * sizeof(*line_buffer));
             if (top != window_top)
-                lcd_set_window(left, top, draw_width, lines_remaining);
-            lcd_send_buffer(line_buffer, draw_width * lines_to_copy);
-            window_top = top + lines_to_copy;
-            lines_updated += lines_to_copy;
+                lcd_set_window(left, top, draw_width, lines_remaining - first_dirty);
+            lcd_send_buffer(line_buffer, send_pixels);
+            window_top = top + send_lines;
+            lines_updated += send_lines;
         }
         else
         {
@@ -317,8 +352,10 @@ IRAM_ATTR static inline bool write_update(const rg_surface_t *update)
         // Drawing the OSD as we progress reduces flicker compared to doing it once at the end
         if (osd_next_call && draw_top + y >= osd_next_call)
         {
-            osd_next_call = draw_on_screen_display(0, draw_top + y);
-            window_top = -1;
+            bool wrote_to_panel = false;
+            osd_next_call = draw_on_screen_display(draw_top + y, &wrote_to_panel);
+            if (wrote_to_panel)
+                window_top = -1;
         }
 
         lines_remaining -= lines_to_copy;
@@ -392,7 +429,15 @@ static void update_viewport_scaling(void)
 
     for (int x = 0; x < screen_width; ++x)
         map_viewport_to_source_x[x] = FLOAT_TO_INT(x * display.viewport.step_x);
-    for (int y = 0; y < screen_height; ++y)
+    int draw_width = new_width + 2 * RG_MIN(display.viewport.left, 0);
+    horizontal_blend_count = 0;
+    if (display.viewport.filter_x)
+    {
+        for (int x = 1; x < draw_width - 1; ++x)
+            if (map_viewport_to_source_x[x] == map_viewport_to_source_x[x - 1])
+                horizontal_blend_columns[horizontal_blend_count++] = x;
+    }
+    for (int y = 0; y <= screen_height; ++y)
         map_viewport_to_source_y[y] = FLOAT_TO_INT(y * display.viewport.step_y);
 
     RG_LOGI("%dx%d@%.3f => %dx%d@%.3f left:%d top:%d step_x:%.2f step_y:%.2f", src_width, src_height,
@@ -406,6 +451,7 @@ static void update_viewport_scaling(void)
 void rg_display_p4_benchmark(const rg_surface_t *source)
 {
     rg_display_sync(true);
+    lcd_lock();
     rg_display_config_t saved_config = config;
     rg_display_t saved_display = display;
     config.filter = RG_DISPLAY_FILTER_BOTH;
@@ -437,6 +483,7 @@ void rg_display_p4_benchmark(const rg_surface_t *source)
     if (display.source.width > 0 && display.source.height > 0)
         update_viewport_scaling();
     display.changed = true;
+    lcd_unlock();
 }
 #endif
 
@@ -468,12 +515,16 @@ static void display_task(void *arg)
 {
     rg_task_msg_t msg;
 
+#ifdef ESP_PLATFORM
+    xEventGroupSetBits(display_events, DISPLAY_TASK_READY);
+#endif
     while (rg_task_peek(&msg))
     {
         // Received a shutdown request!
         if (msg.type == RG_TASK_MSG_STOP)
             break;
 
+        lcd_lock();
         if (display.changed)
         {
             update_viewport_scaling();
@@ -489,7 +540,7 @@ static void display_task(void *arg)
         }
 
         const bool changed = write_update(msg.dataPtr);
-        // draw_on_screen_display(0, display.screen.height);
+        lcd_unlock();
         rg_task_receive(&msg);
 #ifdef ESP_PLATFORM
         // The source surface is now free; wake every waiter without a tick delay.
@@ -502,6 +553,9 @@ static void display_task(void *arg)
         __atomic_fetch_add(changed ? &transfer_stats.changedFrames : &transfer_stats.unchangedUpdates,
                            1, __ATOMIC_RELAXED);
     }
+#ifdef ESP_PLATFORM
+    xEventGroupSetBits(display_events, DISPLAY_TASK_STOPPED);
+#endif
 }
 
 void rg_display_force_redraw(void)
@@ -727,46 +781,50 @@ void rg_display_write_rect(int left, int top, int width, int height, int stride,
     // calc stride before clipping width
     stride = RG_MAX(stride, width * 2);
 
-    // Clipping
+    // Clip to the visible screen while preserving the caller's source stride.
+    int skip_x = RG_MAX(-left, 0);
+    int skip_y = RG_MAX(-top, 0);
+    left += skip_x;
+    top += skip_y;
+    width -= skip_x;
+    height -= skip_y;
     width = RG_MIN(width, display.screen.width - left);
     height = RG_MIN(height, display.screen.height - top);
-
-    // This can happen when left or top is out of bound
-    if (width < 0 || height < 0)
+    if (width <= 0 || height <= 0)
         return;
 
-    // This will work for now because we rarely draw from different threads (so all we need is ensure
-    // that we're not interrupting a display update). But what we SHOULD be doing is acquire a lock
-    // before every call to lcd_set_window and release it only after the last call to lcd_send_buffer.
+    buffer = (const void *)((const uint8_t *)buffer + (size_t)skip_y * stride + (size_t)skip_x * 2);
     if (!(flags & RG_DISPLAY_WRITE_NOSYNC))
         rg_display_sync(true);
 
-    // This isn't really necessary but it makes sense to invalidate
-    // the lines we're about to overwrite...
-    for (size_t y = 0; y < height; ++y)
-        screen_line_checksum[top + y] = 0;
+    lcd_lock();
+    memset(screen_line_checksum + top, 0, height * sizeof(*screen_line_checksum));
 
     lcd_set_window(left + display.screen.margins.left, top + display.screen.margins.top, width, height);
 
     for (size_t y = 0; y < height;)
     {
-        uint16_t *lcd_buffer = lcd_get_buffer(LCD_BUFFER_LENGTH);
-        size_t num_lines = RG_MIN(LCD_BUFFER_LENGTH / width, height - y);
+        uint16_t *lcd_buffer = lcd_get_buffer(lcd_buffer_pixels);
+        size_t num_lines = RG_MIN(lcd_buffer_pixels / width, height - y);
 
-        // Copy line by line because stride may not match width
-        for (size_t line = 0; line < num_lines; ++line)
+        // Treat tightly packed stripes as one span, including GUI surfaces.
+        const bool contiguous = stride == width * (int)sizeof(*buffer);
+        const size_t spans = contiguous ? 1 : num_lines;
+        const size_t pixels = contiguous ? width * num_lines : width;
+        for (size_t line = 0; line < spans; ++line)
         {
-            uint16_t *src = (void *)buffer + ((y + line) * stride);
-            uint16_t *dst = lcd_buffer + (line * width);
+            const uint16_t *src = (const void *)((const uint8_t *)buffer + (y + line) * stride);
+            uint16_t *dst = lcd_buffer + line * width;
             if (flags & RG_DISPLAY_WRITE_NOSWAP)
-            {
-                memcpy(dst, src, width * 2);
-            }
+                memcpy(dst, src, pixels * sizeof(*dst));
+#if CONFIG_IDF_TARGET_ESP32P4
             else
-            {
-                for (size_t i = 0; i < width; ++i)
-                    dst[i] = (src[i] >> 8) | (src[i] << 8);
-            }
+                p4_copy_rgb565_be(dst, src, pixels);
+#else
+            else
+                for (size_t i = 0; i < pixels; ++i)
+                    dst[i] = __builtin_bswap16(src[i]);
+#endif
         }
 
         lcd_send_buffer(lcd_buffer, width * num_lines);
@@ -774,6 +832,7 @@ void rg_display_write_rect(int left, int top, int width, int height, int stride,
     }
 
     lcd_sync();
+    lcd_unlock();
 }
 
 void rg_display_clear_rect(int left, int top, int width, int height, uint16_t color_le)
@@ -785,20 +844,36 @@ void rg_display_clear_rect(int left, int top, int width, int height, uint16_t co
     // what happens during a firmware update, where the screen is cleared before each stage).
     rg_gui_set_backdrop(NULL);
 
-    int pixels_remaining = width * height;
-    if (pixels_remaining > 0)
+    // Clears use panel coordinates so they can also paint the physical margins.
+    int right = RG_MIN(left + display.screen.margins.left + width, display.screen.real_width);
+    int bottom = RG_MIN(top + display.screen.margins.top + height, display.screen.real_height);
+    left = RG_MAX(left + display.screen.margins.left, 0);
+    top = RG_MAX(top + display.screen.margins.top, 0);
+    width = right - left;
+    height = bottom - top;
+    if (width <= 0 || height <= 0)
+        return;
+
+    lcd_lock();
+    int visible_top = RG_MAX(0, top - display.screen.margins.top);
+    int visible_bottom = RG_MIN(display.screen.height, bottom - display.screen.margins.top);
+    if (visible_bottom > visible_top)
+        memset(screen_line_checksum + visible_top, 0, (visible_bottom - visible_top) * sizeof(*screen_line_checksum));
+
+    lcd_set_window(left, top, width, height);
+    for (int remaining = width * height; remaining > 0;)
     {
-        lcd_set_window(left + display.screen.margins.left, top + display.screen.margins.top, width, height);
-        while (pixels_remaining > 0)
-        {
-            uint16_t *buffer = lcd_get_buffer(LCD_BUFFER_LENGTH);
-            int pixels = RG_MIN(pixels_remaining, LCD_BUFFER_LENGTH);
-            for (size_t j = 0; j < pixels; ++j)
-                buffer[j] = color_be;
-            lcd_send_buffer(buffer, pixels);
-            pixels_remaining -= pixels;
-        }
+        uint16_t *buffer = lcd_get_buffer(lcd_buffer_pixels);
+        int count = RG_MIN(remaining, lcd_buffer_pixels);
+        if ((uint8_t)color_be == (color_be >> 8))
+            memset(buffer, color_be, count * sizeof(*buffer));
+        else
+            for (int i = 0; i < count; ++i)
+                buffer[i] = color_be;
+        lcd_send_buffer(buffer, count);
+        remaining -= count;
     }
+    lcd_unlock();
 }
 
 void rg_display_clear_except(int left, int top, int width, int height, uint16_t color_le)
@@ -825,6 +900,10 @@ void rg_display_clear(uint16_t color_le)
 void rg_display_deinit(void)
 {
     rg_display_sync(true);
+    rg_task_send(display_task_queue, &(rg_task_msg_t){.type = RG_TASK_MSG_STOP});
+#ifdef ESP_PLATFORM
+    xEventGroupWaitBits(display_events, DISPLAY_TASK_STOPPED, pdTRUE, pdFALSE, portMAX_DELAY);
+#endif
     rg_surface_free(frame_copy);
     frame_copy = NULL;
     rg_mutex_free(frame_copy_lock);
@@ -832,7 +911,6 @@ void rg_display_deinit(void)
 #if CONFIG_IDF_TARGET_ESP32P4
     p4_scaler_deinit();
 #endif
-    rg_task_send(display_task_queue, &(rg_task_msg_t){.type = RG_TASK_MSG_STOP});
     // lcd_set_backlight(0);
     lcd_deinit();
     RG_LOGI("Display terminated.\n");
@@ -864,13 +942,21 @@ void rg_display_init(void)
     if (!display_events)
         display_events = xEventGroupCreate();
     RG_ASSERT(display_events, "Unable to allocate display completion event");
-    xEventGroupClearBits(display_events, DISPLAY_FRAME_RELEASED);
+    xEventGroupClearBits(display_events, DISPLAY_FRAME_RELEASED | DISPLAY_TASK_STOPPED | DISPLAY_TASK_READY);
 #endif
     lcd_init();
     rg_display_clear(C_BLACK);
-    rg_task_delay(80); // Wait for the screen be cleared before turning on the backlight (40ms doesn't seem to be enough...)
+#if RG_SCREEN_DRIVER == 0 || RG_SCREEN_DRIVER == 1
+    spi_drain(); // Wait until the initial black frame has reached the panel.
+#else
+    lcd_sync();
+#endif
     lcd_set_backlight(config.backlight);
     display_task_queue = rg_task_create("rg_display", &display_task, NULL, 4 * 1024, RG_TASK_PRIORITY_6, RG_TASK_AFFINITY_DISPLAY);
+    RG_ASSERT(display_task_queue, "Unable to start display task");
+#ifdef ESP_PLATFORM
+    xEventGroupWaitBits(display_events, DISPLAY_TASK_READY, pdTRUE, pdFALSE, portMAX_DELAY);
+#endif
     if (rg_display_uses_frame_copy())
     {
         frame_copy_lock = rg_mutex_create();

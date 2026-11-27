@@ -1,4 +1,72 @@
-# ESP32-S3 performance audit
+# Retro-Go performance audit
+
+## ESP32-P4 and ESP32-S3 display pipeline
+
+Emulators submit RGB565 or indexed surfaces through `rg_display_submit()`.
+On the P4 and S3 N16R8 DIY targets, the producer typically snapshots into PSRAM when
+the single display slot is free. Callers with their own stable buffers can use
+the borrow path. The display task owns the source until it finishes reading it,
+then releases it while the LCD finishes sending the queued DMA buffers. A full
+present queue can reduce presentations without pacing every emulator frame.
+
+The display task maps and filters the viewport, converts pixels to the panel's
+big-endian RGB565 byte order, and compares row checksums. On the P4, supported
+smooth scaling runs through the PPA, with palette expansion at source resolution
+for indexed surfaces and PIE byte swapping on the resulting RGB565. The S3
+and unsupported P4 scaling modes use the software renderer. The driver streams
+dirty rows through aligned internal SRAM buffers on SPI2.
+
+- The renderer recycles completed transfers on demand using ESP-IDF's FIFO,
+  removing the per-transaction wake-up of a dedicated completion task. The
+  panel lock serializes each command sequence with its pixel data, including
+  direct GUI writes. Shutdown drains the queue before removing the device.
+- The LCD reuses its column and row address ranges when they match and sends
+  the RAM-write command for each newly opened window. Short command and parameter
+  bytes travel in the hardware address phase, which skips DMA setup. An
+  inactive battery indicator leaves a contiguous frame's write window open.
+- S3 holds three eight-line stripes on ESP-IDF 5.5.5 when the bus permits, halving
+  full-width pixel transactions from 80 to 40 on 480x320 and from 60 to 30 on
+  320x240. On 480x320 the pool grows from 18.75 to 22.5 KiB. P4 keeps its
+  sixteen-line stripes and drops from five buffers to three, freeing 30 KiB
+  on ST7796 or 20 KiB on ILI9341. Shared LCD and SD buses keep their existing
+  transfer limits.
+- For unfiltered and horizontally filtered images, partial updates trim clean
+  rows at the edges of each dirty stripe. Vertical filtering keeps neighboring
+  rows together. The software scaler precomputes horizontal blend positions
+  when the viewport changes. Packed GUI writes copy or byte-swap whole stripes.
+
+| SPI2 signal | P4 Wireless-Tag TINY | S3 DIY N16R8/N8R2 |
+| --- | ---: | ---: |
+| CS | GPIO28 | GPIO10 |
+| MOSI / LCD DIN | GPIO29 | GPIO13 |
+| SCLK | GPIO30 | GPIO14 |
+| D/C | GPIO31 | GPIO11 |
+| RESET | GPIO32 | GPIO12 |
+| Backlight control | GPIO33 | GPIO21 |
+
+The current write-only, single-data-lane path uses GPIO-matrix routing with
+these pins. Both boards leave LCD MISO disconnected. Storage is separate on
+P4 (SDMMC slot 0) and S3 (SDSPI on SPI3). See the
+[P4 board wiring](components/retro-go/targets/esp32-p4-n16r32-st7796/docs/BOARD.md),
+[S3 DIY wiring](README.md#esp32-s3-n16r8--n8r2-diy-builds), and Espressif's
+[P4 SPI](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32p4/api-reference/peripherals/spi_master.html)
+and [S3 SPI](https://docs.espressif.com/projects/esp-idf/en/v5.5.5/esp32s3/api-reference/peripherals/spi_master.html) guides.
+
+| Panel | Configured SCLK | Full-screen RGB565 wire time | Wire ceiling |
+| --- | ---: | ---: | ---: |
+| ST7796 480x320 | 80 MHz | 30.72 ms | 32.6 frames/s |
+| ILI9341 320x240 | 40 MHz | 30.72 ms | 32.6 frames/s |
+| ST7789 320x240 | 80 MHz | 15.36 ms | 65.1 frames/s |
+| ST7789v2 300x240 | 80 MHz | 14.40 ms | 69.4 frames/s |
+
+These bounds use the configured clocks and exclude command gaps, rendering,
+and panel scanout. Boot logs the actual ESP-IDF clock. The existing 80 MHz
+ST7796 setting exceeds the controller's published 4-wire write timing, so
+its margin is specific to the module and harness. A 480x320 RGB565 panel
+needs at least 147.5 Mbit/s of payload bandwidth for 60 full-screen updates
+per second. That requires a different interface and compatible panel module,
+such as an 8080 parallel panel or a P4 MIPI-DSI panel.
+[Sitronix ST7796S timing, section 7.4.3](https://orientdisplay.com/wp-content/uploads/2020/11/ST7796S.pdf).
 
 ## FDS rendering and program-memory follow-up (November 14, 2026)
 
